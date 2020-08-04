@@ -25,11 +25,9 @@ client.once('ready', () => {
 });
 
 
-client.login(config.token)
-.then(
+client.login(config.token);
 
-client.user.setActivity('the stars weave into the umbra around me...', { type: 'WATCHING' })
-);
+
 
 client.on('message', message => {
 	let m = message.content
@@ -37,7 +35,7 @@ client.on('message', message => {
 	if(nevo){
 		let [command, args] = parseMessage(m, prefix);
 		command = getCommand(command)
-
+		client.user.setActivity('the stars weave into the umbra around me...', { type: 'WATCHING' });
 		if (command) command[1](message, ...args);
 	}
 });
