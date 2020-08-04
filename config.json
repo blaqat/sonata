@@ -1,4 +1,7 @@
 {
-	"prefix": "hey nevo, ",
-	"token": "NzQwMDEzOTU4MTA2NDQ3ODgy.Xyi1tA.QNgOpddG1A-qiZwua5GGnUu6ESc"
+	"prefix": "hey numa, ",
+	"token": "NzQwMDEzOTU4MTA2NDQ3ODgy.Xyi1tA.QNgOpddG1A-qiZwua5GGnUu6ESc",
+	"whitelist": ["383851442341019658", "412836292163010572"],
+	"cooldown": 1,
+	"blacklist": []
 }
