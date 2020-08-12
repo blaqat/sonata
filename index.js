@@ -1101,7 +1101,7 @@ newCommand("searchBeepByTitle", async function(message, text, type, auth){
 			else
 				numm(message, "Please use `playMusic` for this kind of link")
 			
-			if(index < beeps.length)
+			if(index+1 < beeps.length)
 				doBeep(bot, beeps, index+1)
 		})			
 	}
@@ -1137,7 +1137,11 @@ newCommand("searchBeepByAuthor", async function(message, auth, type, text){
 	beeps.forEach(beep => {
 		counter++
 		indexes.push(""+counter)
-		beepNames.push(counter+". "+beep.join('> | <'))
+		let joined  = beep.join('> | <')
+		if(joined.length > 200)
+			joined = joined.slice(0, 200)
+
+		beepNames.push(counter+". "+joined)
 	})
 
 	nummd(loadingMessage, 500)
@@ -1172,7 +1176,7 @@ newCommand("searchBeepByAuthor", async function(message, auth, type, text){
 	}
 
 	if(beeps.length > 1){
-		numsmp(message, "Beeps Found", 6, ...beepNames)
+		numsmp(message, beeps.length+" Beeps Found", 8, ...beepNames)
 		numq(message, "Type the number of the beep you want", (res) => {
 			let beep = [beeps[parseInt(res.content)-1]]
 			vc.join().then(bot => {
@@ -1199,7 +1203,7 @@ newCommand("playRandomBeep", async (message, amount, type, auth) => {
 	let counter = 0;
 
 	let doBeep = (bot, beeps, index) => {
-		print(beeps, index)
+		//print(beeps, index)
 		let beep = beeps[index]
 		if(counter)
 			counter++;
@@ -1245,7 +1249,6 @@ newCommand("play", function(message, ...urls){
 	vc.join().then(bot => {
 		urls.forEach(original => {
 			counter++;
-
 			linkChecker(original, async (url, typ) => {
 				let [data, num] = await getPlayData(url, typ)
 				let og = original
