@@ -33,6 +33,7 @@ var storage;
 //storage.on('error', err => console.log('Connection Error', err));
 
 //test stuff
+
 if(testMode){
 	const beepTypes = [["Original", "Remix", "Collab", "Beep Remake", "Transcription"], ["Jummbox", "ModBox", "Vanilla", "Unofficial"]]
 	const getBeeps = async function(type, weird, auth){
@@ -182,6 +183,16 @@ ec = (string, full) => {
 	return (full?"```\n":"`") + string + (full?"\n```":"`");
 }
 
+ue = (string) => {
+    let a = string.split(" ")
+    for(let i = 0; i < a.length; i++){
+      if(a[i].includes("http")){
+         a[i] = "<" + a[i] + ">"
+      }
+    }
+    return a.join(" ");
+}
+
 quote = (...str) => {
 	let ns = ""
 
@@ -309,8 +320,14 @@ var defaultData = {
 	cooldown: 0,
 	timeLeft: 0
 }
-const boxes = ["moddedbeepbox.github.io/3.3", "jummbus.bitbucket.io/1_2","beepbox.co", "jummbus.bitbucket.io/", "moddedbeepbox.github.io", "theepicosity.github.io", "parad0xstuff.github.io", "fillygroove.github.io", "bluaxolotlbox.neocities.org", "synthbox.co", "hidden-realm.github.io/cardboardbox","synthboxtest.neocities.org"]
-const boxid = ["mb_3_3",false, "jb_2_0", "jb_2_0", "mb_beta","mb_2_3","sb_3_0","sb_3_1","jb_2_0","sb","cb","sb"]
+const boxes = ["moddedbeepbox.github.io/3.3", "jummbus.bitbucket.io/1_2","beepbox.co", "jummbus.bitbucket.io/", 
+"moddedbeepbox.github.io", 
+"theepicosity.github.io", "parad0xstuff.github.io", 
+"fillygroove.github.io", "bluaxolotlbox.neocities.org", "synthbox.co", 
+"hidden-realm.github.io/cardboardbox","synthboxtest.neocities.org", "lagmeester4000.bitbucket.io"]
+
+const boxid = ["mb_3_3",false, "jb_2_0", "jb_4_0", "mb_beta","mb_2_3",
+"sb_3_0","sb_3_1","jb_2_0","sb","cb","sb", false]
 const linkTypes = {
 	"box": boxes,
 	"sc" : ["soundcloud.com"],
@@ -356,7 +373,7 @@ var Profiles = {//color, nickname, status, images
 		['layers.png', 'box.png', 'haloweeon2asd.png',  'discord.png', 'asdijsdfj.png', 'thunderstorm.png', '262462.png'  ]]
 }
 
-const beepTypes = [["Original", "Remake", "Collab", "Beep Remake", "Transcription"], ["Jummbox", "Modbox", "Vanilla", "Unofficial"]]
+const beepTypes = [["Original", "Remake", "Collab", "Beep Remake", "Transcription"], ["Jummbox", "Modbox", "Vanilla", "Unofficial", "Tourney", "Bishop"]]
 const getBeeps = async function(type, weird, auth){
 	let doc;
 	let beeps = [], random;
@@ -631,10 +648,10 @@ linkChecker = (link, next) => {
 
 var getBaseLink = function(thing){
 	link = thing[1].replace("snip.ml","api.snip.ml")
-
+	print(link, link.includes("pastelink.net"))
 	if(!link.includes("pastelink.net")){
 		request({url: link, followRedirect: false}, function(error, response) {
-
+			console.log(error)
 		if (response.statusCode >= 300 && response.statusCode < 400) {
 			thing[1] = response.headers.location;
 		}
@@ -646,13 +663,13 @@ var getBaseLink = function(thing){
 	else {
 		readURL(link).then(data=>{
 			//let title;
-			let body = `<pre id="body-display" class="body-display" style="white-space: pre-line">`;
+			let body = `<div id="body-display" class="body-display">`;
 
 			//title = thing.slice(thing.indexOf("<title>")+7, thing.indexOf(" - Pastelink.ne"))
 			body = data.substring(data.indexOf(body)+body.length)
 			body = body.slice(0, body.indexOf(`" target="blank"`))
-			body = body.slice(body.indexOf("https"))
-
+			body = body.substring(body.indexOf("https"))
+			body = body.slice(0,body.indexOf(`" target="`))
 			thing[1] = body;
 			thing[0] = true;
 		})
@@ -1107,7 +1124,7 @@ newCommand("searchBeepByTitle", async function(message, text, type, auth){
 	}
 
 	if(beeps.length > 1){
-		numsmp(message, "Beeps Found", 6, ...beepNames)
+		numsmp(message, beeps.length+" Beeps Found", 8, ...ue(beepNames.join(", ")).split(", "))
 		numq(message, "Type the number of the beep you want", (res) => {
 			let beep = [beeps[parseInt(res.content)-1]]
 			vc.join().then(bot => {
@@ -1137,7 +1154,7 @@ newCommand("searchBeepByAuthor", async function(message, auth, type, text){
 	beeps.forEach(beep => {
 		counter++
 		indexes.push(""+counter)
-		let joined  = beep.join('> | <')
+		let joined  = beep.join(' | ')
 		if(joined.length > 200)
 			joined = joined.slice(0, 200)
 
@@ -1176,7 +1193,7 @@ newCommand("searchBeepByAuthor", async function(message, auth, type, text){
 	}
 
 	if(beeps.length > 1){
-		numsmp(message, beeps.length+" Beeps Found", 8, ...beepNames)
+		numsmp(message, beeps.length+" Beeps Found", 8, ...ue(beepNames.join(", ")).split(", "))
 		numq(message, "Type the number of the beep you want", (res) => {
 			let beep = [beeps[parseInt(res.content)-1]]
 			vc.join().then(bot => {

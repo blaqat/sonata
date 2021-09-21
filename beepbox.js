@@ -19,7 +19,8 @@ var beepboxes = {
     sb_3_1:require("./BeepboxSynths/sandbox_3-1.js"),
     mb_3_3:require("./BeepboxSynths/modbox_3-3.js"),
     cb:require("./BeepboxSynths/cardboardbox.js"),
-    sb:require("./BeepboxSynths/synthbox.js")
+    sb:require("./BeepboxSynths/synthbox.js"),
+    jb_4_0:require("./BeepboxSynths/jummbox_4-0.js")
 }
 
 function randomString(length) {//https://stackoverflow.com/questions/6860853/generate-random-string-for-div-id#:~:text=A%20simple%20way%20to%20create,every%20time%20you%20call%20that.
@@ -15119,7 +15120,10 @@ global.beepbox = beepbox;
             input.value = Math.floor(Math.max(Number(input.min), Math.min(Number(input.max), Number(input.value)))) + "";
         }
         async exportToWav(linkorwhatever, typ) {
+            //console.log(typ)
             let box = typ?beepboxes[typ]:null
+            //console.log(box)
+            //console.log(linkorwhatever)
             let arbf = (box?new box.beepbox.ExportPrompt(box.doc, box.editor).exportToWav(linkorwhatever):((linkorwhatever) => {
                 const synth = new (beepbox).Synth(linkorwhatever||this._doc.song);
                 synth.enableIntro = this._enableIntro.checked;
