@@ -1,0 +1,16 @@
+{
+	"folders": [
+		{
+			"path": "..\\.nevo"
+		},
+		{
+			"path": "."
+		},
+		{
+			"path": "..\\..\\..\\Desktop\\Stuff\\numa 2.0"
+		}
+	],
+	"settings": {
+		"jupyter.jupyterServerType": "local"
+	}
+}
