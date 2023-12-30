@@ -7,7 +7,7 @@
               "source.organizeImports.biome": "explicit"
        },
        "biome.rename": true,
-       "workbench.colorTheme": "Tomorrow Night Blue",
+       "workbench.colorTheme": "Vim Dark Soft",
        "editor.fontFamily": "Monolisa Nerd Font Mono, Jetbrains Mono",
        "editor.fontSize": 12,
        "shifty.shiftInterval.shiftFontFamilyIntervalMin": 0,
@@ -41,5 +41,5 @@
                             }
                      }
               ]
-       },
+       }
 }

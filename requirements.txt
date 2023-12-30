@@ -6,3 +6,4 @@ python-dotenv
 requests
 pretty_errors
 tiktoken
+mistralai

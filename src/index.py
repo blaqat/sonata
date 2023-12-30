@@ -9,7 +9,7 @@ _____________________________________________________
 Mb     dM YA.   ,A9 MM    MM  8M   MM  MM   8M   MM  
 P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 
-              a discord bot by @blaqat 
+        a discord bot by @blaqat / Aiden Green 
 _____________________________________________________                                                         
 """
 
@@ -19,6 +19,8 @@ import discord
 from discord.ext import commands
 import pretty_errors
 import google.generativeai as genai
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
 
 PROMPT = """
 As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users. 
@@ -33,16 +35,16 @@ sonata:
 """
 
 default_prompt = "" + PROMPT
-cmds = ["send_message(message)", "laugh(all_caps: bool)", "nothing()"]
+# cmds = ["send_message(message)", "laugh(all_caps: bool)", "nothing()"]
 
 
-# PROMPT = """You're Discord bot 'sonata', instantiated by user 'karma', aka 'numa' or 'Aiden.' He made you firstly to play music, but also to respond to other users. Much like him, you're a little smug, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
-#         Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
-#         For context, the chat so far is summarized as: {0}
-#         Here's the user and message you're responding to:
-#         {2}: "{1}"
+PROMPT = """You're Discord bot 'sonata', instantiated by user 'karma', aka 'numa' or 'Aiden.' He made you firstly to play music, but also to respond to other users. Much like him, you're a little smug, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
+        Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
+        For context, the chat so far is summarized as: {0}
+        Here's the user and message you're responding to:
+        {2}: "{1}"
 
-#         sonata:"""
+        sonata:"""
 
 o = PromptManager(prompt_name="ChatInstructions",
                   prompt_text=lambda *a: PROMPT.format(*a))
@@ -59,16 +61,20 @@ genai.configure(api_key=settings.GOOGLE_AI)
 g = genai.GenerativeModel('gemini-pro', generation_config={"temperature": .4})
 # o.config(key=settings.OPEN_AI, model='gpt-4-1106-preview')
 o.config(key=settings.OPEN_AI, model='gpt-3.5-turbo-1106', temperature=.4)
-
+m = MistralClient(settings.MISTRAL_AI)
 
 MEMORY = []
 COUNT = 0
-MAX_COUNT = 50
-BANNED_SUB_WORDS = {'cunt', 'cock', 'balls', 'aggin', 'reggin', 'nigger', 'rape', 'tit', 'tiddies', 'penis', 'boob', 'puss', 'nig', 'kys', 'retard', 'sex',
-                    'porn', 'kill yourself', 'kill your self', 'black people', "dick", "blow in from", "fuck me", "fuck you", "pussy", "kill themself", "kiya self", "shut the fuck up", "stfu", "stupid", "suck my", "suck me", "bitch"}
-CHANNEL_BLACK_LIST = {1175907292072398858, }
+MAX_COUNT = 35
+BANNED_SUB_WORDS = {'jerking it', 'jerking off', 'cunt', 'cock', 'balls', 'aggin', 'reggin', 'nigger', 'rape', 'tit', 'tiddies',
+                    'penis', 'boob', 'puss', 'nig', 'kys', 'retard', 'sex',
+                    'porn', 'kill yourself', 'kill your self', 'black people', "dick", "blow in from",
+                    "fuck me", "fuck you", "pussy", "kill themself", "kiya self", "shut the fuck up",
+                    "stfu", "stupid", "suck my", "suck me", "bitch"}
+CHANNEL_BLACK_LIST = {1175907292072398858,
+                      724158738138660894, 725170957206945859}
 GODS = {settings.GOD, '150398769651777538',
-        '148471246680621057', '334039742205132800', '272770172434120705'}
+        '148471246680621057', '334039742205132800', '497844474043432961', '143866772360134656'}
 
 
 class Sonata(commands.Bot):
@@ -82,7 +88,6 @@ class Sonata(commands.Bot):
         print('Logged on as {0}!'.format(self.user))
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
-        global MOST_RECENT_USER
         global COUNT
         _guild_name = message.guild.name
         _channel_name = message.channel.name
@@ -149,16 +154,16 @@ async def ping(ctx):
 @sonata.command(name="g", description="Ask a question using Google Gemini AI.")
 async def google_ai_question(ctx, *message):
     try:
-        m = ' '.join(message)
-        fm = o.get('ChatInstructions', MEMORY, m, ctx.author.nick)
-        r = g.generate_content(fm)
+        message = ' '.join(message)
+        r = g.generate_content(
+            o.get('ChatInstructions', MEMORY, message, ctx.author.nick))
         await ctx.send(r.text[:2000])
     except Exception as e:
-        print(r.prompt_feedback, e)
-        reason = r.prompt_feedback.block_reason
-        r = g.generate_content(
-            "Given is the reason you blocked the previous message. Respond explaining why you blocked it. \nReason: {0}".format(reason))
-        await ctx.send(r.text[:2000])
+        r = o.send("chatinstructions", MEMORY, message,
+                   ctx.author.nick)['response']
+        # r = g.generate_content(
+        #     "given is the reason you blocked the previous message. respond explaining why you blocked it. \nreason: {0}".format(r.prompt_feedback.block_reason))
+        await ctx.send(r[:2000])
 
 
 @sonata.command(name="o", description="Ask a question using OpenAI.")
@@ -166,13 +171,26 @@ async def open_ai_question(ctx, *message):
     if not is_god(ctx.author.id):
         await ctx.send("You cannot use this command, you are not a god. Use $g instead.")
         return
-    m = ' '.join(message)
+    message = ' '.join(message)
     r = o.send(
-        "ChatInstructions", MEMORY, m, ctx.author.nick)
-    r, c = check_if_has_command(r['response'])
+        "ChatInstructions", MEMORY, message, ctx.author.nick)['response']
     await ctx.send(r[:2000])
-    if c:
-        await run_command(ctx, c[0], *c[1])
+
+
+@sonata.command(name="mi", description="Ask a question using MistralAI.")
+async def mistral_question(ctx, *message):
+    if not is_god(ctx.author.id):
+        await ctx.send("You cannot use this command, you are not a god. Use $g instead.")
+    message = ' '.join(message)
+    mt = ChatMessage(role="user", content=o.get(
+        'ChatInstructions', MEMORY, message, ctx.author.nick))
+    try:
+        r = m.chat(model="mistral-small", messages=[mt])
+        # print(r.choices[0].message.content)
+        await ctx.send(r.choices[0].message.content)
+    except Exception as e:
+        cprint(e, 'red')
+        cprint(r, 'yellow')
 
 
 @sonata.command(name="not-allowed", description="I'm not allowed to respond to that.")
@@ -279,3 +297,5 @@ def censor_bad_words(message):
 
 
 sonata.run(token=settings.BOT_TOKEN)
+
+cprint(f"\nMemory on crash: {MEMORY}", "yellow")
