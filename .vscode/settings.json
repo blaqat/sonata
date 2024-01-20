@@ -6,10 +6,9 @@
        "editor.codeActionsOnSave": {
               "source.organizeImports.biome": "explicit"
        },
-       "biome.rename": true,
        "workbench.colorTheme": "Vim Dark Soft",
-       "editor.fontFamily": "Monolisa Nerd Font Mono, Jetbrains Mono",
-       "editor.fontSize": 12,
+       "editor.fontFamily": "Liga mononoki, Monolisa Nerd Font Mono, Jetbrains Mono",
+       "editor.fontSize": 13,
        "shifty.shiftInterval.shiftFontFamilyIntervalMin": 0,
        "shifty.shiftInterval.shiftColorThemeIntervalMin": 0,
        // "editor.fontFamily": "'Monaspace Xenon', monospace",

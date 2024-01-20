@@ -1,0 +1,13 @@
+{
+  "exclude": [ ".venv" ],
+  "venvPath": "./.venv/",
+
+  "reportMissingImports": true,
+
+  "executionEnvironments": [
+    {
+      "root": "./",
+      "venv": "./"
+    }
+  ]
+}

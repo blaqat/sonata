@@ -8,9 +8,9 @@ __author__ = "Aiden Green"
 __email__ = "aidengreenj@gmail.com"
 
 from typing import Any, Callable, Union, Iterable
-import pretty_errors
 from os import getenv
 from dotenv import load_dotenv
+
 load_dotenv()
 
 
@@ -49,7 +49,7 @@ class _ENV:
 settings = _ENV()
 
 
-class Enum():
+class Enum:
     _fields = {}
     _reverse_fields = {v: k for k, v in _fields.items()}
 
@@ -89,7 +89,7 @@ class Enum():
         return Enum(value=value, name=self._reverse_fields[value])
 
     def from_name(self, name):
-        if type(name) == str:
+        if name.isinstance(str):
             name = name.lower()
         return Enum(value=self._fields[name], name=name)
 
@@ -102,7 +102,7 @@ class Enum():
     @classmethod
     def on_match(cls, **cases):
         def match(value):
-            if type(value) is cls:
+            if value.isinstance(cls):
                 value = value.NAME
             for k, v in cases.items():
                 k = k.lower()
@@ -111,13 +111,13 @@ class Enum():
                         return v()
                     return v
             return cases.get("default", lambda: None)()
+
         return match
 
     def match(self, value=None, **cases):
         if not value:
             value = self.NAME
-        elif type(value) is self:
-
+        elif value.isinstance(self):
             value = value.NAME
         for k, v in cases.items():
             k = k.lower()
@@ -128,12 +128,17 @@ class Enum():
         return cases.get("default", lambda: None)()
 
     @classmethod
-    def match_pair(cls, values: tuple, patterns: dict[tuple | None, Any], default=lambda: None):
+    def match_pair(
+        cls, values: tuple, patterns: dict[tuple | None, Any], default=lambda: None
+    ):
         for pattern, action in patterns.items():
-            if pattern == None:
+            if pattern is None:
                 default = action
                 break
-            elif all(val in pat if isinstance(pat, tuple) else (pat is None) or (val == pat) for val, pat in zip(values, pattern)):
+            elif all(
+                val in pat if isinstance(pat, tuple) else (pat is None) or (val == pat)
+                for val, pat in zip(values, pattern)
+            ):
                 if callable(action):
                     return action()
                 return action
@@ -142,11 +147,11 @@ class Enum():
         return default
 
     def __str__(self):
-        if type(self.VALUE) is list:
-            return f'{self.__class__.__name__} {self._fields}'
+        if self.VALUE.isinstance(list):
+            return f"{self.__class__.__name__} {self._fields}"
 
         # return str(self._fields) + str(self.VALUE)
-        return f'{self.__class__.__name__} [{self.NAME}: {self.VALUE}]'
+        return f"{self.__class__.__name__} [{self.NAME}: {self.VALUE}]"
 
     def __eq__(self, other):
         if type(other) is self.__class__:
@@ -161,15 +166,15 @@ class Enum():
 
 
 class bcolors:
-    PURPLE = '\033[95m'
-    BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    RED = '\033[91m'
-    _0 = '\033[0m'
-    B = '\033[1m'
-    _ = '\033[4m'
+    PURPLE = "\033[95m"
+    BLUE = "\033[94m"
+    CYAN = "\033[96m"
+    GREEN = "\033[92m"
+    YELLOW = "\033[93m"
+    RED = "\033[91m"
+    _0 = "\033[0m"
+    B = "\033[1m"
+    _ = "\033[4m"
 
 
 __input = input
@@ -179,10 +184,17 @@ def clear():
     """
     Clears the console.
     """
-    print('\033c', end='')
+    print("\033c", end="")
 
 
-def input(prompt: str, valid_input: bool | list | Callable = True, case_sensitive: bool = False, return_type: type | Callable = str, fail_msg: str = "", input_color: str = None):
+def input(
+    prompt: str,
+    valid_input: bool | list | Callable = True,
+    case_sensitive: bool = False,
+    return_type: type | Callable = str,
+    fail_msg: str = "",
+    input_color: str = None,
+):
     """
     Prompts the user for input and validates it against a list of valid inputs.
 
@@ -194,36 +206,65 @@ def input(prompt: str, valid_input: bool | list | Callable = True, case_sensitiv
 
     Returns:
         str: The user's input.
-
     """
     while True:
-        user_input = __input(prompt + (__get_color(input_color)
-                             if input_color else ""))
-        print(end=f'{bcolors._0}')
-        if case_sensitive == False:
+        user_input = __input(prompt + (__get_color(input_color) if input_color else ""))
+        print(end=f"{bcolors._0}")
+        if case_sensitive is False:
             user_input = user_input.lower()
-        if type(valid_input) is bool and valid_input != True:
-            raise ValueError(
-                "valid_input must be a list or function if not True.")
+        if valid_input.isinstance(bool) and valid_input is not True:
+            raise ValueError("valid_input must be a list or function if not True.")
         try:
-            if valid_input == True or callable(valid_input) and valid_input(return_type(user_input)) or type(valid_input) is list and user_input in valid_input:
+            if (
+                valid_input is True
+                or callable(valid_input)
+                and valid_input(return_type(user_input))
+                or valid_input.isinstance(list)
+                and user_input in valid_input
+            ):
                 return return_type(user_input)
         except ValueError:
             pass
 
-        msg = f"Invalid input. "
-        msg += fail_msg or f"""Input must be one of the following: {
+        msg = "Invalid input. "
+        msg += (
+            fail_msg
+            or f"""Input must be one of the following: {
             valid_input}"""
+        )
         if case_sensitive:
             msg += "Reminder: input is case sensitive."
         print(msg)
 
 
-def filter_loop(iterations: int | bool, func: Callable, *args, filter_by: Callable | None = None, filter_args: list = [], **kwargs) -> list:
-    return loop(iterations, func, *args, check=filter_by, check_args=filter_args, break_on_failed_check=False, **kwargs)
+def filter_loop(
+    iterations: int | bool,
+    func: Callable,
+    *args,
+    filter_by: Callable | None = None,
+    filter_args: list = [],
+    **kwargs,
+) -> list:
+    return loop(
+        iterations,
+        func,
+        *args,
+        check=filter_by,
+        check_args=filter_args,
+        break_on_failed_check=False,
+        **kwargs,
+    )
 
 
-def loop(iterations: int | bool, func: Callable, *args, check: Callable | None = None, check_args: list = [], break_on_failed_check: bool = True, **kwargs) -> list:
+def loop(
+    iterations: int | bool,
+    func: Callable,
+    *args,
+    check: Callable | None = None,
+    check_args: list = [],
+    break_on_failed_check: bool = True,
+    **kwargs,
+) -> list:
     """
     Runs a function a specified number of times.
 
@@ -239,17 +280,36 @@ def loop(iterations: int | bool, func: Callable, *args, check: Callable | None =
     """
     results = []
 
-    iterations = iterations if type(iterations) is int else -1
+    iterations = iterations if iterations.isinstance(int) else -1
     i = 0
 
-    iterator_vals = ['loop_i', 'iteration', 'loop_j',
-                     'loop_index', 'loop_k', 'loop_key', 'loop_x', '_i', '_j', '_k', '_x']
-    result_vals = ['loop_result', 'result', 'loop_r', '_r']
+    iterator_vals = [
+        "loop_i",
+        "iteration",
+        "loop_j",
+        "loop_index",
+        "loop_k",
+        "loop_key",
+        "loop_x",
+        "_i",
+        "_j",
+        "_k",
+        "_x",
+    ]
+    result_vals = ["loop_result", "result", "loop_r", "_r"]
     # Get check arguments
     c_args = []
-    if check and len(check.__code__.co_varnames) > 0 and check.__code__.co_varnames[0] in iterator_vals:
+    if (
+        check
+        and len(check.__code__.co_varnames) > 0
+        and check.__code__.co_varnames[0] in iterator_vals
+    ):
         c_args.append(i)
-    elif check and len(check.__code__.co_varnames) > 0 and check.__code__.co_varnames[0] in result_vals:
+    elif (
+        check
+        and len(check.__code__.co_varnames) > 0
+        and check.__code__.co_varnames[0] in result_vals
+    ):
         c_args.append(results)
     c_args.extend(check_args)
     while iterations > 0 or iterations == -1:
@@ -261,11 +321,18 @@ def loop(iterations: int | bool, func: Callable, *args, check: Callable | None =
                 i += 1
                 continue
         # Check if function wants i passed through
-        if len(func.__code__.co_varnames) > 0 and func.__code__.co_varnames[0] in iterator_vals:
+        if (
+            len(func.__code__.co_varnames) > 0
+            and func.__code__.co_varnames[0] in iterator_vals
+        ):
             results.append(func(i, *args, **kwargs))
-        elif len(func.__code__.co_varnames) > 0 and func.__code__.co_varnames[0] in result_vals:
+        elif (
+            len(func.__code__.co_varnames) > 0
+            and func.__code__.co_varnames[0] in result_vals
+        ):
             results.append(
-                func(results[-1] if len(results) > 0 else None, *args, **kwargs))
+                func(results[-1] if len(results) > 0 else None, *args, **kwargs)
+            )
         else:
             results.append(func(*args, **kwargs))
         iterations -= 1 if iterations != -1 else 0
@@ -292,7 +359,13 @@ def __is_argsable(obj: Any) -> bool:
         return False
 
 
-def propogate(*ordered_funcs, starting_args: Any = None, expected_results: list[str] | None = None, is_callable: bool = False, **named_funcs: Callable) -> Any:
+def propogate(
+    *ordered_funcs,
+    starting_args: Any = None,
+    expected_results: list[str] | None = None,
+    is_callable: bool = False,
+    **named_funcs: Callable,
+) -> Any:
     """
     Propogates the results of one function to the next.
 
@@ -307,7 +380,13 @@ def propogate(*ordered_funcs, starting_args: Any = None, expected_results: list[
 
     """
     if is_callable:
-        return lambda: propogate(*ordered_funcs, starting_args=starting_args, expected_results=expected_results, is_callable=False, **named_funcs)
+        return lambda: propogate(
+            *ordered_funcs,
+            starting_args=starting_args,
+            expected_results=expected_results,
+            is_callable=False,
+            **named_funcs,
+        )
 
     result = {}
 
@@ -316,13 +395,13 @@ def propogate(*ordered_funcs, starting_args: Any = None, expected_results: list[
             result = tuple(starting_args)
         else:
             result = starting_args
-    elif type(starting_args) is list:
+    elif starting_args.isinstance(list):
         for i, arg in enumerate(starting_args):
-            result[f'arg{i}'] = arg
-    elif type(starting_args) is dict:
+            result[f"arg{i}"] = arg
+    elif starting_args.isinstance(dict):
         result = starting_args
 
-    CAPTURED = result
+    _CAPTURED = result
 
     for name, func in named_funcs.items():
         result[name] = func()
@@ -330,9 +409,9 @@ def propogate(*ordered_funcs, starting_args: Any = None, expected_results: list[
     for func in ordered_funcs:
         if not callable(func):
             result = func
-        elif type(result) is dict:
+        elif result.isinstance(dict):
             result = func(**result)
-        elif type(result) is tuple:
+        elif result.isinstance(tuple):
             result = func(*result)
         elif result is None:
             result = func()
@@ -340,18 +419,31 @@ def propogate(*ordered_funcs, starting_args: Any = None, expected_results: list[
             result = func(result)
 
     if expected_results is not None:
-        if type(result) is dict:
+        if result.isinstance(dict):
             for r_name in expected_results:
                 if r_name not in result:
                     raise ValueError(f"Result does not contain {r_name}.")
-        elif (len(expected_results) >= 1 and result is not None) and ((len(expected_results) != 1 and not __is_argsable(result)) or (len(expected_results) >= 1 and __is_argsable(result) and len(result) != len(expected_results))):
+        elif (len(expected_results) >= 1 and result is not None) and (
+            (len(expected_results) != 1 and not __is_argsable(result))
+            or (
+                len(expected_results) >= 1
+                and __is_argsable(result)
+                and len(result) != len(expected_results)
+            )
+        ):
             raise ValueError(
-                f"Result must contain dictionary with keys {expected_results} OR a iterable with length {len(expected_results)}. Actual length: {len(result)}")
-        elif len(expected_results) == 1 and result is not None and not __is_argsable(result):
+                f"Result must contain dictionary with keys {expected_results} OR a iterable with length {len(expected_results)}. Actual length: {len(result)}"
+            )
+        elif (
+            len(expected_results) == 1
+            and result is not None
+            and not __is_argsable(result)
+        ):
             return {expected_results[0]: result}
         else:
             raise ValueError(
-                f"ValueError: The expected result is not returned. Expected: {expected_results}")
+                f"ValueError: The expected result is not returned. Expected: {expected_results}"
+            )
 
     return result
 
@@ -404,22 +496,22 @@ def enum(*unnamed_fields: Any, **named_fields: Any):
             return InnerEnum(value=value, name=self._reverse_fields[value])
 
         def from_name(self, name):
-            if type(name) is str:
+            if name.isinstance(str):
                 name = name.lower()
             return InnerEnum(value=self._fields[name], name=name)
 
     for name, value in fields.items():
         setattr(InnerEnum, name, InnerEnum(value=value, name=name))
 
-    InnerEnum.__name__ = 'Enum'
+    InnerEnum.__name__ = "Enum"
 
-    first_item_in_field = next(iter(fields))
+    _first_item_in_field = next(iter(fields))
     return InnerEnum(), InnerEnum
 
 
 def __get_color(color: str):
     if not color:
-        return ''
+        return ""
     return bcolors.__getattribute__(bcolors, color.upper())
 
 
@@ -428,10 +520,10 @@ def cstr(str, style):
         return str
 
     st = __get_color(style)
-    return f'{st}{str}{bcolors._0}'
+    return f"{st}{str}{bcolors._0}"
 
 
-def cprint(str: str, *styles: str, end='\n'):
+def cprint(str: str, *styles: str, end="\n"):
     """
     Prints a string with color.
 
@@ -440,15 +532,22 @@ def cprint(str: str, *styles: str, end='\n'):
         *styles (str): The styles to apply to the string.
     """
     for st in styles:
-        str = f'{__get_color(st)}{str}'
+        str = f"{__get_color(st)}{str}"
     str += bcolors._0
     print(str, end=end)
 
 
-def print_symbols(*symbol: str | Enum, padding: int = 1, allign: int | str = 0, auto_trailing: bool = True, colors: list | Callable = []):
+def print_symbols(
+    *symbol: str | Enum,
+    padding: int = 1,
+    allign: int | str = 0,
+    auto_trailing: bool = True,
+    colors: list | Callable = [],
+):
     # Split symbols by lines
-    symbols = [(s if type(s) is str else s.VALUE).split('\n')
-               for i, s in enumerate(symbol)]
+    symbols = [
+        (s if s.isinstance(str) else s.VALUE).split("\n") for i, s in enumerate(symbol)
+    ]
     max_height = 0
     max_widths = []
 
@@ -465,21 +564,39 @@ def print_symbols(*symbol: str | Enum, padding: int = 1, allign: int | str = 0, 
             for j, line in enumerate(s):
                 s[j] = line.ljust(max_widths[i])
         # Allign symbols
-        if allign != 0 and allign != 'top' and height < max_height:
-            loop((max_height - height) // 2 if allign == 1 or allign == 'center' else max_height - height - 0,
-                 lambda: s.insert(0, ' ' * max_widths[i]))
+        if allign != 0 and allign != "top" and height < max_height:
+            loop(
+                (max_height - height) // 2
+                if allign == 1 or allign == "center"
+                else max_height - height - 0,
+                lambda: s.insert(0, " " * max_widths[i]),
+            )
 
     # Build new string, then print
     return propogate(
-        loop(max_height, lambda _i: ''.join(
-            loop(len(symbols),
-             lambda _j: cstr(
-                (symbols[_j][_i]
-                 if _i < len(symbols[_j]) else ' ' * max_widths[_j]) + ' ' * padding,
-                colors[_j] if not callable(colors) and len(colors) > _j else
-                colors(symbol[_j]) if callable(colors) else None)))),
-        lambda s: '\n'.join(s[:-1]).rstrip(),
-        print
+        loop(
+            max_height,
+            lambda _i: "".join(
+                loop(
+                    len(symbols),
+                    lambda _j: cstr(
+                        (
+                            symbols[_j][_i]
+                            if _i < len(symbols[_j])
+                            else " " * max_widths[_j]
+                        )
+                        + " " * padding,
+                        colors[_j]
+                        if not callable(colors) and len(colors) > _j
+                        else colors(symbol[_j])
+                        if callable(colors)
+                        else None,
+                    ),
+                )
+            ),
+        ),
+        lambda s: "\n".join(s[:-1]).rstrip(),
+        print,
     )
 
 
