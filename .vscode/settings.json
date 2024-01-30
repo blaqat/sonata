@@ -6,8 +6,8 @@
        "editor.codeActionsOnSave": {
               "source.organizeImports.biome": "explicit"
        },
-       "workbench.colorTheme": "Vim Dark Soft",
-       "editor.fontFamily": "Liga mononoki, Monolisa Nerd Font Mono, Jetbrains Mono",
+       "workbench.colorTheme": "Default Dark Modern",
+       "editor.fontFamily": "Liga mononoki, Monolisa Nerd Font Mono, Jetbrains Mono, Comic Code, Comic Mono",
        "editor.fontSize": 13,
        "shifty.shiftInterval.shiftFontFamilyIntervalMin": 0,
        "shifty.shiftInterval.shiftColorThemeIntervalMin": 0,

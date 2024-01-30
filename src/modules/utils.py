@@ -11,6 +11,9 @@ from typing import Any, Callable, Union, Iterable
 from os import getenv
 from dotenv import load_dotenv
 
+import re
+
+
 load_dotenv()
 
 
@@ -541,7 +544,6 @@ def print_symbols(
     *symbol: str | Enum,
     padding: int = 1,
     allign: int | str = 0,
-    auto_trailing: bool = True,
     colors: list | Callable = [],
 ):
     # Split symbols by lines
@@ -619,3 +621,13 @@ def picker(choices: list = [], delay_count=0, reverse_on_end: bool = False):
         return choices[last]
 
     return pick
+
+
+def inside(a, b):
+    pattern = re.compile(re.escape(a), re.IGNORECASE)
+    return pattern.search(b) is not None
+
+
+def find_matches(a, b):
+    pattern = re.compile(re.escape(a), re.IGNORECASE)
+    return pattern.findall(b)
