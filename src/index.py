@@ -13,11 +13,20 @@ P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 _____________________________________________________                                                         
 """
 
-from modules.utils import cprint, check_inside, cstr, settings, find_matches, inside
-from modules.AI_manager import PromptManager, ai, AIManager, AI_Type, AIError
+from modules.utils import (
+    cprint,
+    check_inside,
+    cstr,
+    settings,
+    find_matches,
+    inside,
+    runner,
+)
+from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error
 import re
 import discord
 from discord.ext import commands
+import openai
 import google.generativeai as genai
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
@@ -32,7 +41,6 @@ from mistralai.models.chat_completion import ChatMessage
 # User {2}: "{1}"
 # sonata:"""
 
-
 PROMPT = """You're Discord bot 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
 For context, the chat so far is summarized as: {0}
@@ -40,8 +48,38 @@ Here's the user and message you're responding to:
 {2}: "{1}"
 sonata:"""
 
+P = PromptManager(prompt_name="Instructions", prompt_text=lambda *a: PROMPT.format(*a))
+P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
-@ai(
+SonataManager, M = AI_Manager.init(
+    P,
+    "OpenAI",
+    (settings.OPEN_AI, "gpt-3.5-turbo-1106", 0.4, 2500),
+    summarize_chat=True,
+    name="sonata",
+)
+
+
+@M.ai(
+    client=openai.ChatCompletion,
+    default=True,
+    setup=lambda _, key: setattr(openai, "api_key", key),
+    model="gpt-3.5-turbo-1106",
+)
+def OpenAI(client, prompt, model, config):
+    return (
+        client.create(
+            model=model,
+            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+            max_tokens=config.get("max_tokens", 1250),
+            temperature=config.get("temp") or config.get("temperature") or 0,
+        )
+        .choices[0]
+        .message.content
+    )
+
+
+@M.ai(
     genai.GenerativeModel,
     setup=lambda _, key: genai.configure(api_key=key),
     model="gemini-pro",
@@ -56,10 +94,10 @@ def Gemini(client, prompt, model, config):
         ).generate_content(prompt)
         return r.text
     except Exception as _:
-        raise AIError(r.prompt_feedback)
+        raise AI_Error(r.prompt_feedback)
 
 
-@ai(
+@M.ai(
     None,
     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
     model="mistral-medium",
@@ -80,36 +118,23 @@ def Mistral(client, prompt, model, _):
     )
 
 
-P = PromptManager(prompt_name="Instructions", prompt_text=lambda *a: PROMPT.format(*a))
-
-
-P.add(
-    "SummarizeChat",
-    lambda chat_log: f"""CHAT LOG SUMMARY: Summarize the chat log in as little tokens as possible.
+@M.prompt
+def SummarizeChat(chat_log):
+    return f"""Summarize the chat log in as little tokens as possible.
 - Mention people by name or nickname.
 - Maintain chronological order.
 - Start response with 'CHAT LOG SUMMARY'
-Chat Log: {chat_log}"
-""",
-)
+Chat Log: {chat_log}
+"""
 
-P.add(
-    "ExplainBlockReasoning",
-    lambda r, user: f"""
-You blocked the previous message. I will give you the prompt_feedback for the previous message.
+
+@M.prompt
+def ExplainBlockReasoning(r, user):
+    return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
 Explain why you blocked the previous message in a brief conversational tone to the user {user}
 Here is the prompt_feedback: {r}
-""",
-)
+"""
 
-P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
-SonataManager = AIManager(
-    P,
-    "OpenAI",
-    (settings.OPEN_AI, "gpt-3.5-turbo-1106", 0.4, 2500),
-    summarize_chat=False,
-    name="sonata",
-)
 
 AI_Type.initalize(
     ("OpenAI", settings.OPEN_AI),
@@ -118,7 +143,7 @@ AI_Type.initalize(
 )
 
 SonataManager.chat.max_chats = 35
-SonataManager.remember(
+M.remember(
     "chat",
     {
         "cunt",
@@ -132,38 +157,34 @@ SonataManager.remember(
     inner="banned_words",
 )
 
-SonataManager.effect(
-    "chat",
-    "set",
-    lambda _, chat_id, message_type, author, message: (
-        chat_id,
-        message_type,
-        author,
-        censor_message(message),
-    ),
-)
-
-CHANNEL_BLACK_LIST = {1175907292072398858, 724158738138660894, 725170957206945859}
-SonataManager.remember(
+M.remember(
     "chat",
     {1175907292072398858, 724158738138660894, 725170957206945859},
-    inner="blacklist",
+    inner="black_list",
+    validate=lambda M, id: id in M["black_list"],
+    blacklist=lambda M, id: M["black_list"].add(id),
 )
 
-SonataManager.remember(
+M.remember(
     "GOD",
-    [
+    {
         settings.GOD,
         "150398769651777538",
         "148471246680621057",
         "334039742205132800",
         "497844474043432961",
         "143866772360134656",
-    ],
+    },
+    u=lambda M, id: runner(M["value"], "add", str(id)),
+    s=lambda M, new: M["value"].append(new),
+    r=lambda M, remove: M["value"].remove(remove),
+    verify=lambda M, id: id in M["value"],
 )
-SonataManager.add("GOD", "update", lambda M, check: check in M["value"])
-SonataManager.add("GOD", "set", lambda M, new: M["value"].append(new))
-SonataManager.add("GOD", "remove", lambda M, remove: M["value"].remove(remove))
+
+
+@M.effect("chat", "set")
+def censor_chat(_, chat_id, message_type, author, message):
+    return (chat_id, message_type, author, censor_message(message))
 
 
 class Sonata(commands.Bot):
@@ -178,6 +199,8 @@ class Sonata(commands.Bot):
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
         global COUNT
+        if message.author.bot == True and message.author.name != "sonata":
+            return
         _guild_name = message.guild.name
         _channel_name = message.channel.name
         _name = (
@@ -188,8 +211,11 @@ class Sonata(commands.Bot):
         if _name and _name == "None" or not _name:
             _name = message.author.name
 
-        if message.channel.id in CHANNEL_BLACK_LIST:
+        if SonataManager.do("chat", "validate", message.channel.id):
             return
+
+        # if message.channel.id in CHANNEL_BLACK_LIST:
+        #     return
 
         if _guild_name != self.current_guild:
             cprint("\n" + _guild_name.lower(), "purple", "_")
@@ -202,7 +228,7 @@ class Sonata(commands.Bot):
 
         print(
             "  {0}: {1}".format(
-                cstr(str=_name, style="cyan"),
+                cstr(str=get_full_name(message.author), style="cyan"),
                 censor_message(message.content.replace("\n", "\n\t")),
             )
         )
@@ -212,7 +238,7 @@ class Sonata(commands.Bot):
         )
 
         memory_text = memory_text.strip()
-        if message.content[0] != "$":
+        if len(message.content) > 1 and message.content[0] != "$":
             SonataManager.chat.send(
                 message.channel.id,
                 "User",
@@ -222,7 +248,11 @@ class Sonata(commands.Bot):
 
         memory_text += f": {message.content}"
         # TODO: Add a self-command system for bot to recursively call functions on itself
-        if message.content[0] == "$" and message.author.name == "sonata":
+        if (
+            len(message.content) > 1
+            and message.content[0] == "$"
+            and message.author.name == SonataManager.name
+        ):
             cprint("COMMAND " + message.content, "cyan")
         await self.process_commands(message)
 
@@ -246,7 +276,6 @@ def get_full_name(author):
 
 @sonata.command(name="g", description="Ask a question using Google Gemini AI.")
 async def google_ai_question(ctx, *message):
-    print("GOOGLE AI QUESTION")
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)

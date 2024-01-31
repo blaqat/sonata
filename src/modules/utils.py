@@ -631,3 +631,15 @@ def inside(a, b):
 def find_matches(a, b):
     pattern = re.compile(re.escape(a), re.IGNORECASE)
     return pattern.findall(b)
+
+
+def setter(thing, key, value):
+    thing[key] = value
+    return thing
+
+
+def runner(thing, key, *args, r=False, **kwargs):
+    x = thing.__getattribute__(key)(*args, **kwargs)
+    if r:
+        return x
+    return thing

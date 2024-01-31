@@ -6,7 +6,7 @@ The module includes the following classes and functions:
 - count_tokens(prompt): Counts the number of tokens in a given prompt.
 - _get_finish_reason(choice, model): Gets the finish reason for a given choice based on the model.
 - generic_prompt_ai_stream(prompt_text, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Generates AI-generated responses in a streaming manner.
-- generic_prompt_ai(prompt_text, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Uses the OpenAI GPT-4 API to generate a response to the given prompt text.
+- gemeric_ai_prompt(prompt_text, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Uses the OpenAI GPT-4 API to generate a response to the given prompt text.
 - PromptManager: A class used to manage prompts.
 
 The PromptManager class provides the following methods:
@@ -19,14 +19,13 @@ The PromptManager class provides the following methods:
 - stream(prompt: str, *prompt_args, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Generates a stream of AI-generated text based on the given prompt.
 """
 
+from os import close
 from typing import Any, Callable, Dict, List, Tuple, Union
-import openai
 import copy
+from modules.utils import setter
 
-chat = openai.ChatCompletion
 
 AI_TYPES = {"default": None}
-# TODO: General Clean Up and Renaming Classes
 
 
 class AI_Type:
@@ -41,7 +40,7 @@ class AI_Type:
                 self.config[key] = value
 
     def setup(self, *args):
-        print(self, *args)
+        # print(self, *args)
         if self.can_start:
             self.init(self, *args)
 
@@ -61,47 +60,11 @@ class AI_Type:
                 _ai.setup(arg[1])
 
 
-class AIError(Exception):
+class AI_Error(Exception):
     pass
 
 
-def ai(client=None, setup=Callable, default=False, **kwargs):
-    def decorator(func):
-        name = func.__name__
-        print(client, func, kwargs)
-        new_ai = AI_Type(client, func, **kwargs)
-        if setup is not None:
-            new_ai.init = setup
-            new_ai.can_start = True
-
-        AI_TYPES[name] = new_ai
-        if default:
-            AI_TYPES["default"] = new_ai
-        return new_ai
-
-    return decorator
-
-
-@ai(
-    client=openai.ChatCompletion,
-    default=True,
-    setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-3.5-turbo-1106",
-)
-def OpenAI(client, prompt, model, config):
-    return (
-        client.create(
-            model=model,
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-            max_tokens=config.get("max_tokens", 1250),
-            temperature=config.get("temp") or config.get("temperature") or 0,
-        )
-        .choices[0]
-        .message.content
-    )
-
-
-def generic_prompt_ai(ai_type: AI_Type | str, prompt_text, model=None, config={}):
+def gemeric_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
     if isinstance(ai_type, str):
         ai_type = AI_TYPES.get(ai_type, None)
     ai_type = ai_type or AI_TYPES["default"]
@@ -109,13 +72,10 @@ def generic_prompt_ai(ai_type: AI_Type | str, prompt_text, model=None, config={}
     config.update(ai_config)
     model = model or config.get("model", None)
     if model is None:
-        # Warn user that model is not specified
-        pass
+        raise AI_Error("No model specified")
     return ai_type.func(ai_type.client, prompt_text, model, config)
 
 
-# TODO: Add system for @higher-order function decotrators for
-# AI_Type, effects, stored memory, and prompt_manager
 class PromptManager:
     def __init__(
         self,
@@ -165,7 +125,7 @@ class PromptManager:
         if prompt in self.prompts:
             prompt = self.get(prompt, *prompt_args)
 
-        return generic_prompt_ai(AI, str(prompt), model, kwargs)
+        return gemeric_ai_prompt(AI, str(prompt), model, kwargs)
 
 
 def _config_builder(AIManager):
@@ -190,7 +150,7 @@ def _config_builder(AIManager):
 
         def setup(kelf):
             _setup = kelf.get("setup")
-            print(_setup, self.get("config"))
+            # print(_setup, self.get("config"))
             AI_Type.initalize(tuple([*_setup]))
 
     return Config
@@ -219,9 +179,10 @@ def _chat_builder(aiman, prompt_manager):
             self.set("chat", id, message_type, author, message)
             # chat.append((message_type, author, message))
             if len(chat) > kelf.max_chats and self.config.get("summarize"):
-                summmary = self.do("chat", "summarize", id)
-                kelf.delete()
-                kelf.send(id, "System", "PreviousChatSummary", summmary)
+                summary = self.do("chat", "summarize", id)
+                print(summary)
+                kelf.delete(id)
+                kelf.send(id, "System", "PreviousChatSummary", summary)
 
         def request(
             kelf,
@@ -299,7 +260,142 @@ def _chat_builder(aiman, prompt_manager):
     return Chat
 
 
-class AIManager:
+class AI_Manager:
+    class M:  # Higher order function alternatives
+        _a = None
+        _p = None
+        m = None
+
+        @classmethod
+        def do(cls, *args, **kwargs):
+            return cls._a.do(*args, **kwargs)
+
+        @classmethod
+        def get(cls, *args, **kwargs):
+            return cls._a.get(*args, **kwargs)
+
+        @classmethod
+        def set(cls, *args, **kwargs):
+            return cls._a.set(*args, **kwargs)
+
+        @classmethod
+        def update(cls, *args, **kwargs):
+            return cls._a.update(*args, **kwargs)
+
+        @classmethod
+        def reset(cls, *args, **kwargs):
+            return cls._a.reset(*args, **kwargs)
+
+        @classmethod
+        def add(cls, *args, **kwargs):
+            return cls._a.add(*args, **kwargs)
+
+        @classmethod
+        def forget(cls, *args, **kwargs):
+            return cls._a.forget(*args, **kwargs)
+
+        @classmethod
+        def remember(cls, *args, **kwargs):
+            return cls._a.remember(*args, **kwargs)
+
+        @classmethod
+        def init(cls, aim):
+            cls._a = aim
+            cls._p = aim.prompt_manager
+            cls.m = aim.memory
+
+        @classmethod
+        def ai(cls, client=None, setup=Callable, default=False, **kwargs):
+            def decorator(func):
+                name = func.__name__
+                # print(client, func, kwargs)
+                new_ai = AI_Type(client, func, **kwargs)
+                if setup is not None:
+                    new_ai.init = setup
+                    new_ai.can_start = True
+                    AI_TYPES[name] = new_ai
+                if default:
+                    AI_TYPES["default"] = new_ai
+                    return new_ai
+
+            return decorator
+
+        @classmethod
+        def prompt(cls, func, prompt_name=None):
+            if prompt_name is None:
+                prompt_name = func.__name__
+            cls._p.add(prompt_name, func)
+            return func
+
+        @classmethod
+        def effect(cls, key, event_name=None, prepend=True):
+            def decorator(hook_func):
+                nonlocal key, event_name, prepend
+                cls._a.effect(key, event_name, hook_func, prepend)
+                return hook_func
+
+            if not event_name:
+                # Function name should be "key_eventname"
+                name = key.__name__.split("_")
+                event_name, k = name[0], name[1]
+                print(k, event_name)
+                cls._a.effect(k, event_name, key)
+                return key
+
+            return decorator
+
+        @classmethod
+        def event(cls, key, event_name=None):
+            def decorator(func):
+                nonlocal key, event_name
+                cls._a.add(key, event_name, func)
+                return func
+
+            if not event_name:
+                # Function name should be "key_eventname"
+                name = key.__name__.split("_")
+                event_name, k = name[0], name[1]
+                cls._a.add(k, event_name, key)
+                return key
+
+            return decorator
+
+        @classmethod
+        def mem(cls, v, key=None, inner=False, u=None, s=None, r=None, **kwargs):
+            def decorator(func):
+                nonlocal key, v, inner, u, s, r
+                event_name = func.__name__
+
+                if key is None:
+                    split = event_name.split("_")
+                    event_name, key = split[0], split[1]
+
+                if inner is True:
+                    split = event_name.split("_")
+                    event_name, inner = split[0], split[1]
+
+                cls._a.remember(
+                    key,
+                    v,
+                    update_func=func if event_name == "update" else u,
+                    set_func=func if event_name == "set" or event_name == "add" else s,
+                    reset_func=func if event_name == "reset" else r,
+                    inner=inner,
+                    **kwargs,
+                )
+
+                if event_name not in ["update", "set", "reset", "add"]:
+                    cls._a.add(key, event_name, func)
+
+                return func
+
+            return decorator
+
+    @classmethod
+    def init(cls, *args, **kwargs):
+        t = cls(*args, **kwargs)
+        return t, t.M
+
     def __init__(
         self,
         prompt_manager,
@@ -323,7 +419,7 @@ class AIManager:
         if has_instructions is not True:
             prompt_manager.add(
                 "Instructions",
-                lambda history,
+                lambda _,
                 message,
                 nick: f"I am a User you are an AI Assisant, Respond to my messages to aid me. My message: {message}",
             )
@@ -335,6 +431,7 @@ class AIManager:
 
         self.prompt_manager = prompt_manager
 
+        self.M.init(self)
         self.chat = Chat()
 
         self.add(
@@ -351,18 +448,24 @@ class AIManager:
         self.add(
             "chat",
             "reset",
-            lambda M, chat_id: setattr(
-                M["value"][chat_id], copy.deepcopy(M["default_value"])
+            lambda M, chat_id: setter(
+                M["value"], chat_id, copy.deepcopy(M["default_value"])
             ),
         )
+
+        def chat_set(M, chat_id, message_type, author, message):
+            M["value"][chat_id].append((message_type, author, message))
+            return (chat_id, message_type, author, message)
 
         self.add(
             "chat",
             "set",
-            lambda M, chat_id, message_type, author, message: M["value"][
-                chat_id
-            ].append((message_type, author, message)),
+            chat_set,
+            # lambda M, chat_id, message_type, author, message: M["value"][
+            #     chat_id
+            # ].append((message_type, author, message)),
         )
+        self.add("chat", "default_value", [])
 
         def update_config(M, *merge, **kvpairs):
             M["value"].update(*merge)
@@ -379,7 +482,7 @@ class AIManager:
         self.set("config", "summarize", summarize_chat)
         self.config.merge(config)
         self.config.set(AI=default_AI, setup=default_args, **config)
-        print(self.memory["config"])
+        # print(self.memory["config"])
         self.config.setup()
 
     def __init_memoi(self, memoi):
@@ -389,13 +492,13 @@ class AIManager:
         for key, value in memoi.items():
             self.remember(key, value)
 
-    def __default_update(self, M, new_value, *args, **kwargs):
+    def __default_update(self, _, new_value):
         return new_value
 
-    def __default_set(self, M, new_value, *args, **kwargs):
+    def __default_set(self, M, new_value):
         M["value"] = new_value
 
-    def __default_reset(self, M, *args, **kwargs):
+    def __default_reset(self, M):
         M["value"] = copy.deepcopy(M["default_value"])
 
     def remember(
@@ -406,12 +509,15 @@ class AIManager:
         set_func=None,
         reset_func=None,
         inner=False,
+        **kwargs,
     ):
         if inner:
             m = self.memory.get(key)
             if not m:
                 raise KeyError(f"Key {key} not found in ChatBot memory")
             m[inner] = default_value
+            for e, f in kwargs.items():
+                self.add(key, e, f)
             return
 
         self.memory[key] = {
@@ -422,9 +528,15 @@ class AIManager:
             "reset": reset_func or self.__default_reset,
         }
 
-    def add(self, key, event_name, event_func):
+        for e, f in kwargs.items():
+            self.add(key, e, f)
+
+    def add(self, key, event_name, event_func, **kwargs):
         if key in self.memory:
             self.memory[key][event_name] = event_func
+
+        for e, f in kwargs.items():
+            self.add(key, e, f)
 
     def do(self, key, event_name, *args, **kwargs):
         if key in self.memory:
@@ -483,7 +595,7 @@ class AIManager:
                 nonlocal hook_func, key
                 if isinstance(hook_func, str):
                     hook_func = self.memory[key][hook_func]
-                hooked_over(M, *args, **kwargs)
+                args = hooked_over(M, *args, **kwargs)
                 return hook_func(M, *args, **kwargs)
 
         self.add(key, event_name, new_function)
