@@ -22,6 +22,8 @@ The PromptManager class provides the following methods:
 from os import close
 from typing import Any, Callable, Dict, List, Tuple, Union
 import copy
+
+from discord.ext.commands import errors
 from modules.utils import setter
 
 
@@ -121,15 +123,15 @@ class PromptManager:
                 f"Cannot add prompts from object of type {type(prompt_manager)}"
             )
 
-    def send(self, prompt, *prompt_args, model=None, AI=None, **kwargs):
+    def send(self, prompt, *prompt_args, model=None, AI=None, config={}):
         if prompt in self.prompts:
             prompt = self.get(prompt, *prompt_args)
 
-        return gemeric_ai_prompt(AI, str(prompt), model, kwargs)
+        return gemeric_ai_prompt(AI, str(prompt), model, config)
 
 
-def _config_builder(AIManager):
-    self = AIManager
+def _config_builder(aiman):
+    self = aiman
 
     class Config:
         def get(kelf, name: str, *default_to):
@@ -156,7 +158,7 @@ def _config_builder(AIManager):
     return Config
 
 
-def _chat_builder(aiman, prompt_manager):
+def _chat_builder(aiman, prompt_manager: PromptManager):
     self = aiman
 
     class Chat:
@@ -178,9 +180,8 @@ def _chat_builder(aiman, prompt_manager):
             chat = kelf.get_chat(id)
             self.set("chat", id, message_type, author, message)
             # chat.append((message_type, author, message))
-            if len(chat) > kelf.max_chats and self.config.get("summarize"):
+            if len(chat) > kelf.max_chats + 1 and self.config.get("summarize"):
                 summary = self.do("chat", "summarize", id)
-                print(summary)
                 kelf.delete(id)
                 kelf.send(id, "System", "PreviousChatSummary", summary)
 
@@ -193,19 +194,31 @@ def _chat_builder(aiman, prompt_manager):
             error_prompt=None,
             **config,
         ):
+            c = self.get("config")
+            c.update(config)
+            c["history"] = kelf.get_history(id)
             try:
                 prompt = prompt_manager.get(
                     "Instructions", kelf.get_history(id), message, *args
                 )
 
-                response = prompt_manager.send(
-                    prompt, kelf.get_history(id), message, *args, AI=AI, **config
+                # response = prompt_manager.send(
+                #     prompt, kelf.get_history(id), message, *args, AI=AI, config=c
+                # )
+                #
+                response = self.do(
+                    "chat",
+                    "request",
+                    prompt,
+                    kelf.get_history(id),
+                    message,
+                    *args,
+                    AI=AI,
+                    config=c,
                 )
-
-                # response = "AAAAAAAAAAAAAAAAAA"
             except Exception as e:
                 if error_prompt is not None:
-                    response = prompt_manager.send(error_prompt(e), AI=AI, **config)
+                    response = prompt_manager.send(error_prompt(e), AI=AI, config=c)
                 else:
                     response = f"Response failed: {e}"
             finally:
@@ -338,8 +351,24 @@ class AI_Manager:
                 # Function name should be "key_eventname"
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
-                print(k, event_name)
+                # print(k, event_name)
                 cls._a.effect(k, event_name, key)
+                return key
+
+            return decorator
+
+        @classmethod
+        def effect_post(cls, key, event_name=None, prepend=False):
+            def decorator(hook_func):
+                nonlocal key, event_name, prepend
+                cls._a.effect(key, event_name, hook_func, prepend)
+                return hook_func
+
+            if not event_name:
+                name = key.__name__.split("_")
+                event_name, k = name[0], name[1]
+                # print(k, event_name)
+                cls._a.effect(k, event_name, key, prepend)
                 return key
 
             return decorator
@@ -392,7 +421,10 @@ class AI_Manager:
             return decorator
 
     @classmethod
-    def init(cls, *args, **kwargs):
+    def init(cls, *args, lazy=False, **kwargs):
+        if lazy:
+            l = cls(PromptManager(), *args, **kwargs, name="LAZY")
+            return l, l.M, l.prompt_manager
         t = cls(*args, **kwargs)
         return t, t.M
 
@@ -413,25 +445,29 @@ class AI_Manager:
         self.__init_memoi(memoi)
 
         Chat = _chat_builder(self, prompt_manager)
-        has_instructions = prompt_manager.exists(
-            "Instructions"
-        ) or prompt_manager.exists("SystemInstructions")
-        if has_instructions is not True:
-            prompt_manager.add(
-                "Instructions",
-                lambda _,
-                message,
-                nick: f"I am a User you are an AI Assisant, Respond to my messages to aid me. My message: {message}",
-            )
+        if name != "LAZY":
+            has_instructions = prompt_manager.exists(
+                "Instructions"
+            ) or prompt_manager.exists("SystemInstructions")
+            if has_instructions is not True:
+                prompt_manager.add(
+                    "Instructions",
+                    lambda _,
+                    message,
+                    nick: f"I am a User you are an AI Assisant, Respond to my messages to aid me. My message: {message}",
+                )
 
-        if not prompt_manager.exists("SummarizeChat"):
-            prompt_manager.add(
-                "SummarizeChat", lambda chat_log: "Summarize the chatlog: " + chat_log
-            )
+            if not prompt_manager.exists("SummarizeChat"):
+                prompt_manager.add(
+                    "SummarizeChat",
+                    lambda chat_log: "Summarize the chatlog: " + chat_log,
+                )
 
-        self.prompt_manager = prompt_manager
+        self.prompt_manager: PromptManager = prompt_manager
 
         self.M.init(self)
+        # TODO: Remove chat from base memory, making it more of an attachment
+        # This will allow for the base init to be lighter and more flexible
         self.chat = Chat()
 
         self.add(
@@ -441,8 +477,9 @@ class AI_Manager:
                 "SummarizeChat",
                 M["value"][id],
                 AI=self.config.get("AI"),
-                **self.memory["config"],
+                config=self.memory["config"],
             ),
+            ignore_lazy=True,
         )
 
         self.add(
@@ -451,6 +488,7 @@ class AI_Manager:
             lambda M, chat_id: setter(
                 M["value"], chat_id, copy.deepcopy(M["default_value"])
             ),
+            ignore_lazy=True,
         )
 
         def chat_set(M, chat_id, message_type, author, message):
@@ -461,11 +499,16 @@ class AI_Manager:
             "chat",
             "set",
             chat_set,
-            # lambda M, chat_id, message_type, author, message: M["value"][
-            #     chat_id
-            # ].append((message_type, author, message)),
+            ignore_lazy=True,
         )
-        self.add("chat", "default_value", [])
+        self.add("chat", "default_value", [], ignore_lazy=True)
+
+        self.add(
+            "chat",
+            "request",
+            lambda _, *args, **kwargs: self.prompt_manager.send(*args, **kwargs),
+            ignore_lazy=True,
+        )
 
         def update_config(M, *merge, **kvpairs):
             M["value"].update(*merge)
@@ -476,21 +519,43 @@ class AI_Manager:
         def set_config(M, key, value):
             M["value"][key] = value
 
-        self.add("config", "update", update_config)
-        self.add("config", "set", set_config)
+        self.add("config", "update", update_config, ignore_lazy=True)
+        self.add("config", "set", set_config, ignore_lazy=True)
         # self.memory["config"]["summarize"] = summarize_chat
         self.set("config", "summarize", summarize_chat)
         self.config.merge(config)
         self.config.set(AI=default_AI, setup=default_args, **config)
         # print(self.memory["config"])
-        self.config.setup()
+        # self.config.setup()
+
+    @classmethod
+    def extend(cls, A, *l):
+        for LM in l:
+            try:
+                L = LM.L
+            except AttributeError:
+                print(f"Could not extend {A.name} with {LM}")
+                continue
+            for key, value in L.memory.items():
+                if "lazy" in value:
+                    check_for = value["lazy"]
+                    if key in A.memory:
+                        # A.memory[key].update(value)
+                        for k in check_for:
+                            A.memory[key][k] = value[k]
+                    else:
+                        A.memory[key] = value
+
+            A.prompt_manager.add_prompts_from(L.prompt_manager)
+
+            del L
 
     def __init_memoi(self, memoi):
         memoi["chat"] = dict()
         memoi["config"] = dict()
         self.memory = dict()
         for key, value in memoi.items():
-            self.remember(key, value)
+            self.remember(key, value, ignore_lazy=True)
 
     def __default_update(self, _, new_value):
         return new_value
@@ -509,13 +574,18 @@ class AI_Manager:
         set_func=None,
         reset_func=None,
         inner=False,
+        ignore_lazy=False,
         **kwargs,
     ):
         if inner:
             m = self.memory.get(key)
             if not m:
-                raise KeyError(f"Key {key} not found in ChatBot memory")
+                raise KeyError(f"Key {key} not found in {self.name}'s memory")
             m[inner] = default_value
+            if self.name == "LAZY" and not ignore_lazy:
+                if "lazy" not in m:
+                    m["lazy"] = set()
+                m["lazy"].add(inner)
             for e, f in kwargs.items():
                 self.add(key, e, f)
             return
@@ -528,11 +598,17 @@ class AI_Manager:
             "reset": reset_func or self.__default_reset,
         }
 
+        if self.name == "LAZY" and not ignore_lazy:
+            self.memory[key]["lazy"] = set()
         for e, f in kwargs.items():
             self.add(key, e, f)
 
-    def add(self, key, event_name, event_func, **kwargs):
+    def add(self, key, event_name, event_func, ignore_lazy=False, **kwargs):
         if key in self.memory:
+            if self.name == "LAZY" and not ignore_lazy:
+                if "lazy" not in self.memory[key]:
+                    self.memory[key]["lazy"] = set()
+                self.memory[key]["lazy"].add(event_name)
             self.memory[key][event_name] = event_func
 
         for e, f in kwargs.items():
@@ -558,7 +634,9 @@ class AI_Manager:
                 return
             self.memory[key]["set"](self.memory[key], *args, **kwargs)
 
-    def get(self, key, val="value", default=None):
+    def get(self, key, val="value", inner=True, default=None):
+        if not inner:
+            return self.memory.get(key, default)
         if not key in self.memory:
             print(f"Key {key} not found in ChatBot memory")
             return default
@@ -596,6 +674,8 @@ class AI_Manager:
                 if isinstance(hook_func, str):
                     hook_func = self.memory[key][hook_func]
                 args = hooked_over(M, *args, **kwargs)
-                return hook_func(M, *args, **kwargs)
+                if isinstance(args, tuple) or isinstance(args, list):
+                    return hook_func(M, *args, **kwargs)
+                return hook_func(M, args, **kwargs)
 
         self.add(key, event_name, new_function)

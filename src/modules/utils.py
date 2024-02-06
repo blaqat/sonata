@@ -12,7 +12,22 @@ from os import getenv
 from dotenv import load_dotenv
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 
+
+# def run_async_coroutine(coroutine):
+#     loop = asyncio.new_event_loop()
+#     asyncio.set_event_loop(loop)
+#     result = loop.run_until_complete(coroutine)
+#     loop.close()
+#     return result
+#
+#
+# def execute(func, *args, **kwargs):
+#     with ThreadPoolExecutor() as executor:
+#         future = executor.submit(run_async_coroutine, func(*args, **kwargs))
+#         return future.result()
+#
 
 load_dotenv()
 

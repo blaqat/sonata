@@ -18,9 +18,8 @@ from modules.utils import (
     check_inside,
     cstr,
     settings,
-    find_matches,
-    inside,
     runner,
+    setter,
 )
 from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error
 import re
@@ -30,6 +29,7 @@ import openai
 import google.generativeai as genai
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
+from modules.plugins import PLUGINS
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -43,21 +43,28 @@ from mistralai.models.chat_completion import ChatMessage
 
 PROMPT = """You're Discord bot 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
+You also have the ability to call commands on yourself for more information or to perform actions. You can use the following commands to get more information or perform actions. Here are the list of commands you have access to: talk, g, and laugh.
+To call a command on yourself prefix your message with $<command name> and the rest of your message will be the arguments to that command.
 For context, the chat so far is summarized as: {0}
 Here's the user and message you're responding to:
-{2}: "{1}"
+{2}: {1}
 sonata:"""
 
 P = PromptManager(prompt_name="Instructions", prompt_text=lambda *a: PROMPT.format(*a))
 P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
-SonataManager, M = AI_Manager.init(
+Sonata, M = AI_Manager.init(
     P,
     "OpenAI",
-    (settings.OPEN_AI, "gpt-3.5-turbo-1106", 0.4, 2500),
+    (settings.OPEN_AI, "gpt-4-turbo-preview", 0.4, 2500),
     summarize_chat=True,
     name="sonata",
 )
+
+AI_Manager.extend(Sonata, *PLUGINS)
+
+Sonata.config.set(temp=0.8)
+Sonata.config.setup()
 
 
 @M.ai(
@@ -121,9 +128,9 @@ def Mistral(client, prompt, model, _):
 @M.prompt
 def SummarizeChat(chat_log):
     return f"""Summarize the chat log in as little tokens as possible.
+Use the following guidelines:
 - Mention people by name or nickname.
-- Maintain chronological order.
-- Start response with 'CHAT LOG SUMMARY'
+- Don't just copy and paste the chat log. Summarize/paraphrase it.
 Chat Log: {chat_log}
 """
 
@@ -142,24 +149,52 @@ AI_Type.initalize(
     ("Mistral", settings.MISTRAL_AI),
 )
 
-SonataManager.chat.max_chats = 35
+Sonata.chat.max_chats = 35
 M.remember(
     "chat",
     {
+        "jerking it",
+        "jerking off",
         "cunt",
-        "fuck",
+        "cock",
+        "balls",
+        "aggin",
+        "reggin",
         "nigger",
         "rape",
+        "tit",
+        "tiddies",
+        "penis",
+        "boob",
+        "puss",
+        "nig",
         "kys",
-        "kill your",
-        "faggot",
+        "retard",
+        "sex",
+        "porn",
+        "kill yourself",
+        "kill your self",
+        "black people",
+        "dick",
+        "blow in from",
+        "fuck me",
+        "fuck you",
+        "pussy",
+        "kill themself",
+        "kiya self",
+        "shut the fuck up",
+        "stfu",
+        "stupid",
+        "suck my",
+        "suck me",
+        "bitch",
     },
     inner="banned_words",
 )
 
 M.remember(
     "chat",
-    {1175907292072398858, 724158738138660894, 725170957206945859},
+    {743280190452400159, 1175907292072398858, 724158738138660894, 725170957206945859},
     inner="black_list",
     validate=lambda M, id: id in M["black_list"],
     blacklist=lambda M, id: M["black_list"].add(id),
@@ -187,7 +222,7 @@ def censor_chat(_, chat_id, message_type, author, message):
     return (chat_id, message_type, author, censor_message(message))
 
 
-class Sonata(commands.Bot):
+class SonataClient(commands.Bot):
     current_guild = ""
     current_channel = ""
 
@@ -211,11 +246,8 @@ class Sonata(commands.Bot):
         if _name and _name == "None" or not _name:
             _name = message.author.name
 
-        if SonataManager.do("chat", "validate", message.channel.id):
+        if Sonata.do("chat", "validate", message.channel.id):
             return
-
-        # if message.channel.id in CHANNEL_BLACK_LIST:
-        #     return
 
         if _guild_name != self.current_guild:
             cprint("\n" + _guild_name.lower(), "purple", "_")
@@ -238,27 +270,20 @@ class Sonata(commands.Bot):
         )
 
         memory_text = memory_text.strip()
-        if len(message.content) > 1 and message.content[0] != "$":
-            SonataManager.chat.send(
-                message.channel.id,
-                "User",
-                get_full_name(message.author),
-                message.content,
-            )
+        if message.author.bot == False and len(message.content) > 0:
+            m = message.content
+            if message.content[0] == "$":
+                split = message.content.split(" ")
+                m = " ".join(split[1:])
 
-        memory_text += f": {message.content}"
-        # TODO: Add a self-command system for bot to recursively call functions on itself
-        if (
-            len(message.content) > 1
-            and message.content[0] == "$"
-            and message.author.name == SonataManager.name
-        ):
-            cprint("COMMAND " + message.content, "cyan")
+            Sonata.chat.send(
+                message.channel.id, "User", get_full_name(message.author), m
+            )
         await self.process_commands(message)
 
 
 INTENTS = discord.Intents.all()
-sonata = Sonata(command_prefix="$", intents=INTENTS)
+sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
 
 # TODO: Delete all current functions and restructure for a more scalable bot
@@ -279,8 +304,8 @@ async def google_ai_question(ctx, *message):
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)
-        SonataManager.chat.send(ctx.channel.id, "User", name, message)
-        r = SonataManager.chat.request(
+        # SonataManager.chat.send(ctx.channel.id, "User", name, message)
+        r = Sonata.chat.request(
             ctx.channel.id,
             message,
             name,
@@ -290,7 +315,6 @@ async def google_ai_question(ctx, *message):
         await ctx.send(r[:2000])
     except Exception as e:
         cprint(e, "red")
-        cprint(r, "yellow")
         await ctx.send("Sorry, an error occured while processing your message.")
 
 
@@ -299,12 +323,11 @@ async def open_ai_question(ctx, *message):
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)
-        SonataManager.chat.send(ctx.channel.id, "User", name, message)
-        r = SonataManager.chat.request(ctx.channel.id, message, name, AI="OpenAI")
+        # SonataManager.chat.send(ctx.channel.id, "User", name, message)
+        r = Sonata.chat.request(ctx.channel.id, message, name, AI="OpenAI")
         await ctx.send(r[:2000])
     except Exception as e:
         cprint(e, "red")
-        cprint(r, "yellow")
         await ctx.send("Sorry, an error occured while processing your message.")
 
 
@@ -313,12 +336,11 @@ async def mistral_ai_question(ctx, *message):
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)
-        SonataManager.chat.send(ctx.channel.id, "User", name, message)
-        r = SonataManager.chat.request(ctx.channel.id, message, name, AI="Mistral")
+        # SonataManager.chat.send(ctx.channel.id, "User", name, message)
+        r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
         await ctx.send(r[:2000])
     except Exception as e:
         cprint(e, "red")
-        cprint(r, "yellow")
         await ctx.send("Sorry, an error occured while processing your message.")
 
 
@@ -344,7 +366,7 @@ async def change_prompt_m(ctx, *message):
         )
     else:
         PROMPT = new_prompt
-        SonataManager.chat.delete()
+        Sonata.chat.delete()
         await ctx.send("Prompt changed. Resetting memory.")
 
 
@@ -374,7 +396,7 @@ async def reset(ctx):
             "You cannot use this command, you are not a god. Use $god to check if you are a god."
         )
         return
-    SonataManager.chat.delete()
+    Sonata.chat.delete()
     await ctx.send("Memory cleared.")
 
 
@@ -385,12 +407,12 @@ async def set_memory(ctx, *message):
             "You cannot use this command, you are not a god. Use $god to check if you are a god."
         )
         return
-    SonataManager.chat.send(ctx.channel.id, "System", "OldMemory", " ".join(message))
+    Sonata.chat.send(ctx.channel.id, "System", "OldMemory", " ".join(message))
     await ctx.send("Memory set.")
 
 
 def is_god(user_id):
-    return SonataManager.do("GOD", "verify", str(user_id))
+    return Sonata.do("GOD", "verify", str(user_id))
 
 
 @sonata.command(name="god", description="Checks if you are a god.")
@@ -418,27 +440,13 @@ def check_if_has_command(message):
 
 def censor_message(message):
     return re.sub(
-        "|".join(
-            [re.escape(word) for word in SonataManager.get("chat", "banned_words")]
-        ),
+        "|".join([re.escape(word) for word in Sonata.get("chat", "banned_words")]),
         lambda m: "#" * len(m.group()),
         message,
         flags=re.IGNORECASE,
     )
 
 
-async def run_command(ctx, command, *args):
-    print("RUNNING", command, args)
-    match command:
-        case "send_message":
-            await ctx.send(" ".join(args))
-        case "laugh":
-            print("LAUGHING")
-            await ctx.send("HAHAHHAHAA")
-        case _:
-            print("NO COMMAND FOUND", command)
-
-
 sonata.run(token=settings.BOT_TOKEN)
 
-cprint(f"\nMemory on crash: {SonataManager.get('chat')}", "yellow")
+cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
