@@ -152,7 +152,6 @@ def _config_builder(aiman):
 
         def setup(kelf):
             _setup = kelf.get("setup")
-            # print(_setup, self.get("config"))
             AI_Type.initalize(tuple([*_setup]))
 
     return Config
@@ -182,13 +181,6 @@ class AI_Manager:
         @classmethod
         def cls(cls, class_name, class_body):
             cls._a.sub_classes[class_name] = class_body
-
-        @classmethod
-        def config(cls, func):
-            cls._a.config.merge(func())
-            if cls._a.lazy:
-                cls._a.plugin_config.update(func())
-            return func
 
         @classmethod
         def builder(cls, func):
@@ -285,7 +277,6 @@ class AI_Manager:
                 # Function name should be "key_eventname"
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
-                # print(k, event_name)
                 cls._a.effect(k, event_name, key)
                 return key
 
@@ -402,7 +393,6 @@ class AI_Manager:
         self.config = Config()
         self.__init_memoi(memoi)
 
-        # Chat = _chat_builder(self, prompt_manager)
         if (
             not self.lazy
             and not prompt_manager.exists("Instructions")
@@ -418,51 +408,6 @@ class AI_Manager:
         self.prompt_manager: PromptManager = prompt_manager
 
         self.M.init(self)
-        # TODO: Remove chat from base memory, making it more of an attachment
-        # This will allow for the base init to be lighter and more flexible
-
-        # self.chat = Chat()
-
-        # self.add(
-        #     "chat",
-        #     "summarize",
-        #     lambda M, id: self.prompt_manager.send(
-        #         "SummarizeChat",
-        #         M["value"][id],
-        #         AI=self.config.get("AI"),
-        #         config=self.memory["config"],
-        #     ),
-        #     ignore_lazy=True,
-        # )
-
-        # self.add(
-        #     "chat",
-        #     "reset",
-        #     lambda M, chat_id: setter(
-        #         M["value"], chat_id, copy.deepcopy(M["default_value"])
-        #     ),
-        #     ignore_lazy=True,
-        # )
-
-        # def chat_set(M, chat_id, message_type, author, message):
-        #     M["value"][chat_id].append((message_type, author, message))
-        #     return (chat_id, message_type, author, message)
-        #
-        # self.add(
-        #     "chat",
-        #     "set",
-        #     chat_set,
-        #     ignore_lazy=True,
-        # )
-
-        # self.add("chat", "default_value", [], ignore_lazy=True)
-
-        # self.add(
-        #     "chat",
-        #     "request",
-        #     lambda _, *args, **kwargs: self.prompt_manager.send(*args, **kwargs),
-        #     ignore_lazy=True,
-        # )
 
         def update_config(M, *merge, **kvpairs):
             M["value"].update(*merge)
@@ -475,49 +420,19 @@ class AI_Manager:
 
         self.add("config", "update", update_config, ignore_lazy=True)
         self.add("config", "set", set_config, ignore_lazy=True)
-        # self.set("config", "summarize", summarize_chat)
         self.config.merge(config)
         self.config.set(AI=default_AI, setup=default_args, **config)
 
-    # @classmethod
-    # def extend(cls, A, Plugins, **configs):
-    #     for LM in Plugins:
-    #         try:
-    #             L = LM.L
-    #         except AttributeError:
-    #             print(f"Could not extend {A.name} with {LM}")
-    #             continue
-    #
-    #         for key, value in L.memory.items():
-    #             if "lazy" in value:
-    #                 check_for = value["lazy"]
-    #                 if key in A.memory:
-    #                     for k in check_for:
-    #                         A.memory[key][k] = value[k]
-    #                 else:
-    #                     A.memory[key] = value
-    #
-    #         for class_name, class_body in LM.sub_classes.items():
-    #             if class_name not in A.sub_classes:
-    #                 if isinstance(class_body, Callable):
-    #                     class_body = class_body(A)
-    #                 A.sub_classes[class_name] = class_body
-    #
-    #         plugin_config = L.plugin_config.update(configs.get(LM.__name__, {}))
-    #         A.config.merge(plugin_config)
-    #         A.prompt_manager.add_prompts_from(L.prompt_manager)
-    #
-    #         del L
-
     def extend(A, Plugins, **configs):
         for LM in Plugins:
+            L = None
             try:
                 L = LM.L
             except AttributeError:
                 print(f"Could not extend {A.name} with {LM}")
                 continue
 
-            print("DOING ", LM.__plugin_name__)
+            # print("DOING ", LM.__plugin_name__)
 
             for func in L.on_load:
                 func()
@@ -541,8 +456,12 @@ class AI_Manager:
                         class_body = class_body(A)()
                     A.sub_classes[class_name] = class_body
 
+            # print(
+            #     LM.__plugin_name__, L.plugin_config, configs.get(LM.__plugin_name__, {})
+            # )
             plugin_config = copy.deepcopy(L.plugin_config)
             plugin_config.update(configs.get(LM.__plugin_name__, {}))
+            # print(plugin_config)
             A.config.merge(plugin_config)
             A.prompt_manager.add_prompts_from(L.prompt_manager)
 
@@ -590,7 +509,7 @@ class AI_Manager:
             return
 
         self.memory[key] = {
-            "default_value": default_value or value,
+            "default_value": value if default_value is None else default_value,
             "value": copy.deepcopy(value),
             "update": update_func or self.__default_update,
             "set": set_func or self.__default_set,

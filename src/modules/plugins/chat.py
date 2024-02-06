@@ -12,7 +12,13 @@ from modules.AI_manager import AI_Manager
 import discord
 from discord.ext import commands
 
-L, M, P = AI_Manager.init(lazy=True)
+L, M, P = AI_Manager.init(
+    lazy=True,
+    config={
+        "max_chats": 50,
+        "summarize": False,
+    },
+)
 __plugin_name__ = "chat"
 
 BANNED_WORDS = {
@@ -128,11 +134,10 @@ def chat(self: AI_Manager):
         ):
             chat = kelf.get_chat(id)
             self.set("chat", id, message_type, author, message)
-            # chat.append((message_type, author, message))
             if len(chat) > self.config.get("max_chats") + 1 and self.config.get(
                 "summarize"
             ):
-                summary = self.do("chat", "summarize", id, self.memory["config"])
+                summary = self.do("chat", "summarize", id, self.get("config"))
                 kelf.delete(id)
                 kelf.send(id, "System", "PreviousChatSummary", summary)
 
@@ -252,11 +257,3 @@ def set_chat(M, chat_id, message_type, author, message):
 @M.effect("chat", "set")
 def censor_chat(_, chat_id, message_type, author, message):
     return (chat_id, message_type, author, censor_message(message, BANNED_WORDS))
-
-
-@M.config
-def _():
-    return {
-        "max_chats": 50,
-        "summarize": False,
-    }
