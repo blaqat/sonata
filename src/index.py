@@ -13,23 +13,15 @@ P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 _____________________________________________________                                                         
 """
 
-from modules.utils import (
-    cprint,
-    check_inside,
-    cstr,
-    settings,
-    runner,
-    setter,
-)
+from modules.utils import cprint, check_inside, settings, get_full_name
 from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error
-import re
 import discord
 from discord.ext import commands
 import openai
 import google.generativeai as genai
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
-from modules.plugins import PLUGINS
+from modules.plugins import PLUGINS_ORD as PLUGINS
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -43,8 +35,6 @@ from modules.plugins import PLUGINS
 
 PROMPT = """You're Discord bot 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
-You also have the ability to call commands on yourself for more information or to perform actions. You can use the following commands to get more information or perform actions. Here are the list of commands you have access to: talk, g, and laugh.
-To call a command on yourself prefix your message with $<command name> and the rest of your message will be the arguments to that command.
 For context, the chat so far is summarized as: {0}
 Here's the user and message you're responding to:
 {2}: {1}
@@ -61,7 +51,7 @@ Sonata, M = AI_Manager.init(
     name="sonata",
 )
 
-AI_Manager.extend(Sonata, *PLUGINS)
+Sonata.extend(PLUGINS, chat={"summarize": True, "max_chats": 35})
 
 Sonata.config.set(temp=0.8)
 Sonata.config.setup()
@@ -126,16 +116,6 @@ def Mistral(client, prompt, model, _):
 
 
 @M.prompt
-def SummarizeChat(chat_log):
-    return f"""Summarize the chat log in as little tokens as possible.
-Use the following guidelines:
-- Mention people by name or nickname.
-- Don't just copy and paste the chat log. Summarize/paraphrase it.
-Chat Log: {chat_log}
-"""
-
-
-@M.prompt
 def ExplainBlockReasoning(r, user):
     return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
 Explain why you blocked the previous message in a brief conversational tone to the user {user}
@@ -149,77 +129,79 @@ AI_Type.initalize(
     ("Mistral", settings.MISTRAL_AI),
 )
 
-Sonata.chat.max_chats = 35
-M.remember(
-    "chat",
-    {
-        "jerking it",
-        "jerking off",
-        "cunt",
-        "cock",
-        "balls",
-        "aggin",
-        "reggin",
-        "nigger",
-        "rape",
-        "tit",
-        "tiddies",
-        "penis",
-        "boob",
-        "puss",
-        "nig",
-        "kys",
-        "retard",
-        "sex",
-        "porn",
-        "kill yourself",
-        "kill your self",
-        "black people",
-        "dick",
-        "blow in from",
-        "fuck me",
-        "fuck you",
-        "pussy",
-        "kill themself",
-        "kiya self",
-        "shut the fuck up",
-        "stfu",
-        "stupid",
-        "suck my",
-        "suck me",
-        "bitch",
-    },
-    inner="banned_words",
-)
+# Sonata.chat.max_chats = 35
+# M.remember(
+#     "chat",
+#     {
+#         "jerking it",
+#         "jerking off",
+#         "cunt",
+#         "cock",
+#         "balls",
+#         "aggin",
+#         "reggin",
+#         "nigger",
+#         "rape",
+#         "tit",
+#         "tiddies",
+#         "penis",
+#         "boob",
+#         "puss",
+#         "nig",
+#         "kys",
+#         "retard",
+#         "sex",
+#         "porn",
+#         "kill yourself",
+#         "kill your self",
+#         "black people",
+#         "dick",
+#         "blow in from",
+#         "fuck me",
+#         "fuck you",
+#         "pussy",
+#         "kill themself",
+#         "kiya self",
+#         "shut the fuck up",
+#         "stfu",
+#         "stupid",
+#         "suck my",
+#         "suck me",
+#         "bitch",
+#     },
+#     inner="banned_words",
+# )
+#
+# M.remember(
+#     "chat",
+#     {743280190452400159, 1175907292072398858, 724158738138660894, 725170957206945859},
+#     inner="black_list",
+#     validate=lambda M, id: id in M["black_list"],
+#     blacklist=lambda M, id: M["black_list"].add(id),
+# )
 
-M.remember(
-    "chat",
-    {743280190452400159, 1175907292072398858, 724158738138660894, 725170957206945859},
-    inner="black_list",
-    validate=lambda M, id: id in M["black_list"],
-    blacklist=lambda M, id: M["black_list"].add(id),
-)
-
-M.remember(
-    "GOD",
-    {
-        settings.GOD,
-        "150398769651777538",
-        "148471246680621057",
-        "334039742205132800",
-        "497844474043432961",
-        "143866772360134656",
-    },
-    u=lambda M, id: runner(M["value"], "add", str(id)),
-    s=lambda M, new: M["value"].append(new),
-    r=lambda M, remove: M["value"].remove(remove),
-    verify=lambda M, id: id in M["value"],
-)
+# M.remember(
+#     "GOD",
+#     {
+#         settings.GOD,
+#         "150398769651777538",
+#         "148471246680621057",
+#         "334039742205132800",
+#         "497844474043432961",
+#         "143866772360134656",
+#     },
+#     u=lambda M, id: runner(M["value"], "add", str(id)),
+#     s=lambda M, new: M["value"].append(new),
+#     r=lambda M, remove: M["value"].remove(remove),
+#     verify=lambda M, id: id in M["value"],
+# )
 
 
-@M.effect("chat", "set")
-def censor_chat(_, chat_id, message_type, author, message):
-    return (chat_id, message_type, author, censor_message(message))
+# @M.effect("chat", "set")
+# def censor_chat(_, chat_id, message_type, author, message):
+#     return (chat_id, message_type, author, censor_message(message))
+
+print(Sonata.memory["chat"])
 
 
 class SonataClient(commands.Bot):
@@ -233,53 +215,57 @@ class SonataClient(commands.Bot):
         print("Logged on as {0}!".format(self.user))
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
-        global COUNT
-        if message.author.bot == True and message.author.name != "sonata":
-            return
-        _guild_name = message.guild.name
-        _channel_name = message.channel.name
-        _name = (
-            message.author.nick
-            if "nick" in dir(message.author)
-            else message.author.name
-        )
-        if _name and _name == "None" or not _name:
-            _name = message.author.name
-
-        if Sonata.do("chat", "validate", message.channel.id):
-            return
-
-        if _guild_name != self.current_guild:
-            cprint("\n" + _guild_name.lower(), "purple", "_")
-            self.current_guild = _guild_name
-
-        if _channel_name != self.current_channel:
-            cprint("#" + _channel_name, "green", end=" ")
-            print(f"({message.channel.id})")
-            self.current_channel = _channel_name
-
-        print(
-            "  {0}: {1}".format(
-                cstr(str=get_full_name(message.author), style="cyan"),
-                censor_message(message.content.replace("\n", "\n\t")),
-            )
-        )
-
-        memory_text = message.author.name + (
-            f" (Nickname {_name})" if _name != message.author.name else ""
-        )
-
-        memory_text = memory_text.strip()
-        if message.author.bot == False and len(message.content) > 0:
-            m = message.content
-            if message.content[0] == "$":
-                split = message.content.split(" ")
-                m = " ".join(split[1:])
-
-            Sonata.chat.send(
-                message.channel.id, "User", get_full_name(message.author), m
-            )
-        await self.process_commands(message)
+        await Sonata.get("chat", "hook")(Sonata, self, message)
+        # global COUNT
+        # if message.author.bot == True and message.author.name != "sonata":
+        #     return
+        # _guild_name = message.guild.name
+        # _channel_name = message.channel.name
+        # _name = (
+        #     message.author.nick
+        #     if "nick" in dir(message.author)
+        #     else message.author.name
+        # )
+        # if _name and _name == "None" or not _name:
+        #     _name = message.author.name
+        #
+        # if Sonata.do("chat", "validate", message.channel.id):
+        #     return
+        #
+        # if _guild_name != self.current_guild:
+        #     cprint("\n" + _guild_name.lower(), "purple", "_")
+        #     self.current_guild = _guild_name
+        #
+        # if _channel_name != self.current_channel:
+        #     cprint("#" + _channel_name, "green", end=" ")
+        #     print(f"({message.channel.id})")
+        #     self.current_channel = _channel_name
+        #
+        # print(
+        #     "  {0}: {1}".format(
+        #         cstr(str=get_full_name(message.author), style="cyan"),
+        #         censor_message(
+        #             message.content.replace("\n", "\n\t"),
+        #             Sonata.get("chat", "banned_words"),
+        #         ),
+        #     )
+        # )
+        #
+        # memory_text = message.author.name + (
+        #     f" (Nickname {_name})" if _name != message.author.name else ""
+        # )
+        #
+        # memory_text = memory_text.strip()
+        # if message.author.bot == False and len(message.content) > 0:
+        #     m = message.content
+        #     if message.content[0] == "$":
+        #         split = message.content.split(" ")
+        #         m = " ".join(split[1:])
+        #
+        #     Sonata.chat.send(
+        #         message.channel.id, "User", get_full_name(message.author), m
+        #     )
+        # await self.process_commands(message)
 
 
 INTENTS = discord.Intents.all()
@@ -290,13 +276,6 @@ sonata = SonataClient(command_prefix="$", intents=INTENTS)
 @sonata.command()
 async def ping(ctx):
     await ctx.send("pong")
-
-
-def get_full_name(author):
-    name = author.name
-    if "nick" in dir(author) and author.nick is not None:
-        name += f" (Nickname: {author.nick})"
-    return name
 
 
 @sonata.command(name="g", description="Ask a question using Google Gemini AI.")
@@ -438,13 +417,13 @@ def check_if_has_command(message):
     return message, c
 
 
-def censor_message(message):
-    return re.sub(
-        "|".join([re.escape(word) for word in Sonata.get("chat", "banned_words")]),
-        lambda m: "#" * len(m.group()),
-        message,
-        flags=re.IGNORECASE,
-    )
+# def censor_message(message):
+#     return re.sub(
+#         "|".join([re.escape(word) for word in Sonata.get("chat", "banned_words")]),
+#         lambda m: "#" * len(m.group()),
+#         message,
+#         flags=re.IGNORECASE,
+#     )
 
 
 sonata.run(token=settings.BOT_TOKEN)

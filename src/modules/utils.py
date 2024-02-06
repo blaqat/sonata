@@ -658,3 +658,19 @@ def runner(thing, key, *args, r=False, **kwargs):
     if r:
         return x
     return thing
+
+
+def censor_message(message, banned_words):
+    return re.sub(
+        "|".join([re.escape(word) for word in banned_words]),
+        lambda m: "#" * len(m.group()),
+        message,
+        flags=re.IGNORECASE,
+    )
+
+
+def get_full_name(author):
+    name = author.name
+    if "nick" in dir(author) and author.nick is not None:
+        name += f" (Nickname: {author.nick})"
+    return name

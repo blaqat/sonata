@@ -3,6 +3,8 @@ import requests
 from modules.AI_manager import AI_Manager
 
 L, M, P = AI_Manager.init(lazy=True)
+__plugin_name__ = "commands"
+__dependencies__ = ["chat"]
 
 
 def __command(name, usage, desc=None):
