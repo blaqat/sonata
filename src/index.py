@@ -23,6 +23,7 @@ from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
 from modules.plugins import PLUGINS_ORD as PLUGINS
 
+
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
 # - Adopt a friendly and normal tone.
@@ -40,6 +41,7 @@ Here's the user and message you're responding to:
 {2}: {1}
 sonata:"""
 
+
 P = PromptManager(prompt_name="Instructions", prompt_text=lambda *a: PROMPT.format(*a))
 P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
@@ -51,9 +53,8 @@ Sonata, M = AI_Manager.init(
     name="sonata",
 )
 
-Sonata.extend(PLUGINS, chat={"summarize": True, "max_chats": 35})
+Sonata.extend(PLUGINS, chat={"summarize": True, "max_chats": 25})
 
-print(Sonata.get("chat", "default_value"))
 
 Sonata.config.set(temp=0.8)
 Sonata.config.setup()
@@ -63,7 +64,8 @@ Sonata.config.setup()
     client=openai.ChatCompletion,
     default=True,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-3.5-turbo-1106",
+    # model="gpt-3.5-turbo-0125",
+    model="gpt-4-turbo-preview",
 )
 def OpenAI(client, prompt, model, config):
     return (
@@ -82,6 +84,7 @@ def OpenAI(client, prompt, model, config):
     genai.GenerativeModel,
     setup=lambda _, key: genai.configure(api_key=key),
     model="gemini-pro",
+    # model="gemini-1.0-pro-latest",
 )
 def Gemini(client, prompt, model, config):
     try:
@@ -131,6 +134,10 @@ AI_Type.initalize(
     ("Mistral", settings.MISTRAL_AI),
 )
 
+# for m in genai.list_models():
+#     if "generateContent" in m.supported_generation_methods:
+#         print(m.name)
+
 
 class SonataClient(commands.Bot):
     current_guild = ""
@@ -150,10 +157,16 @@ INTENTS = discord.Intents.all()
 sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
 
-# TODO: Delete all current functions and restructure for a more scalable bot
+# TODO: Delete all current and make the actual bot
 @sonata.command()
 async def ping(ctx):
-    await ctx.send("pong")
+    await ctx.reply("pong", mention_author=False)
+
+
+@sonata.command()
+async def test(ctx):
+    l = "This country is not supported, you can ask me to add it [here](https://stackoverflow.com/questions/64527464/clickable-link-inside-message-discord-py)a"
+    await ctx.reply(l, mention_author=False)
 
 
 @sonata.command(name="g", description="Ask a question using Google Gemini AI.")
@@ -161,7 +174,6 @@ async def google_ai_question(ctx, *message):
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)
-        # SonataManager.chat.send(ctx.channel.id, "User", name, message)
         r = Sonata.chat.request(
             ctx.channel.id,
             message,
@@ -169,10 +181,13 @@ async def google_ai_question(ctx, *message):
             AI="Gemini",
             error_prompt=lambda r: P.get("ExplainBlockReasoning", r, name),
         )
-        await ctx.send(r[:2000])
+        await ctx.reply(r[:2000], mention_author=False)
     except Exception as e:
         cprint(e, "red")
-        await ctx.send("Sorry, an error occured while processing your message.")
+        await ctx.reply(
+            "Sorry, an error occured while processing your message.",
+            mention_author=False,
+        )
 
 
 @sonata.command(name="o", description="Ask a question using OpenAI.")
@@ -180,12 +195,15 @@ async def open_ai_question(ctx, *message):
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)
-        # SonataManager.chat.send(ctx.channel.id, "User", name, message)
-        r = Sonata.chat.request(ctx.channel.id, message, name, AI="OpenAI")
-        await ctx.send(r[:2000])
+        async with ctx.typing():
+            r = Sonata.chat.request(ctx.channel.id, message, name, AI="OpenAI")
+        await ctx.reply(r[:2000], mention_author=False)
     except Exception as e:
         cprint(e, "red")
-        await ctx.send("Sorry, an error occured while processing your message.")
+        await ctx.reply(
+            "Sorry, an error occured while processing your message.",
+            mention_author=False,
+        )
 
 
 @sonata.command(name="mi", description="Ask a question using MistralAI.")
@@ -193,17 +211,19 @@ async def mistral_ai_question(ctx, *message):
     try:
         message = " ".join(message)
         name = get_full_name(ctx.author)
-        # SonataManager.chat.send(ctx.channel.id, "User", name, message)
         r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
-        await ctx.send(r[:2000])
+        await ctx.reply(r[:2000], mention_author=False)
     except Exception as e:
         cprint(e, "red")
-        await ctx.send("Sorry, an error occured while processing your message.")
+        await ctx.reply(
+            "Sorry, an error occured while processing your message.",
+            mention_author=False,
+        )
 
 
 @sonata.command(name="not-allowed", description="I'm not allowed to respond to that.")
 async def not_allowed(ctx):
-    await ctx.send("I'm not allowed to respond to that.")
+    await ctx.reply("I'm not allowed to respond to that.", mention_author=False)
 
 
 @sonata.command(
@@ -224,7 +244,7 @@ async def change_prompt_m(ctx, *message):
     else:
         PROMPT = new_prompt
         Sonata.chat.delete()
-        await ctx.send("Prompt changed. Resetting memory.")
+        await ctx.reply("Prompt changed. Resetting memory.", mention_author=False)
 
 
 @sonata.command(name="cp", description="Changes the bot's prompt.")
@@ -242,7 +262,7 @@ async def change_prompt(ctx, *message):
         )
     else:
         PROMPT = new_prompt
-        await ctx.send("Prompt changed.")
+        await ctx.reply("Prompt changed.", mention_author=False)
 
 
 @sonata.command(name="reset", description="Resets the bot's memory.")
@@ -254,7 +274,7 @@ async def reset(ctx):
         )
         return
     Sonata.chat.delete()
-    await ctx.send("Memory cleared.")
+    await ctx.reply("Memory cleared.", mention_author=False)
 
 
 @sonata.command(name="memory", description="Sets the bot's memory")
@@ -265,7 +285,7 @@ async def set_memory(ctx, *message):
         )
         return
     Sonata.chat.send(ctx.channel.id, "System", "OldMemory", " ".join(message))
-    await ctx.send("Memory set.")
+    await ctx.reply("Memory set.", mention_author=False)
 
 
 def is_god(user_id):
@@ -275,9 +295,9 @@ def is_god(user_id):
 @sonata.command(name="god", description="Checks if you are a god.")
 async def god(ctx):
     if is_god(ctx.author.id):
-        await ctx.send("Yes, you are a god.")
+        await ctx.reply("Yes, you are a god.", mention_author=False)
     else:
-        await ctx.send("No, you are not a god.")
+        await ctx.reply("No, you are not a god.", mention_author=False)
 
 
 def check_if_has_command(message):

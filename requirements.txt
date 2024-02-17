@@ -6,3 +6,6 @@ python-dotenv
 requests
 pretty_errors
 mistralai
+dotenv
+youtube-search-python
+google-api-python-client

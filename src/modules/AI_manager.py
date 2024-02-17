@@ -464,6 +464,7 @@ class AI_Manager:
             # print(plugin_config)
             A.config.merge(plugin_config)
             A.prompt_manager.add_prompts_from(L.prompt_manager)
+            L.prompt_manager = A.prompt_manager
 
             del L
 

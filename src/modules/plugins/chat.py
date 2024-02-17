@@ -1,16 +1,19 @@
 import copy
+
+import discord
+from discord.ext import commands
+
+from modules.AI_manager import AI_Manager
 from modules.utils import (
-    settings,
     censor_message,
     cprint,
     cstr,
     get_full_name,
-    setter,
     runner,
+    setter,
+    settings,
 )
-from modules.AI_manager import AI_Manager
-import discord
-from discord.ext import commands
+import random
 
 L, M, P = AI_Manager.init(
     lazy=True,
@@ -69,11 +72,13 @@ CHANNEL_BLACKLIST = {
 async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     if message.author.bot == True and message.author.name != "sonata":
         return
+    message.content = message.content.replace('"', "'").replace("’", "'")
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     _name = (
         message.author.nick if "nick" in dir(message.author) else message.author.name
     )
+    _ref = None
     if _name and _name == "None" or not _name:
         _name = message.author.name
 
@@ -111,6 +116,31 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
             m = " ".join(split[1:])
 
         Sonata.chat.send(message.channel.id, "User", get_full_name(message.author), m)
+
+    if message.attachments and not message.author.bot and len(message.attachments) > 0:
+        attachment = message.attachments[0].url
+        if attachment:
+            message.content += f"\nAttachment: {attachment}"
+
+    if message.reference is not None and not message.author.bot:
+        # Check if reference is pointing to a message sent by the bot
+        _ref = await message.channel.fetch_message(message.reference.message_id)
+        if _ref.author.id == kelf.user.id:
+            message.content = "$o " + message.content
+            await kelf.process_commands(message)
+            return
+    if (
+        "sonata" in message.content.lower()
+        or "<@1187145990931763250>" in message.content.lower()
+        or "sona " in message.content.lower()
+        or " sona" in message.content.lower()
+    ):
+        # Remove the mention of sonata from the message
+        message.content = message.content.replace("sonata", "")
+        message.content = message.content.replace("<@1187145990931763250>", "")
+        message.content = message.content.replace("sona ", "")
+        message.content = message.content.replace(" sona", "")
+        message.content = "$o " + message.content
     await kelf.process_commands(message)
 
 
