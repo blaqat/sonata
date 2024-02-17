@@ -59,6 +59,8 @@ Sonata.config.set(temp=0.8)
 Sonata.config.setup()
 
 
+# ISSUE: Figure out a cheaper solution other than gpt-4 that works well
+# TODO: Update openai to newest version. (Will require some rewrite to client)
 @M.ai(
     client=openai.ChatCompletion,
     default=True,
@@ -98,6 +100,7 @@ def Gemini(client, prompt, model, config):
         raise AI_Error(r.prompt_feedback)
 
 
+# ISSUE: Mistral AI just sucks, figuure out a better solution or remove it
 @M.ai(
     None,
     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
@@ -310,4 +313,6 @@ async def open_ai_question(ctx, *message):
 
 
 sonata.run(token=settings.BOT_TOKEN)
+
+# TODO: Store memory on crash and reload it
 cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")

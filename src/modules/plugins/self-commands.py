@@ -13,7 +13,14 @@ L, M, P = AI_Manager.init(lazy=True)
 __plugin_name__ = "self-commands"
 __dependencies__ = ["chat"]
 
+# TODO: Organize module
+# 1. Helper functions
+# 2. Commands
+# 3. Prompts
+# 4. Effecs
 
+
+# NOTE: IF GPT-4 is the final solution, this can be integrated with the new Assistant API
 def __command(name, usage, desc=None, inst=None):
     def wrapper(func):
         M.set("command", name, func, usage, desc, inst)
@@ -33,12 +40,15 @@ M.command = __command
         {"func": func, "usage": usage, "desc": desc, "instructions": inst},
     ),
     validate=lambda M, command: command in M["value"],
+    # TODO: Add error handling in use function or enforce it in every commnad
+    # Could add a parameter e=error_message
     use=lambda M, command, *args: M["value"][command]["func"](*args),
     list=lambda M: "; ".join(
         [f"{k} - {v['usage']} - {v['desc']}" for k, v in M["value"].items()]
     ),
 )
 def update_command(M, **kwargs):
+    # NOTE: Update command is never used. It can be set to default and replaced with use_command code
     for k, v in kwargs.items():
         M["set"](M, k, *v)
 
@@ -68,6 +78,7 @@ def get_weather(*city):
     }
 
 
+# OPTIM: Should be rewritten to use AI_Manager
 @M.command(
     "imagine",
     "$imagine <prompt>",
@@ -116,6 +127,7 @@ BEGINING OF WEBPAGE INFO
 END OF WEBPAGE INFO"""
 
 
+# OPTIM: Should be rewritten to use AI_Manager
 def perplexity_search(*search_term):
     search_term = " ".join(search_term)
     url = "https://api.perplexity.ai/chat/completions"
@@ -166,11 +178,12 @@ def combined_search(*search_term):
     google = google_search(*search_term)
     pplx = perplexity_search(*search_term)
     return {
-        "results": google["results"],
         "extra_info": pplx["result"],
+        "results": google["results"],
     }
 
 
+# OPTIM: Should be rewritten to use AI_Manager
 @M.command(
     "analyze-image",
     "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url>",
@@ -209,7 +222,7 @@ def read_image(*args):
     try:
         response = requests.post(url, headers=headers, data=json.dumps(data))
         return response.json()["choices"][0]["message"]["content"]
-    except Exception as e:
+    except Exception as _:
         m = response.json()
         return str(m["error"]["message"])
 
@@ -230,13 +243,6 @@ def get_gif(*search_term):
     return {
         "link": data["data"][n]["url"],
     }
-
-
-(
-    "System",
-    "PreviousChatSummary",
-    'Karma faced issues finding a specific song on Soundcloud, leading to several attempts and humorous exchanges with the bot, sonata, involving song requests and incorrect links. Sonata finally found the correct song "BBMOTIF" for Karma. Lukaru interacted with sonata, requesting video game-related songs and receiving playful responses, including a YouTube link to a favored song. Sonata humorously declined to find "my life is like a video game" on Soundcloud, but found it on YouTube. Lukaru and sonata exchanged about favorite ponies, with sonata choosing Twilight Sparkle. Subicat humorously asked if lukaru was sonata\'s favorite pony, leading to a playful response. Lukaru identified as a game developer.',
-)
 
 
 @M.command(
@@ -295,11 +301,8 @@ def get_music(*search_term):
         return "Song not fond."
 
 
-# @M.command("laugh", "$laugh", "Send a hearty laugh.")
-# def laugh(*_):
-#     return "HAHAHAHHAHA" + " ".join(_)
-
-
+# FIX: When the code contains a \n or \t, it crashes
+# - When code crashes the other thread is never gone back to (chats dont send in terminal) but everything works. Investigate.
 @M.command(
     "eval",
     "$eval <python code>",
@@ -339,9 +342,14 @@ def SelfCommand(history, command, *args):
         + "\n"
         or ""
     )
+    # TODO: Make it so links passed back are just appended to response
+    # so AI doesnt have chance to mess up writing the link
+    # Make anything that passes a link pass it as "link" and "title" in the response dict
     response = M.do("command", "use", command, *args)
     cprint("COMMAND OUTPUT " + str(response), "purple")
     command = "$" + command + " " + " ".join(args) + ""
+
+    # OPTIM: This prompt can be rewritten to use less tokens. And with less information
     s = f"""You're Discord bot 'sonata', created by user blaqat (Nickname Karma). Your purpose is to respond to people in chat as if you were another user.
 You have the ability to run commands to get information or perform actions to aid in your responses to users.
 Here are the list of commands you have access to: {ls}
@@ -389,14 +397,11 @@ def request_chat(_, message, **config):
     return message
 
 
-# - You enjoy making things interesting and getting a rise out of people
-# - Loves [ "impresionalist composers", "piano"]
-# - Likes ["amy","Music", "Black cats", "attack on titan", "violin"]
-# - Dislikes ["Corny jokes", "Being told what to do", "Furries"]
-# - Hates ["furries", "loud music"]
-# - Mild swearing is allowed but don't overdo it this is a 18+ server
-
-
+# TODO: Split this into multiple prompts so that it can be used in different contexts e.g SelfCommand prompt
+# - General Info
+# - Good Response Guidelines
+# - Fun Response Guidelines
+# - Attributes
 @M.prompt
 def Instructions(history, message, user):
     return f"""You're Discord bot 'sonata', created by user blaqat (Nickname Karma). Your purpose is to respond to people in chat as if you were another user.
@@ -413,6 +418,12 @@ Respone Guidelines:
 - You are a know-it-all
 - Humor is encouraged, but don't be corny
 - Don't worry too much about proper capitalization or punctuation. 
+- You enjoy making things interesting and getting a rise out of people
+- Loves [ "impresionalist composers", "piano"]
+- Likes ["amy","Music", "Black cats", "attack on titan", "violin"]
+- Dislikes ["Corny jokes", "Being told what to do", "Furries"]
+- Hates ["furries", "loud music"]
+- Swearing is allowed this is a 18+ server
 
 For context, here is the chat log with logs stored as (MessageType, Author, Message): {history}
 Here's the user: message you're responding to:

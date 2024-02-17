@@ -61,6 +61,12 @@ BANNED_WORDS = {
     "suck me",
     "bitch",
 }
+
+# TODO: Convert channel blacklist into more ergonomic thing
+# 1. Should control if bot can speak in
+# 2. Should control if bot speaks to all messages or just invokations
+# 3. Should control what commands bot can do
+# etc
 CHANNEL_BLACKLIST = {
     743280190452400159,
     1175907292072398858,
@@ -122,24 +128,30 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         if attachment:
             message.content += f"\nAttachment: {attachment}"
 
+    # TODO: Add a way to pass the reference of the replied message to the AI
+    # Might require a change in the Chat.send method and promptings
+    # Or just store each message as (ID, Type, Author, Message, ReplyingToID) and see if AI can understand that
     if message.reference is not None and not message.author.bot:
         # Check if reference is pointing to a message sent by the bot
         _ref = await message.channel.fetch_message(message.reference.message_id)
         if _ref.author.id == kelf.user.id:
+            # HACK: This is a hacky way to invoke AI response, change to use AI_Manager so config can be used
             message.content = "$o " + message.content
             await kelf.process_commands(message)
             return
+
+    # PERF: Rewrite this to be less hacky and more efficient
     if (
         "sonata" in message.content.lower()
         or "<@1187145990931763250>" in message.content.lower()
         or "sona " in message.content.lower()
         or " sona" in message.content.lower()
     ):
-        # Remove the mention of sonata from the message
         message.content = message.content.replace("sonata", "")
         message.content = message.content.replace("<@1187145990931763250>", "")
         message.content = message.content.replace("sona ", "")
         message.content = message.content.replace(" sona", "")
+        # HACK: This is a hacky way to invoke AI response, change to use AI_Manager so config can be used
         message.content = "$o " + message.content
     await kelf.process_commands(message)
 
