@@ -10,7 +10,7 @@ from youtubesearchpython import VideosSearch
 from googleapiclient.discovery import build
 
 L, M, P = AI_Manager.init(lazy=True)
-__plugin_name__ = "commands"
+__plugin_name__ = "self-commands"
 __dependencies__ = ["chat"]
 
 

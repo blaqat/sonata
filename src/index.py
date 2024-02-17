@@ -55,7 +55,6 @@ Sonata, M = AI_Manager.init(
 
 Sonata.extend(PLUGINS, chat={"summarize": True, "max_chats": 25})
 
-
 Sonata.config.set(temp=0.8)
 Sonata.config.setup()
 
@@ -163,12 +162,6 @@ async def ping(ctx):
     await ctx.reply("pong", mention_author=False)
 
 
-@sonata.command()
-async def test(ctx):
-    l = "This country is not supported, you can ask me to add it [here](https://stackoverflow.com/questions/64527464/clickable-link-inside-message-discord-py)a"
-    await ctx.reply(l, mention_author=False)
-
-
 @sonata.command(name="g", description="Ask a question using Google Gemini AI.")
 async def google_ai_question(ctx, *message):
     try:
@@ -206,115 +199,115 @@ async def open_ai_question(ctx, *message):
         )
 
 
-@sonata.command(name="mi", description="Ask a question using MistralAI.")
-async def mistral_ai_question(ctx, *message):
-    try:
-        message = " ".join(message)
-        name = get_full_name(ctx.author)
-        r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
-        await ctx.reply(r[:2000], mention_author=False)
-    except Exception as e:
-        cprint(e, "red")
-        await ctx.reply(
-            "Sorry, an error occured while processing your message.",
-            mention_author=False,
-        )
+#
+# @sonata.command(name="mi", description="Ask a question using MistralAI.")
+# async def mistral_ai_question(ctx, *message):
+#     try:
+#         message = " ".join(message)
+#         name = get_full_name(ctx.author)
+#         r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
+#         await ctx.reply(r[:2000], mention_author=False)
+#     except Exception as e:
+#         cprint(e, "red")
+#         await ctx.reply(
+#             "Sorry, an error occured while processing your message.",
+#             mention_author=False,
+#         )
+#
+#
+# @sonata.command(name="not-allowed", description="I'm not allowed to respond to that.")
+# async def not_allowed(ctx):
+#     await ctx.reply("I'm not allowed to respond to that.", mention_author=False)
+#
+#
+# @sonata.command(
+#     name="cpr", description="Changes the bot's prompt. And resets the memory"
+# )
+# async def change_prompt_m(ctx, *message):
+#     global PROMPT
+#     if not is_god(ctx.author.id):
+#         await ctx.send(
+#             "You cannot use this command, you are not a god. Use $god to check if you are a god."
+#         )
+#         return
+#     new_prompt = " ".join(message)
+#     if not check_inside({"{0}", "{1}", "{2}"}, new_prompt):
+#         await ctx.send(
+#             "New prompt must contain:```\n{0} - ChatLog\n{1} - UserMessage\n{2} - UserName"
+#         )
+#     else:
+#         PROMPT = new_prompt
+#         Sonata.chat.delete()
+#         await ctx.reply("Prompt changed. Resetting memory.", mention_author=False)
+#
+#
+# @sonata.command(name="cp", description="Changes the bot's prompt.")
+# async def change_prompt(ctx, *message):
+#     global PROMPT
+#     if not is_god(ctx.author.id):
+#         await ctx.send(
+#             "You cannot use this command, you are not a god. Use $god to check if you are a god."
+#         )
+#         return
+#     new_prompt = " ".join(message)
+#     if not check_inside({"{0}", "{1}", "{2}"}, new_prompt):
+#         await ctx.send(
+#             "New prompt must contain:```\n{0} - ChatLog\n{1} - UserMessage\n{2} - UserName"
+#         )
+#     else:
+#         PROMPT = new_prompt
+#         await ctx.reply("Prompt changed.", mention_author=False)
+#
+#
+# @sonata.command(name="reset", description="Resets the bot's memory.")
+# async def reset(ctx):
+#     global PROMPT
+#     if not is_god(ctx.author.id):
+#         await ctx.send(
+#             "You cannot use this command, you are not a god. Use $god to check if you are a god."
+#         )
+#         return
+#     Sonata.chat.delete()
+#     await ctx.reply("Memory cleared.", mention_author=False)
+#
+#
+# @sonata.command(name="memory", description="Sets the bot's memory")
+# async def set_memory(ctx, *message):
+#     if not is_god(ctx.author.id):
+#         await ctx.send(
+#             "You cannot use this command, you are not a god. Use $god to check if you are a god."
+#         )
+#         return
+#     Sonata.chat.send(ctx.channel.id, "System", "OldMemory", " ".join(message))
+#     await ctx.reply("Memory set.", mention_author=False)
+#
+#
+# def is_god(user_id):
+#     return Sonata.do("GOD", "verify", str(user_id))
+#
+#
+# @sonata.command(name="god", description="Checks if you are a god.")
+# async def god(ctx):
+#     if is_god(ctx.author.id):
+#         await ctx.reply("Yes, you are a god.", mention_author=False)
+#     else:
+#         await ctx.reply("No, you are not a god.", mention_author=False)
 
 
-@sonata.command(name="not-allowed", description="I'm not allowed to respond to that.")
-async def not_allowed(ctx):
-    await ctx.reply("I'm not allowed to respond to that.", mention_author=False)
-
-
-@sonata.command(
-    name="cpr", description="Changes the bot's prompt. And resets the memory"
-)
-async def change_prompt_m(ctx, *message):
-    global PROMPT
-    if not is_god(ctx.author.id):
-        await ctx.send(
-            "You cannot use this command, you are not a god. Use $god to check if you are a god."
-        )
-        return
-    new_prompt = " ".join(message)
-    if not check_inside({"{0}", "{1}", "{2}"}, new_prompt):
-        await ctx.send(
-            "New prompt must contain:```\n{0} - ChatLog\n{1} - UserMessage\n{2} - UserName"
-        )
-    else:
-        PROMPT = new_prompt
-        Sonata.chat.delete()
-        await ctx.reply("Prompt changed. Resetting memory.", mention_author=False)
-
-
-@sonata.command(name="cp", description="Changes the bot's prompt.")
-async def change_prompt(ctx, *message):
-    global PROMPT
-    if not is_god(ctx.author.id):
-        await ctx.send(
-            "You cannot use this command, you are not a god. Use $god to check if you are a god."
-        )
-        return
-    new_prompt = " ".join(message)
-    if not check_inside({"{0}", "{1}", "{2}"}, new_prompt):
-        await ctx.send(
-            "New prompt must contain:```\n{0} - ChatLog\n{1} - UserMessage\n{2} - UserName"
-        )
-    else:
-        PROMPT = new_prompt
-        await ctx.reply("Prompt changed.", mention_author=False)
-
-
-@sonata.command(name="reset", description="Resets the bot's memory.")
-async def reset(ctx):
-    global PROMPT
-    if not is_god(ctx.author.id):
-        await ctx.send(
-            "You cannot use this command, you are not a god. Use $god to check if you are a god."
-        )
-        return
-    Sonata.chat.delete()
-    await ctx.reply("Memory cleared.", mention_author=False)
-
-
-@sonata.command(name="memory", description="Sets the bot's memory")
-async def set_memory(ctx, *message):
-    if not is_god(ctx.author.id):
-        await ctx.send(
-            "You cannot use this command, you are not a god. Use $god to check if you are a god."
-        )
-        return
-    Sonata.chat.send(ctx.channel.id, "System", "OldMemory", " ".join(message))
-    await ctx.reply("Memory set.", mention_author=False)
-
-
-def is_god(user_id):
-    return Sonata.do("GOD", "verify", str(user_id))
-
-
-@sonata.command(name="god", description="Checks if you are a god.")
-async def god(ctx):
-    if is_god(ctx.author.id):
-        await ctx.reply("Yes, you are a god.", mention_author=False)
-    else:
-        await ctx.reply("No, you are not a god.", mention_author=False)
-
-
-def check_if_has_command(message):
-    lines = message.split("\n")
-    lines.reverse()
-    c = None
-    for line in lines:
-        if line and line[0] == "$":
-            command = line[1:].split("(")[0]
-            args = line.split("(")[1].split(")")[0].split("|")
-            c = [command, args]
-            break
-    if c:
-        message = message.replace("$" + c[0] + "(" + "|".join(c[1]) + ")", "").strip()
-    return message, c
+# def check_if_has_command(message):
+#     lines = message.split("\n")
+#     lines.reverse()
+#     c = None
+#     for line in lines:
+#         if line and line[0] == "$":
+#             command = line[1:].split("(")[0]
+#             args = line.split("(")[1].split(")")[0].split("|")
+#             c = [command, args]
+#             break
+#     if c:
+#         message = message.replace("$" + c[0] + "(" + "|".join(c[1]) + ")", "").strip()
+#     return message, c
 
 
 sonata.run(token=settings.BOT_TOKEN)
-
 cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
