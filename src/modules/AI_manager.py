@@ -264,19 +264,18 @@ class AI_Manager:
                     cls._a.effect(key, event_name, hook_func, prepend)
                 return hook_func
 
-            if cls._a.lazy:
-
-                def lazy():
-                    return cls.effect_post(key, event_name, prepend)
-
-                cls._a.on_load.append(lazy)
-
-                return decorator
-
             if not event_name:
                 # Function name should be "key_eventname"
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
+                if cls._a.lazy:
+
+                    def lazy():
+                        cls._a.effect(k, event_name, key, prepend)
+                        return key
+
+                    cls._a.on_load.append(lazy)
+                    return lazy
                 cls._a.effect(k, event_name, key)
                 return key
 
@@ -298,19 +297,17 @@ class AI_Manager:
                 cls._a.effect(key, event_name, hook_func, prepend)
                 return hook_func
 
-            if cls._a.lazy:
-
-                def lazy():
-                    return cls.effect_post(key, event_name, prepend)
-
-                cls._a.on_load.append(lazy)
-
-                return lazy
-
             if not event_name:
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
-                # print(k, event_name)
+                if cls._a.lazy:
+
+                    def lazy():
+                        cls._a.effect(k, event_name, key, prepend)
+                        return key
+
+                    cls._a.on_load.append(lazy)
+                    return lazy
                 cls._a.effect(k, event_name, key, prepend)
                 return key
 
@@ -434,9 +431,6 @@ class AI_Manager:
 
             # print("DOING ", LM.__plugin_name__)
 
-            for func in L.on_load:
-                func()
-
             for key, value in L.memory.items():
                 if "lazy" in value:
                     check_for = value["lazy"]
@@ -456,6 +450,8 @@ class AI_Manager:
                         class_body = class_body(A)()
                     A.sub_classes[class_name] = class_body
 
+            for func in L.on_load:
+                func()
             # print(
             #     LM.__plugin_name__, L.plugin_config, configs.get(LM.__plugin_name__, {})
             # )
@@ -535,23 +531,27 @@ class AI_Manager:
 
     def do(self, key, event_name, *args, **kwargs):
         if key in self.memory:
-            return self.memory[key][event_name](self.memory[key], *args, **kwargs)
+            if callable(self.memory[key][event_name]):
+                return self.memory[key][event_name](self.memory[key], *args, **kwargs)
+            else:
+                passed_args = args
+                for func in self.memory[key][event_name]:
+                    passed_args = func(self.memory[key], *passed_args, **kwargs)
+                return passed_args
 
     def forget(self, key):
         del self.memory[key]
 
     def update(self, key, *args, **kwargs):
         if key in self.memory:
-            self.memory[key]["value"] = self.memory[key]["update"](
-                self.memory[key], *args, **kwargs
-            )
+            self.memory[key]["value"] = self.do(key, "update", *args, **kwargs)
 
     def set(self, key, *args, inner=False, **kwargs):
         if key in self.memory:
             if inner:
                 self.memory[key][inner] = args[0]
                 return
-            self.memory[key]["set"](self.memory[key], *args, **kwargs)
+            return self.do(key, "set", *args, **kwargs)
 
     def get(self, key, val="value", inner=True, default=None):
         if not inner:
@@ -568,27 +568,43 @@ class AI_Manager:
 
     def reset(self, key, *args, **kwargs):
         if key in self.memory:
-            self.memory[key]["value"] = self.memory[key]["reset"](
-                self.memory[key], *args, **kwargs
-            )
+            self.memory[key]["value"] = self.do(key, "reset", *args, **kwargs)
+
+    # def effect(self, key, event_name, hook_func, prepend=True):
+    #     if key not in self.memory:
+    #         return
+    #
+    #     current = self.memory[key][event_name]
+    #     if callable(current):
+    #         current = [current]
+    #
+    #     if prepend:
+    #         current.insert(0, hook_func)
+    #     else:
+    #         current.append(hook_func)
+    #
+    #     self.add(key, event_name, current)
 
     def effect(self, key, event_name, hook_func, prepend=True):
         if key not in self.memory:
             return
 
         hooked_over = self.memory[key][event_name]
+        new_function = None
 
         if prepend:
 
-            def new_function(M, *args, **kwargs):
+            def new_function_pre(M, *args, **kwargs):
                 nonlocal hook_func, key
                 if isinstance(hook_func, str):
                     hook_func = self.memory[key][hook_func]
                 args = hook_func(M, *args, **kwargs)
                 return hooked_over(M, *args, **kwargs)
+
+            new_function = new_function_pre
         else:
 
-            def new_function(M, *args, **kwargs):
+            def new_function_post(M, *args, **kwargs):
                 nonlocal hook_func, key
                 if isinstance(hook_func, str):
                     hook_func = self.memory[key][hook_func]
@@ -596,5 +612,7 @@ class AI_Manager:
                 if isinstance(args, tuple) or isinstance(args, list):
                     return hook_func(M, *args, **kwargs)
                 return hook_func(M, args, **kwargs)
+
+            new_function = new_function_post
 
         self.add(key, event_name, new_function)

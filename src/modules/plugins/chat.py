@@ -6,7 +6,8 @@ from discord.ext import commands
 from modules.AI_manager import AI_Manager
 from modules.utils import (
     censor_message,
-    cprint,
+    async_print as print,
+    async_cprint as cprint,
     cstr,
     get_full_name,
     runner,
@@ -79,6 +80,8 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     if message.author.bot == True and message.author.name != "sonata":
         return
     message.content = message.content.replace('"', "'").replace("’", "'")
+    if message.guild == None:
+        return
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     _name = (
@@ -119,9 +122,21 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         m = message.content
         if message.content[0] == "$":
             split = message.content.split(" ")
-            m = " ".join(split[1:])
+            if len(split[0]) == 1:
+                m = " ".join(split[1:])
 
-        Sonata.chat.send(message.channel.id, "User", get_full_name(message.author), m)
+        _ref = (
+            message.reference is not None
+            and await message.channel.fetch_message(message.reference.message_id)
+            or None
+        )
+        _ref = _ref and (_ref.author.name, _ref.content) or None
+        # _ref = None
+        message.content = Sonata.chat.send(
+            message.channel.id, "User", get_full_name(message.author), m, _ref
+        )
+        # if message.content is None:
+        #     return
 
     if message.attachments and not message.author.bot and len(message.attachments) > 0:
         attachment = message.attachments[0].url
@@ -173,20 +188,23 @@ def chat(self: AI_Manager):
             message_type,
             author,
             message,
+            replying_to=None,
         ):
             chat = kelf.get_chat(id)
-            self.set("chat", id, message_type, author, message)
+            a = self.set("chat", id, message_type, author, message, replying_to)
             if len(chat) > self.config.get("max_chats") + 1 and self.config.get(
                 "summarize"
             ):
                 summary = self.do("chat", "summarize", id, self.get("config"))
                 kelf.delete(id)
-                kelf.send(id, "System", "PreviousChatSummary", summary)
+                kelf.send(id, "System", "PreviousChatSummary", summary, None)
+            return a[3]
 
         def request(
             kelf,
             id,
             message: str,
+            replying_to=None,
             *args,
             AI=self.config.get("AI"),
             error_prompt=None,
@@ -216,7 +234,7 @@ def chat(self: AI_Manager):
                 else:
                     response = f"Response failed: {e}"
             finally:
-                kelf.send(id, "Bot", self.name, response)
+                kelf.send(id, "Bot", self.name, response, replying_to)
                 return response
 
         def get_history(
@@ -291,11 +309,17 @@ Chat Log: {chat_log}
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
 )
-def set_chat(M, chat_id, message_type, author, message):
-    M["value"][chat_id].append((message_type, author, message))
-    return (chat_id, message_type, author, message)
+def set_chat(M, chat_id, message_type, author, message, replying_to=None):
+    M["value"][chat_id].append((message_type, author, message, replying_to))
+    return (chat_id, message_type, author, message, replying_to)
 
 
-@M.effect("chat", "set")
-def censor_chat(_, chat_id, message_type, author, message):
-    return (chat_id, message_type, author, censor_message(message, BANNED_WORDS))
+@M.effect("chat", "set", prepend=True)
+def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
+    return (
+        chat_id,
+        message_type,
+        author,
+        censor_message(message, BANNED_WORDS),
+        replying_to,
+    )

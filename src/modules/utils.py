@@ -10,6 +10,7 @@ __email__ = "aidengreenj@gmail.com"
 from typing import Any, Callable, Union, Iterable
 from os import getenv
 from dotenv import load_dotenv
+import asyncio
 
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -674,3 +675,28 @@ def get_full_name(author):
     if "nick" in dir(author) and author.nick is not None:
         name += f" (Nickname: {author.nick})"
     return name
+
+
+def async_print(*args, **kwargs):
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, print, *args, **kwargs)
+    except Exception as e:
+        print(*args, **kwargs)
+
+
+def async_cprint(*args, **kwargs):
+    try:
+        loop = asyncio.get_running_loop()
+        loop.run_in_executor(None, cprint, *args, **kwargs)
+    except Exception as e:
+        cprint(*args, **kwargs)
+
+
+def async_input(*args, **kwargs):
+    loop = asyncio.get_running_loop()
+    return loop.run_in_executor(None, __input, *args, **kwargs)
+
+
+def print_list(lst, color):
+    async_cprint("\n".join("{}: {}".format(*k) for k in enumerate(lst)), color)
