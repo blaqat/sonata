@@ -670,11 +670,15 @@ def censor_message(message, banned_words):
     )
 
 
-def get_full_name(author):
-    name = author.name
-    if "nick" in dir(author) and author.nick is not None:
-        name += f" (Nickname: {author.nick})"
-    return name
+def get_full_name(ctx):
+    try:
+        author = ctx.author
+        name = author.name
+        if "nick" in dir(author) and author.nick is not None:
+            name += f" (Nickname: {author.nick})"
+        return name
+    except AttributeError as _:
+        return "sonata"
 
 
 def async_print(*args, **kwargs):

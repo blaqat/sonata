@@ -105,7 +105,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
 
     print(
         "  {0}: {1}".format(
-            cstr(str=get_full_name(message.author), style="cyan"),
+            cstr(str=get_full_name(message), style="cyan"),
             censor_message(
                 message.content.replace("\n", "\n\t"),
                 BANNED_WORDS,
@@ -133,7 +133,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         _ref = _ref and (_ref.author.name, _ref.content) or None
         # _ref = None
         message.content = Sonata.chat.send(
-            message.channel.id, "User", get_full_name(message.author), m, _ref
+            message.channel.id, "User", get_full_name(message), m, _ref
         )
         # if message.content is None:
         #     return

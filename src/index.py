@@ -155,10 +155,66 @@ AI_Type.initalize(
 
 RECENT_CHN = None
 RECENT_SVR = None
-SET_CHN = 876743264139624458
+SET_CHN = None
 RECENT_SELF_MSG = None
 INTERCEPT = False
 VOICE_CHAT = None
+FAV_CHN = {
+    "test": 876743264139624458,
+}
+FAV_PPL = {
+    "amy": 754188427699945592,
+}
+
+
+class CustomEmoji:
+    def __init__(self, name, e):
+        self.name = name
+        self.id = ""
+        self.animated = False
+        self.e = e
+
+    @classmethod
+    def from_dict(cls, d):
+        new_d = []
+        for k, v in d.items():
+            new_d.append(cls(k, v))
+        return new_d
+
+
+EMOJIS = CustomEmoji.from_dict(
+    {
+        "sparkling_heart": "💖",
+        "ok_hand": "👌",
+        "thumbsup": "👍",
+        "grey_question": "❔",
+    }
+)
+
+
+def save_favs():
+    # Save favorites to trm.favs file
+    # Overwrite it completely
+    with open("trm.favs", "w") as f:
+        f.write(str(FAV_CHN) + "\n")
+        f.write(str(FAV_PPL) + "\n")
+
+
+def load_favs():
+    global FAV_CHN, FAV_PPL
+    try:
+        if not os.path.exists("trm.favs"):
+            with open("trm.favs", "w") as f:
+                f.write(str(FAV_CHN) + "\n")
+                f.write(str(FAV_PPL) + "\n")
+            return
+        with open("trm.favs", "r") as f:
+            lines = f.readlines()
+            FAV_CHN = eval(lines[0])
+            FAV_PPL = eval(lines[1])
+    except Exception as e:
+        cprint("Error loading favs", "red")
+        cprint(e, "red")
 
 
 class SonataClient(commands.Bot):
@@ -173,7 +229,10 @@ class SonataClient(commands.Bot):
         self.loop.create_task(self.handle_input())
 
     async def get_emojis(self):
-        return [emoji for guild in self.guilds for emoji in guild.emojis]
+        global EMOJIS
+        ge = [emoji for guild in self.guilds for emoji in guild.emojis]
+        ge = ge + EMOJIS
+        return ge
 
     async def search_emoji(self, name, find_first=10):
         emojis = await self.get_emojis()
@@ -199,8 +258,20 @@ class SonataClient(commands.Bot):
             try:
                 match user_input:
                     case "chn":
-                        SET_CHN = await aioconsole.ainput("Enter channel id: ")
-                        SET_CHN = int(SET_CHN)
+                        c = await aioconsole.ainput("Enter channel id: ")
+                        if c == "exit":
+                            continue
+                        elif c == "fav":
+                            names = "\n".join(f"{n}: {i}" for n, i in FAV_CHN.items())
+                            cprint(names, "yellow")
+                            c = await aioconsole.ainput("Enter fav name: ")
+                            if c == "exit":
+                                continue
+                            c = FAV_CHN.get(c)
+                            if c is None:
+                                cprint("Fav not found", "red")
+                                continue
+                        SET_CHN = int(c)
 
                     case "reset":
                         SET_CHN = None
@@ -271,7 +342,11 @@ class SonataClient(commands.Bot):
                         if VOICE_CHAT is not None:
                             await VOICE_CHAT.disconnect()
                             VOICE_CHAT = None
-                        g = RECENT_SELF_MSG and RECENT_SELF_MSG.guild or RECENT_SVR
+                        chn = self.get_channel(SET_CHN)
+                        if chn is None:
+                            g = RECENT_SELF_MSG and RECENT_SELF_MSG.guild or RECENT_SVR
+                        else:
+                            g = chn.guild
                         c = None
                         if g is None:
                             c = await aioconsole.ainput("Enter vc id: ")
@@ -336,6 +411,8 @@ class SonataClient(commands.Bot):
                         emojis = await self.search_emoji(s, 10)
                         emojis = [
                             f"<{e.animated and "a" or ""}:{e.name}:{e.id}>"
+                            if not isinstance(e, CustomEmoji)
+                            else f"{e.e}"
                             for e in emojis
                         ]
                         cprint(f"Pick an emoji to send:", "yellow")
@@ -366,6 +443,8 @@ class SonataClient(commands.Bot):
                         emojis = await self.search_emoji(s, 10)
                         emojis = [
                             f"<{e.animated and "a" or ""}:{e.name}:{e.id}>"
+                            if not isinstance(e, CustomEmoji)
+                            else f"{e.e}"
                             for e in emojis
                         ]
                         cprint(f"Pick an emoji to send:", "yellow")
@@ -383,10 +462,6 @@ class SonataClient(commands.Bot):
                             continue
                         await c.send(emojis[i])
 
-                    case "emojis":
-                        emojis = await self.get_emojis()
-                        cprint(f"Found {len(emojis)} emojis: {emojis}", "yellow")
-
                     case "emoji":
                         s = await aioconsole.ainput("Enter emoji name: ")
                         if s == "exit":
@@ -394,14 +469,128 @@ class SonataClient(commands.Bot):
                         emojis = await self.search_emoji(s)
                         emojis = [
                             f"<{e.animated and "a" or ""}:{e.name}:{e.id}>"
+                            if not isinstance(e, CustomEmoji)
+                            else f"{e.e}"
                             for e in emojis
                         ]
                         cprint(f"Found {len(emojis)} emojis: {emojis}", "yellow")
+
+                    case "favs":
+                        cprint(f"\nChannels: {FAV_CHN}", "yellow")
+                        cprint(f"Users: {FAV_PPL}", "yellow")
+
+                    case "favp":
+                        name = await aioconsole.ainput("Edit or Add")
+                        if name == "exit":
+                            continue
+                        if name == "a" or name == "add" or name == "":
+                            pid = await aioconsole.ainput("Enter user id: ")
+                            if pid == "exit":
+                                continue
+                            pid = int(pid)
+                            p = self.get_user(pid)
+                            if p is None:
+                                cprint("User not found", "red")
+                                _ = await aioconsole.ainput("")
+                                continue
+                            name = await aioconsole.ainput(
+                                f"Replace name: {p.display_name} "
+                            )
+                            if name == "exit":
+                                continue
+                            elif name == "n" or name == "" or not name:
+                                name = p.display_name
+                            FAV_PPL[name] = pid
+
+                            cprint(f"Added {name}:{pid} to favs", "yellow")
+                        elif name == "e" or name == "edit":
+                            names = "\n".join(f"{n}: {i}" for n, i in FAV_PPL.items())
+                            cprint(names, "yellow")
+                            name = await aioconsole.ainput("Edit name: ")
+                            if name == "exit":
+                                continue
+                            if name not in FAV_PPL:
+                                cprint("Fav not found", "red")
+                                continue
+                            n = name
+                            i = FAV_PPL[n]
+                            name = await aioconsole.ainput(f"Replace name: {n}")
+                            if name == "exit":
+                                continue
+                            elif name == "n" or name == "" or not name:
+                                name = n
+
+                            pid = await aioconsole.ainput(f"Replace id: {FAV_PPL[n]}")
+                            if pid == "exit":
+                                continue
+                            elif pid == "n" or pid == "" or not pid:
+                                pid = i
+
+                            del FAV_PPL[n]
+                            FAV_PPL[name] = pid
+                            cprint(f"Edited {name}:{pid} in favs", "yellow")
+
+                    case "favc":
+                        channel = self.get_channel(SET_CHN or RECENT_CHN)
+                        channels = {}
+                        channels.update(FAV_CHN)
+                        if channel is not None:
+                            channels[f"Current: {channel.name}"] = channel.id
+                        names = "\n".join(f"{n}: {i}" for n, i in channels.items())
+                        cprint(names, "yellow")
+                        name = await aioconsole.ainput("Add channel to favs: (or new)")
+                        if name == "exit":
+                            continue
+                        elif name == "c" or name == "current":
+                            id = channel.id
+                            name = await aioconsole.ainput(
+                                f"Replace name: {channel.name} "
+                            )
+                            if name == "exit":
+                                continue
+                            elif name == "n" or name == "" or not name:
+                                name = channel.name
+                            FAV_CHN[name] = id
+                        elif name == "new":
+                            id = await aioconsole.ainput("Enter id: ")
+                            if id == "exit":
+                                continue
+                            id = int(id)
+                            c = self.get_channel(id)
+                            if c is None:
+                                cprint("Channel not found", "red")
+                                continue
+                            name = await aioconsole.ainput(f"Replace name:  {c.name} ")
+                            if name == "exit":
+                                continue
+                            elif name == "n" or name == "" or not name:
+                                name = c.name
+                            FAV_CHN[name] = channel.id
+                        else:
+                            if name not in FAV_CHN:
+                                cprint("Fav not found", "red")
+                                continue
+                            id = await aioconsole.ainput(f"Replace id: {FAV_CHN[name]}")
+                            if id == "exit":
+                                continue
+                            elif id == "n" or id == "" or not id:
+                                id = FAV_CHN[name]
+                            FAV_CHN[name] = id
+
+                        cprint(f"Added {name}:{id} to favs", "yellow")
 
                     case "dm":
                         id = await aioconsole.ainput("Enter user id: ")
                         if id == "exit":
                             continue
+                        elif id == "fav":
+                            names = "\n".join(f"{n}: {i}" for n, i in FAV_PPL.items())
+                            cprint(names, "yellow")
+                            id = await aioconsole.ainput("Enter fav name: ")
+                            id = FAV_PPL.get(id)
+                            if id is None:
+                                cprint("Fav not found", "red")
+                                continue
                         id = int(id)
                         user = self.get_user(id)
                         if user is None:
@@ -418,6 +607,14 @@ class SonataClient(commands.Bot):
                         id = await aioconsole.ainput("Enter user id: ")
                         if id == "exit":
                             continue
+                        elif id == "fav":
+                            names = "\n".join(f"{n}: {i}" for n, i in FAV_PPL.items())
+                            cprint(names, "yellow")
+                            id = await aioconsole.ainput("Enter fav name: ")
+                            id = FAV_PPL.get(id)
+                            if id is None:
+                                cprint("Fav not found", "red")
+                                continue
                         id = int(id)
                         user = self.get_user(id)
                         if user is None:
@@ -448,6 +645,36 @@ class SonataClient(commands.Bot):
                             if msg == "exit":
                                 continue
                             await messages[i].reply(msg)
+
+                    case "edit":
+                        c = self.get_channel(SET_CHN or RECENT_CHN)
+                        if c is None:
+                            cprint("No channel set", "red")
+                            _ = await aioconsole.ainput("")
+                            continue
+                        messages = []
+                        async for m in c.history(limit=20):
+                            if m.author == self.user:
+                                messages.append(m)
+                        cprint("Select a message to edit:", "yellow")
+                        m = "\n".join(
+                            "{}: {}\t| {}".format(i, m.author, m.content[:50])
+                            for (i, m) in enumerate(messages)
+                        )
+                        cprint(m, "yellow")
+                        i = await aioconsole.ainput("")
+                        if i == "exit":
+                            continue
+                        i = int(i)
+                        if i < 0 or i >= len(messages):
+                            cprint("Invalid index", "red")
+                            _ = await aioconsole.ainput("")
+                            continue
+                        async with c.typing():
+                            msg = await aioconsole.ainput("Enter message: ")
+                            if msg == "exit":
+                                continue
+                            await messages[i].edit(content=msg)
 
                     case "reply":
                         c = self.get_channel(SET_CHN or RECENT_CHN)
@@ -487,7 +714,7 @@ class SonataClient(commands.Bot):
                         INTERCEPT = True
                         cprint("Intercepting messages", "yellow")
 
-                    case "cmd":
+                    case "$":
                         c = self.get_channel(SET_CHN or RECENT_CHN)
                         if c is None:
                             c = await aioconsole.ainput("Enter channel: ")
@@ -499,14 +726,26 @@ class SonataClient(commands.Bot):
                         if command == "exit":
                             continue
 
-                        await c.send("God as requested a command")
-                        dummy_message = RECENT_SELF_MSG
-                        dummy_message.content = command
-                        # dummy_message.author.name = "God"
-                        # dummy_message.author.bot = False
-                        await self.process_commands(dummy_message)
+                        command = command.split(" ")
+                        args = command[1:]
+                        command = command[0]
 
-                    case "scmd":
+                        try:
+                            self.loop.create_task(
+                                self.get_command(command).callback(c, *args)
+                            )
+                        except Exception as _:
+                            cprint("Command not found", "red")
+                            continue
+
+                    # bot.loop.create_task(bot.get_command('hello').callback())>>>>
+
+                    # await c.send("<a:loading:1208909531212685412>")
+                    # dummy_message = RECENT_SELF_MSG
+                    # dummy_message.content = "$" + command
+                    # await self.process_commands(dummy_message)
+
+                    case "cmd":
                         c = self.get_channel(SET_CHN or RECENT_CHN)
                         if c is None:
                             c = await aioconsole.ainput("Enter channel: ")
@@ -550,10 +789,26 @@ INTENTS = discord.Intents.all()
 sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
 
+async def ctx_reply(ctx, r):
+    try:
+        _ = ctx.author
+        await ctx.reply(r[:2000], mention_author=False)
+    except AttributeError as _Exception:
+        await ctx.send(r[:2000])
+
+
+async def get_channel(ctx):
+    try:
+        _ = ctx.author
+        return ctx.channel
+    except AttributeError as _Exception:
+        return ctx
+
+
 # TODO: Delete all current and make the actual bot
 @sonata.command()
 async def ping(ctx):
-    await ctx.reply("pong", mention_author=False)
+    await ctx_reply(ctx, "pong")
 
 
 @sonata.command(name="g", description="Ask a question using Google Gemini AI.")
@@ -561,11 +816,14 @@ async def google_ai_question(ctx, *message):
     global INTERCEPT
     try:
         message = " ".join(message)
-        name = get_full_name(ctx.author)
-        _ref = (ctx.author, message)
+        name = get_full_name(ctx)
+        try:
+            _ref = (ctx.author, message)
+        except Exception as _:
+            _ref = None
         async with ctx.typing():
             r = Sonata.chat.request(
-                ctx.channel.id,
+                (await get_channel(ctx)).id,
                 message,
                 name,
                 _ref,
@@ -578,14 +836,14 @@ async def google_ai_question(ctx, *message):
                 if new_message != "exit":
                     r = new_message
                 INTERCEPT = False
-                await ctx.reply(r[:2000], mention_author=False)
+                await ctx_reply(ctx, r)
             else:
-                await ctx.reply(r[:2000], mention_author=False)
+                await ctx_reply(ctx, r)
     except Exception as e:
         cprint(e, "red")
-        await ctx.reply(
+        await ctx_reply(
+            ctx,
             "Sorry, an error occured while processing your message.",
-            mention_author=False,
         )
 
 
@@ -594,21 +852,26 @@ async def open_ai_question(ctx, *message):
     global INTERCEPT
     try:
         message = " ".join(message)
-        name = get_full_name(ctx.author)
-        _ref = (ctx.author, message)
+        name = get_full_name(ctx)
+        try:
+            _ref = (ctx.author, message)
+        except Exception as _:
+            _ref = None
         async with ctx.typing():
-            r = Sonata.chat.request(ctx.channel.id, message, name, _ref, AI="OpenAI")
+            r = Sonata.chat.request(
+                (await get_channel(ctx)).id, message, name, _ref, AI="OpenAI"
+            )
             if INTERCEPT:
                 new_message = await aioconsole.ainput("Enter message: ")
                 if new_message != "exit":
                     r = new_message
                 INTERCEPT = False
-        await ctx.reply(r[:2000], mention_author=False)
+            await ctx_reply(ctx, r)
     except Exception as e:
-        # cprint(e, "red")
-        await ctx.reply(
+        cprint(e, "red")
+        await ctx_reply(
+            ctx,
             "Sorry, an error occured while processing your message.",
-            mention_author=False,
         )
 
 
@@ -695,16 +958,21 @@ async def open_ai_question(ctx, *message):
 #     await ctx.reply("Memory set.", mention_author=False)
 #
 #
-# def is_god(user_id):
-#     return Sonata.do("GOD", "verify", str(user_id))
+def is_god(user_id):
+    return Sonata.do("GOD", "verify", str(user_id))
+
+
 #
 #
-# @sonata.command(name="god", description="Checks if you are a god.")
-# async def god(ctx):
-#     if is_god(ctx.author.id):
-#         await ctx.reply("Yes, you are a god.", mention_author=False)
-#     else:
-#         await ctx.reply("No, you are not a god.", mention_author=False)
+@sonata.command(name="god", description="Checks if you are a god.")
+async def god(ctx):
+    try:
+        if is_god(ctx.author.id):
+            await ctx_reply(ctx, "Yes, you are a god.")
+        else:
+            await ctx_reply(ctx, "No, you are not a god.")
+    except Exception as e:
+        await ctx_reply(ctx, "No, you are not a god.")
 
 
 # def check_if_has_command(message):
@@ -725,14 +993,17 @@ async def open_ai_question(ctx, *message):
 async def main():
     # sonata.loop.sonata.handle_input())
     # sonata.run(token=settings.BOT_TOKEN)
+    load_favs()
+    await sonata.start(settings.BOT_TOKEN)
+
+
+if __name__ == "__main__":
     try:
-        await sonata.start(settings.BOT_TOKEN)
+        asyncio.run(main())
     except KeyboardInterrupt:
         cprint("Exiting...", "red")
         # TODO: Store memory on crash and reload it
         cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
+        save_favs()
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
     # main()
