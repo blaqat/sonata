@@ -58,7 +58,7 @@ P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 Sonata, M = AI_Manager.init(
     P,
     "OpenAI",
-    (settings.OPEN_AI, "gpt-4-turbo-preview", 0.4, 2500),
+    (settings.OPEN_AI, "gpt-3.5-turbo-0125", 0.4, 2500),
     summarize_chat=True,
     name="sonata",
 )
@@ -78,8 +78,8 @@ Sonata.config.setup()
     client=openai.ChatCompletion,
     default=True,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    # model="gpt-3.5-turbo-0125",
-    model="gpt-4-turbo-preview",
+    model="gpt-3.5-turbo-0125",
+    # model="gpt-4-turbo-preview",
 )
 def OpenAI(client, prompt, model, config):
     return (
@@ -97,8 +97,8 @@ def OpenAI(client, prompt, model, config):
 @M.ai(
     genai.GenerativeModel,
     setup=lambda _, key: genai.configure(api_key=key),
-    model="gemini-pro",
-    # model="gemini-1.0-pro-latest",
+    # model="gemini-pro",
+    model="gemini-1.0-pro-latest",
 )
 def Gemini(client, prompt, model, config):
     try:
@@ -188,6 +188,7 @@ EMOJIS = CustomEmoji.from_dict(
         "ok_hand": "👌",
         "thumbsup": "👍",
         "grey_question": "❔",
+        "red_circle": "🔴",
     }
 )
 
@@ -805,6 +806,92 @@ async def get_channel(ctx):
         return ctx
 
 
+TOTAL_VOTE = 0
+MIN_VOTES = 1
+PERCENTAGE = 0.5
+ROLE_GIVING = 1170116532513275904
+DURATION = 30
+
+
+@sonata.command()
+async def smarty(ctx, user_id: int, action: str = "give"):
+    global TOTAL_VOTE, MIN_VOTES, PERCENTAGE, ROLE_GIVING, DURATION
+    votes = dict()
+    TOTAL_VOTE = 0
+    voting = asyncio.Event()
+    user = await ctx.guild.fetch_member(user_id)
+    role = discord.utils.get(ctx.guild.roles, id=ROLE_GIVING)
+    action_text = (
+        "remove the smart card role from"
+        if action == "remove" or action == "r"
+        else "give a smart card role to"
+    )
+
+    vote = discord.ui.Select(
+        placeholder=f"Should {user.name} {action_text}?",
+        options=[
+            discord.SelectOption(
+                label="Yes", emoji="👍", description=f"Yes, {action_text} {user.name}."
+            ),
+            discord.SelectOption(
+                label="No",
+                emoji="🔴",
+                description=f"No, do not {action_text} {user.name}.",
+            ),
+        ],
+    )
+
+    async def vote_callback(interaction):
+        global TOTAL_VOTE
+        nonlocal votes
+        vote_worth = 1 if interaction.data["values"][0] == "Yes" else -1
+        if interaction.user.id in votes:
+            TOTAL_VOTE -= votes[interaction.user.id]
+
+        votes[interaction.user.id] = vote_worth
+        TOTAL_VOTE += votes[interaction.user.id]
+
+        await interaction.response.send_message(
+            f"You have cast your vote. *Needs {max(MIN_VOTES - abs(TOTAL_VOTE), 0)} more vote(s)*",
+            ephemeral=True,
+        )
+        print(f"Total votes: {TOTAL_VOTE}")  # Console output for debugging
+
+    vote.callback = vote_callback
+    view = discord.ui.View()
+    view.add_item(vote)
+    message = await ctx.send(
+        f"## Vote to {action_text} <@{user.id}>\n*(vote ends in {DURATION} seconds)*",
+        view=view,
+    )
+
+    await asyncio.sleep(DURATION)
+    voting.set()
+
+    await voting.wait()
+
+    if TOTAL_VOTE >= MIN_VOTES:
+        try:
+            if action == "remove":
+                await user.remove_roles(role)
+                await ctx.send(
+                    f"Thank the lord. <@{user_id}> has been stripped of his smart card"
+                )
+            else:
+                await user.add_roles(role)
+                await ctx.send(f"<@{user_id}> you have escaped the matrix")
+        except Exception as e:
+            f = await ctx.send(f"Sorry, I do not have permission to manage roles.")
+
+    else:
+        f = await ctx.send("### Not enough positive votes to proceed. soz")
+
+    await message.delete()
+    if f:
+        await asyncio.sleep(8)
+        await f.delete()
+
+
 # TODO: Delete all current and make the actual bot
 @sonata.command()
 async def ping(ctx):
@@ -876,19 +963,21 @@ async def open_ai_question(ctx, *message):
 
 
 #
-# @sonata.command(name="mi", description="Ask a question using MistralAI.")
-# async def mistral_ai_question(ctx, *message):
-#     try:
-#         message = " ".join(message)
-#         name = get_full_name(ctx.author)
-#         r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
-#         await ctx.reply(r[:2000], mention_author=False)
-#     except Exception as e:
-#         cprint(e, "red")
-#         await ctx.reply(
-#             "Sorry, an error occured while processing your message.",
-#             mention_author=False,
-#         )
+@sonata.command(name="mi", description="Ask a question using MistralAI.")
+async def mistral_ai_question(ctx, *message):
+    try:
+        message = " ".join(message)
+        name = get_full_name(ctx.author)
+        r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
+        await ctx.reply(r[:2000], mention_author=False)
+    except Exception as e:
+        cprint(e, "red")
+        await ctx.reply(
+            "Sorry, an error occured while processing your message.",
+            mention_author=False,
+        )
+
+
 #
 #
 # @sonata.command(name="not-allowed", description="I'm not allowed to respond to that.")
@@ -962,8 +1051,6 @@ def is_god(user_id):
     return Sonata.do("GOD", "verify", str(user_id))
 
 
-#
-#
 @sonata.command(name="god", description="Checks if you are a god.")
 async def god(ctx):
     try:
@@ -991,8 +1078,6 @@ async def god(ctx):
 
 
 async def main():
-    # sonata.loop.sonata.handle_input())
-    # sonata.run(token=settings.BOT_TOKEN)
     load_favs()
     await sonata.start(settings.BOT_TOKEN)
 
@@ -1000,10 +1085,8 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except Exception as _:
         cprint("Exiting...", "red")
         # TODO: Store memory on crash and reload it
         cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
         save_favs()
-
-    # main()
