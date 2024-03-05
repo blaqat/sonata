@@ -26,6 +26,7 @@ from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error
 import discord
 from discord.ext import commands
 import openai
+import anthropic
 import google.generativeai as genai
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
@@ -63,11 +64,6 @@ Sonata, M = AI_Manager.init(
     name="sonata",
 )
 
-# TEST: New PLUGINS(extend_list, mode=allow | deny) system
-# If no likey, change to always input all plugins in .extend
-# and change .extend to support *str extend_list and mode kwarg
-Sonata.extend(PLUGINS_LIST, chat={"summarize": True, "max_chats": 25})
-print(Sonata.memory["chat"]["set"])
 Sonata.config.set(temp=0.8)
 Sonata.config.setup()
 
@@ -78,8 +74,8 @@ Sonata.config.setup()
     client=openai.ChatCompletion,
     default=True,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-3.5-turbo-0125",
-    # model="gpt-4-turbo-preview",
+    # model="gpt-3.5-turbo-0125",
+    model="gpt-4-turbo-preview",
 )
 def OpenAI(client, prompt, model, config):
     return (
@@ -91,6 +87,26 @@ def OpenAI(client, prompt, model, config):
         )
         .choices[0]
         .message.content
+    )
+
+
+@M.ai(
+    None,
+    setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
+    # model="claude-3-opus-20240229",
+    model="claude-3-sonnet-20240229",
+    # model="claude-3-haiku-20240229",
+)
+def Claude(client, prompt, model, config):
+    return (
+        client.messages.create(
+            model=model,
+            max_tokens=config.get("max_tokens", 1250),
+            temperature=config.get("temp") or config.get("temperature") or 0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        .content[0]
+        .text
     )
 
 
@@ -117,7 +133,8 @@ def Gemini(client, prompt, model, config):
 @M.ai(
     None,
     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
-    model="mistral-medium",
+    # model="mistral-medium",
+    model="mistral-large-latest",
 )
 def Mistral(client, prompt, model, _):
     return (
@@ -143,10 +160,24 @@ Here is the prompt_feedback: {r}
 """
 
 
+# TEST: New PLUGINS(extend_list, mode=allow | deny) system
+# If no likey, change to always input all plugins in .extend
+# and change .extend to support *str extend_list and mode kwarg
+Sonata.extend(
+    PLUGINS_LIST,
+    chat={
+        "summarize": True,
+        "max_chats": 25,
+        "view_replies": True,
+        "auto": "g",
+    },
+)
+
 AI_Type.initalize(
     ("OpenAI", settings.OPEN_AI),
     ("Gemini", settings.GOOGLE_AI),
     ("Mistral", settings.MISTRAL_AI),
+    ("Claude", settings.ANTHROPIC_AI),
 )
 
 # for m in genai.list_models():
@@ -243,11 +274,14 @@ class SonataClient(commands.Bot):
         global RECENT_CHN, RECENT_SELF_MSG, RECENT_SVR
         RECENT_CHN = message.channel.id
         RECENT_SVR = message.guild
-        if message.guild is None:
-            cprint(f"DM: {message.author.name}: {message.content}", "purple")
+
         if message.author == self.user:
             RECENT_SELF_MSG = message
-        await Sonata.get("chat", "hook")(Sonata, self, message)
+        if message.guild is None:
+            # cprint(f"DM: {message.author.name}: {message.content}", "purple")
+            await Sonata.get("chat", "dm_hook")(Sonata, self, message)
+        else:
+            await Sonata.get("chat", "hook")(Sonata, self, message)
 
     async def handle_input(self):
         global RECENT_CHN, SET_CHN, RECENT_SELF_MSG, INTERCEPT, VOICE_CHAT, RECENT_SVR
@@ -258,6 +292,32 @@ class SonataClient(commands.Bot):
             user_input = await aioconsole.ainput("Enter command: ")
             try:
                 match user_input:
+                    case "help":
+                        cprint(
+                            """
+                        chn: Set channel
+                        reset: Reset channel
+                        god: Send message in channel
+                        dlr: Delete last message
+                        dlm: Delete message
+                        vc: Join voice channel
+                        leave: Leave voice channel
+                        react: React to message
+                        emosend: Send emoji
+                        emoji: Search for emoji
+                        favs: Show favs
+                        favp: Edit fav person
+                        favc: Edit fav channel
+                        dm: Send dm
+                        dmr: Send dm reply
+                        edit: Edit message
+                        reply: Reply to message
+                        int: Intercept messages
+                        $: Run command
+                        cmd: Run command
+                        exit: Exit
+                        """
+                        )
                     case "chn":
                         c = await aioconsole.ainput("Enter channel id: ")
                         if c == "exit":
@@ -813,6 +873,105 @@ ROLE_GIVING = 1170116532513275904
 DURATION = 30
 
 
+import re
+
+
+def get_emoji_id(emoji_str):
+    # regex: :\d*>
+    animated = "a:" in emoji_str
+    name = re.search(r":\w*:", emoji_str)
+    if name:
+        name = name.group()[1:-1]
+    match = re.search(r":\d*>", emoji_str)
+    if match:
+        return match.group()[1:-1], animated, name
+    return None, False, None
+
+
+def get_emoji_link_from_id(emoji_id, animated=False, name=""):
+    if emoji_id is None:
+        # cprint("Invalid emoji id", "red")
+        return
+    link = f"https://cdn.discordapp.com/emojis/{emoji_id}"
+    if animated:
+        ext = ".gif"
+    else:
+        ext = ".png"
+    link += ext
+    return link, name, ext
+
+
+def trans_emo(emoji):
+    return get_emoji_link_from_id(*get_emoji_id(emoji))
+
+
+import requests
+
+
+def download_emoji(direct_link, filename, ext):
+    directory = "images/"
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    with open(directory + filename + ext, "wb") as f:
+        f.write(requests.get(direct_link).content)
+
+
+"""
+Read images/ folder
+return string
+:filename1: :filename2: ...
+"""
+
+
+def chunk_list(lst, chunk_size):
+    for i in range(0, len(lst), chunk_size):
+        yield lst[i : i + chunk_size]
+
+
+def read_images():
+    directory = "images/"
+    if not os.path.exists(directory):
+        os.makedirs(directory)
+    files = os.listdir(directory)
+    image_list = [f":{f[:-4]}:" for f in files]
+    # sort by name
+    image_list.sort()
+    image_str = ""
+    for i in chunk_list(image_list, 12):
+        image_str += " ".join(i) + "\n"
+    return image_str
+
+
+@sonata.command()
+async def archive(ctx, *message):
+    message = " ".join(message).replace(" ", "").strip()
+    emojis = message.split("<")
+    emojis = [trans_emo(e) for e in emojis]
+    num = 0
+    for emoji in emojis:
+        if emoji is None:
+            continue
+        download_emoji(*emoji)
+        num += 1
+    await ctx.send(f"Archived {num} emoji{'s' if num > 1 else ''}")
+
+
+@sonata.command()
+async def oute(ctx):
+    text = read_images()
+    print(text)
+    while len(text) > 2000:
+        s = text[:2000]
+        a = ""
+        if s[-1] != ":":
+            a = s[s.rfind(":") + 1 :]
+            s = s[: s.rfind(":") + 1]
+        await ctx.send(s)
+        text = a + text[2000:]
+
+    await ctx.send(text)
+
+
 @sonata.command()
 async def smarty(ctx, user_id: int, action: str = "give"):
     global TOTAL_VOTE, MIN_VOTES, PERCENTAGE, ROLE_GIVING, DURATION
@@ -915,7 +1074,7 @@ async def google_ai_question(ctx, *message):
                 name,
                 _ref,
                 AI="Gemini",
-                error_prompt=lambda r: P.get("ExplainBlockReasoning", r, name),
+                error_prompt=lambda r, name: P.get("ExplainBlockReasoning", r, name),
             )
             if INTERCEPT:
                 print("Intercepting")
@@ -932,6 +1091,8 @@ async def google_ai_question(ctx, *message):
             ctx,
             "Sorry, an error occured while processing your message.",
         )
+    finally:
+        Sonata.config.set(auto="g")
 
 
 @sonata.command(name="o", description="Ask a question using OpenAI.")
@@ -960,22 +1121,83 @@ async def open_ai_question(ctx, *message):
             ctx,
             "Sorry, an error occured while processing your message.",
         )
+    finally:
+        Sonata.config.set(auto="o")
+
+
+@sonata.command(name="c", description="Ask a question using Claude")
+async def claude_ai_question(ctx, *message):
+    global INTERCEPT
+    try:
+        message = " ".join(message)
+        name = get_full_name(ctx)
+        try:
+            _ref = (ctx.author, message)
+        except Exception as _:
+            _ref = None
+        async with ctx.typing():
+            r = Sonata.chat.request(
+                (await get_channel(ctx)).id, message, name, _ref, AI="Claude"
+            )
+            if INTERCEPT:
+                new_message = await aioconsole.ainput("Enter message: ")
+                if new_message != "exit":
+                    r = new_message
+                INTERCEPT = False
+            await ctx_reply(ctx, r)
+    except Exception as e:
+        cprint(e, "red")
+        await ctx_reply(
+            ctx,
+            "Sorry, an error occured while processing your message.",
+        )
+    finally:
+        Sonata.config.set(auto="c")
 
 
 #
 @sonata.command(name="mi", description="Ask a question using MistralAI.")
 async def mistral_ai_question(ctx, *message):
+    global INTERCEPT
     try:
         message = " ".join(message)
-        name = get_full_name(ctx.author)
-        r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
-        await ctx.reply(r[:2000], mention_author=False)
+        name = get_full_name(ctx)
+        try:
+            _ref = (ctx.author, message)
+        except Exception as _:
+            _ref = None
+        async with ctx.typing():
+            r = Sonata.chat.request(
+                (await get_channel(ctx)).id, message, name, _ref, AI="Mistral"
+            )
+            if INTERCEPT:
+                new_message = await aioconsole.ainput("Enter message: ")
+                if new_message != "exit":
+                    r = new_message
+                INTERCEPT = False
+            await ctx_reply(ctx, r)
     except Exception as e:
         cprint(e, "red")
-        await ctx.reply(
+        await ctx_reply(
+            ctx,
             "Sorry, an error occured while processing your message.",
-            mention_author=False,
         )
+    finally:
+        Sonata.config.set(auto="mi")
+
+
+# async def mistral_ai_question(ctx, *message):
+#     try:
+#         message = " ".join(message)
+#         name = get_full_name(ctx.author)
+#         r = Sonata.chat.request(ctx.channel.id, message, name, AI="Mistral")
+#         await ctx.reply(r[:2000], mention_author=False)
+#     except Exception as e:
+#         cprint(e, "red")
+#         await ctx.reply(
+#             "Sorry, an error occured while processing your message.",
+#             mention_author=False,
+#         )
 
 
 #
@@ -1078,8 +1300,15 @@ async def god(ctx):
 
 
 async def main():
-    load_favs()
-    await sonata.start(settings.BOT_TOKEN)
+    try:
+        load_favs()
+        await sonata.start(settings.BOT_TOKEN)
+    except:
+        cprint("Exiting...", "red")
+    finally:
+        # TODO: Store memory on crash and reload it
+        cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
+        save_favs()
 
 
 if __name__ == "__main__":

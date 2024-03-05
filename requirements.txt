@@ -9,3 +9,4 @@ mistralai
 dotenv
 youtube-search-python
 google-api-python-client
+anthropic

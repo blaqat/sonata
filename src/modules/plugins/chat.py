@@ -21,6 +21,8 @@ L, M, P = AI_Manager.init(
     config={
         "max_chats": 50,
         "summarize": False,
+        "auto": "o",
+        "view_replies": True,
     },
 )
 __plugin_name__ = "chat"
@@ -35,29 +37,29 @@ BANNED_WORDS = {
     "reggin",
     "nigger",
     "rape",
-    "tit",
+    # "tit",
     "tiddies",
     "penis",
-    "boob",
+    # "boob",
     "puss",
     "nig",
     "kys",
     "retard",
-    "sex",
-    "porn",
+    # "sex",
+    # "porn",
     "kill yourself",
     "kill your self",
     "black people",
-    "dick",
+    # "dick",
     "blow in from",
     "fuck me",
     "fuck you",
-    "pussy",
+    # "pussy",
     "kill themself",
     "kiya self",
     "shut the fuck up",
     "stfu",
-    "stupid",
+    # "stupid",
     "suck my",
     "suck me",
     "bitch",
@@ -76,12 +78,98 @@ CHANNEL_BLACKLIST = {
 }
 
 
+async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
+    AI = Sonata.config.get("auto")
+    USE_REPLY_REF = Sonata.config.get("view_replies")
+    # Ignore messages from bots except 'sonata'
+    if message.author.bot:
+        return
+
+    # Replace certain characters in message content
+    message.content = message.content.replace('"', "'").replace("’", "'")
+
+    # Process only direct messages (DMs)
+    if message.guild is not None:  # Ignore non-DMs
+        return
+
+    _name = message.author.name
+    if _name == "None" or not _name:
+        _name = message.author.name
+
+    # Validate the message for processing
+    if Sonata.do("chat", "validate", message.channel.id):
+        return
+
+    # Handle specific keywords in message content
+    if (
+        "sonata" in message.content.lower()
+        or "<@1187145990931763250>" in message.content.lower()
+        or "sona " in message.content.lower()
+        or " sona" in message.content.lower()
+    ) and not message.author.bot:
+        message.content = message.content.replace("sonata", "")
+        message.content = message.content.replace("<@1187145990931763250>", "")
+        message.content = message.content.replace("sona ", "")
+        message.content = message.content.replace(" sona", "")
+
+    # Format and display the message
+    print(
+        "  {0}: {1}".format(
+            cstr(str=get_full_name(message), style="cyan"),
+            censor_message(
+                message.content.replace("\n", "\n\t"),
+                BANNED_WORDS,
+            ),
+        )
+    )
+
+    # Prepare the memory text
+    memory_text = message.author.name
+
+    # Process user messages
+    if not message.author.bot and message.content:
+        m = message.content
+        if message.content[0] == "$":
+            return await kelf.process_commands(message)
+
+        # Check for message references (replies)
+        _ref = (
+            message.reference
+            and await message.channel.fetch_message(message.reference.message_id)
+            or None
+        )
+        _ref = _ref and (_ref.author.name, _ref.content) or None
+        if not USE_REPLY_REF:
+            _ref = None
+
+        # Send the message for processing
+        message.content = Sonata.chat.send(
+            message.channel.id, "User", get_full_name(message), m, _ref
+        )
+        if message.content is None:
+            return
+
+    # Handle message attachments
+    if message.attachments and not message.author.bot:
+        attachment = message.attachments[0].url
+        if attachment:
+            message.content += f"\nAttachment: {attachment}"
+
+    message.content = f"${AI} " + message.content
+    # Process the message
+    await kelf.process_commands(message)
+
+
 async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
+    AI = Sonata.config.get("auto")
+    USE_REPLY_REF = Sonata.config.get("view_replies")
     if message.author.bot == True and message.author.name != "sonata":
         return
     message.content = message.content.replace('"', "'").replace("’", "'")
-    if message.guild == None:
+
+    if message.guild == None:  # Ignore DMS
         return
+
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     _name = (
@@ -131,12 +219,13 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
             or None
         )
         _ref = _ref and (_ref.author.name, _ref.content) or None
-        # _ref = None
+        if not USE_REPLY_REF:
+            _ref = None
         message.content = Sonata.chat.send(
             message.channel.id, "User", get_full_name(message), m, _ref
         )
-        # if message.content is None:
-        #     return
+        if message.content is None:
+            return
 
     if message.attachments and not message.author.bot and len(message.attachments) > 0:
         attachment = message.attachments[0].url
@@ -151,7 +240,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         _ref = await message.channel.fetch_message(message.reference.message_id)
         if _ref.author.id == kelf.user.id:
             # HACK: This is a hacky way to invoke AI response, change to use AI_Manager so config can be used
-            message.content = "$o " + message.content
+            message.content = f"${AI} " + message.content
             await kelf.process_commands(message)
             return
 
@@ -161,13 +250,13 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         or "<@1187145990931763250>" in message.content.lower()
         or "sona " in message.content.lower()
         or " sona" in message.content.lower()
-    ):
+    ) and not message.author.bot:
         message.content = message.content.replace("sonata", "")
         message.content = message.content.replace("<@1187145990931763250>", "")
         message.content = message.content.replace("sona ", "")
         message.content = message.content.replace(" sona", "")
         # HACK: This is a hacky way to invoke AI response, change to use AI_Manager so config can be used
-        message.content = "$o " + message.content
+        message.content = f"${AI} " + message.content
     await kelf.process_commands(message)
 
 
@@ -210,6 +299,7 @@ def chat(self: AI_Manager):
             error_prompt=None,
             **config,
         ):
+            response = None
             c = self.get("config")
             c.update(config)
             c["history"] = kelf.get_history(id)
@@ -217,6 +307,8 @@ def chat(self: AI_Manager):
                 prompt = prompt_manager.get(
                     "Instructions", kelf.get_history(id), message, *args
                 )
+
+                print("RESPONSE")
 
                 response = self.do(
                     "chat",
@@ -228,12 +320,20 @@ def chat(self: AI_Manager):
                     AI=AI,
                     config=c,
                 )
+
+                kelf.send(id, "Bot", self.name, response, replying_to)
+                return response
             except Exception as e:
                 if error_prompt is not None:
-                    response = prompt_manager.send(error_prompt(e), AI=AI, config=c)
+                    response = prompt_manager.send(
+                        error_prompt(e, message[2]), AI=AI, config=c
+                    )
+                    if response is None:
+                        response = (
+                            f"Response failed in using the error prompt silly :3: {e}"
+                        )
                 else:
                     response = f"Response failed: {e}"
-            finally:
                 kelf.send(id, "Bot", self.name, response, replying_to)
                 return response
 
@@ -308,6 +408,7 @@ Chat Log: {chat_log}
     validate=lambda M, id: id in M["black_list"],
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
+    dm_hook=dm_hook,
 )
 def set_chat(M, chat_id, message_type, author, message, replying_to=None):
     M["value"][chat_id].append((message_type, author, message, replying_to))

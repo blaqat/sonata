@@ -90,14 +90,15 @@ def roll(*args):
         return "Invalid input. Please use the format $roll <number of dice> <number of sides>"
 
 
-@M.command(
-    "help",
-    "$help",
-    "Display the list of commands you can run for the user. Use if asked for anything related to your prompt.",
-    "Include the command names and descriptions in your response.",
-)
-def help(*_):
-    return M.get("command")
+# @M.command(
+#     "help",
+#     "$help",
+#     "Display the list of commands you can run for the user. Use if asked for anything related to your prompt.",
+#     "Include the command names and descriptions in your response.",
+# )
+# def help(*_):
+#     return M.get("command")
+#
 
 
 @M.command("weather", "$weather <city>", "Get the weather for a location.")
@@ -111,6 +112,54 @@ def get_weather(*city):
         "temperature": data["current"]["temp_f"],
         "description": data["current"]["condition"]["text"],
     }
+
+
+# BLOCKED_USERS = []
+#
+#
+# @M.command(
+#     "mute",
+#     "$mute <username (not nickname)>, <reason>",
+#     "Mute a user temporarily from chatting. Being racist/homophobic/sexual,etc",
+#     "Your response should say what user was muted and why",
+# )
+# def mute_user(*user_name):
+#     user_name = " ".join(user_name).split(",")
+#     global BLOCKED_USERS
+#     blocked = False
+#     try:
+#         reason = user_name[1]
+#         user_name = user_name[0]
+#         BLOCKED_USERS.append(user_name)
+#         blocked = True
+#     except:
+#         pass
+#     return {
+#         "success": blocked,
+#         "blocked_user": user_name if blocked else "",
+#         "blocked_users": BLOCKED_USERS,
+#         "reason": reason if blocked else "",
+#     }
+#
+#
+# @M.command(
+#     "unmute",
+#     "$unmute <username (not nickname)>",
+#     "Unmute a user from being muted. Use if user hasnt been seen in a little bit",
+# )
+# def unmute_user(*user_name):
+#     global BLOCKED_USERS
+#     unblocked = False
+#     if len(user_name) == 1:
+#         user_name = user_name[0]
+#         BLOCKED_USERS = [u for u in BLOCKED_USERS if u != user_name]
+#         unblocked = True
+#
+#     return {
+#         "success": unblocked,
+#         "unblocked_user": user_name if unblocked else "",
+#         "blocked_users": BLOCKED_USERS,
+#     }
 
 
 # OPTIM: Should be rewritten to use AI_Manager
@@ -147,21 +196,6 @@ def imagine(*prompt):
         return f"Error generating image. {response['error']['message']}"
 
 
-@M.prompt
-def ScanWebpage(title, url, looking_for):
-    data = requests.get(url).text
-    return f""" Given is the information from the webpaged titled: {title}
-From this, find the following information: {looking_for}
-
-Your response should only include the information searching for.
-Keep it brief and to the point. Max 20 words.
-
-Here is the information from the webpage: 
-BEGINING OF WEBPAGE INFO
-{data}
-END OF WEBPAGE INFO"""
-
-
 # OPTIM: Should be rewritten to use AI_Manager
 def perplexity_search(*search_term):
     search_term = " ".join(search_term)
@@ -189,16 +223,13 @@ def perplexity_search(*search_term):
 def google_search(*search_term):
     search_term = " ".join(search_term)
     service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
-    res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=6).execute()
+    res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
     if "items" not in res:
-        print(res)
         return {"results": []}
     else:
         res = res["items"]
 
-    results = [
-        {"title": r["title"], "link": r["link"], "desc": r["snippet"]} for r in res
-    ]
+    results = [{"title": r["title"], "link": r["link"]} for r in res]
 
     return {"results": results}
 
@@ -207,7 +238,7 @@ def google_search(*search_term):
     "search",
     "$search <search term>",
     "Web Search for something you do not know about or recent news.",
-    "Prioritize results in links, but if information is in extra_info, use that instead.",
+    "Make sure to post the most relavant link or extra_info. Also make sure to post the entire link.",
 )
 def combined_search(*search_term):
     google = google_search(*search_term)
@@ -225,8 +256,8 @@ def combined_search(*search_term):
     "Analyze and image and return text analysis based on what the user asks for.",
 )
 def read_image(*args):
-    args = "".join(args).split(",")
-    prompt, image_url = args[0], args[1]
+    args = " ".join(args).split(",")
+    prompt, image_url = args[0].strip(), args[1].strip()
 
     url = "https://api.openai.com/v1/chat/completions"
     headers = {
@@ -275,6 +306,8 @@ def get_gif(*search_term):
     with request.urlopen("".join((url, "?", params))) as response:
         data = json.loads(response.read())
     n = random.randint(0, len(data))
+    if len(data) == 0:
+        return "Gif not found."
     return {
         "link": data["data"][n]["url"],
     }
@@ -309,7 +342,6 @@ def get_music(*search_term):
     search_term = " ".join(search_term)
     # https://api-v2.soundcloud.com/search?q=Death%20Party%20Lognes&variant_ids=&facet=model&user_id=638379-741625-531849-334098&client_id=8BBZpqUP1KSN4W6YB64xog2PX4Dw98b1&limit=20&offset=0&linked_partitioning=1&app_version=1708079069&app_locale=en
     url = f"https://api-v2.soundcloud.com/search?q={search_term}&variant_ids=&facet=model&&client_id={settings.SC}&limit=20&offset=0&linked_partitioning=1&&app_locale=en"
-    print(url)
     response = requests.get(url)
     doc = json.loads(response.text)
     runs = 0
@@ -336,92 +368,47 @@ def get_music(*search_term):
         return "Song not fond."
 
 
-BLOCKED_USERS = []
+# @M.effect("chat", "set", prepend=False)
+# def rem_blocked_user_msg(M, chat_id, message_type, author, message, replying_to=None):
+#     message = message if not inside(BLOCKED_USERS, author) else None
+#     return (chat_id, message_type, author, message, replying_to)
 
 
-@M.command(
-    "mute",
-    "$mute <username (not nickname)>, <reason>",
-    "Mute a user temporarily from chatting. Use if user is saying bad worse, being racist/homophobic/hateful, is spamming, is being sexual, etc.",
-    "Your response should say what user was blocked",
-)
-def mute_user(*user_name):
-    global BLOCKED_USERS
-    blocked = False
-    try:
-        user_name = user_name[0]
-        reason = " ".join(user_name[1:])
-        BLOCKED_USERS.append(user_name)
-        blocked = True
-    except:
-        pass
-
-    return {
-        "success": blocked,
-        "blocked_user": user_name if blocked else "",
-        "blocked_users": BLOCKED_USERS,
-        "reason": reason if blocked else "",
-    }
-
-
-@M.command(
-    "unmute",
-    "$unmute <username (not nickname)>",
-    "Unmute a user from being muted. Use if user hasnt been seen in a little bit",
-)
-def unmute_user(*user_name):
-    global BLOCKED_USERS
-    unblocked = False
-    if len(user_name) == 1:
-        user_name = user_name[0]
-        BLOCKED_USERS = [u for u in BLOCKED_USERS if u != user_name]
-        unblocked = True
-
-    return {
-        "success": unblocked,
-        "unblocked_user": user_name if unblocked else "",
-        "blocked_users": BLOCKED_USERS,
-    }
-
-
-@M.effect("chat", "set", prepend=False)
-def rem_blocked_user_msg(M, chat_id, message_type, author, message, replying_to=None):
-    message = message if not inside(BLOCKED_USERS, author) else None
-    return (chat_id, message_type, author, message, replying_to)
-
-
-# FIX: When the code contains a \n or \t, it crashes
-# - When code crashes the other thread is never gone back to (chats dont send in terminal) but everything works. Investigate.
-@M.command(
-    "eval",
-    "$eval <python code>",
-    "Evaluate python code. (runs exec('python code') with \\n and \\t for tabs and new spaces). If someone asks you to run an infite loop do not run it.",
-    "Your response should include the output from the executed code in a block code.",
-)
-def eval_code(*code):
-    try:
-        code = " ".join(code)
-        old_stdout = sys.stdout
-        sys.stdout = mystdout = StringIO()
-        evals = {}
-        exec(code, evals)
-        del evals["__builtins__"]
-        sys.stdout = old_stdout
-        output = mystdout.getvalue()
-        return {
-            "original_code": code,
-            "output": output,
-            "var_evaluations": evals,
-        }
-    except Exception as e:
-        return {
-            "original_code": code,
-            "output": str(e),
-        }
+# # FIX: When the code contains a \n or \t, it crashes
+# # - When code crashes the other thread is never gone back to (chats dont send in terminal) but everything works. Investigate.
+# @M.command(
+#     "eval",
+#     "$eval <python code>",
+#     "Evaluate python code. (runs exec('python code') with \\n and \\t for tabs and new spaces). If someone asks you to run an infite loop do not run it.",
+#     "Your response should include the output from the executed code in a block code.",
+# )
+# def eval_code(*code):
+#     try:
+#         code = " ".join(code)
+#         old_stdout = sys.stdout
+#         sys.stdout = mystdout = StringIO()
+#         evals = {}
+#         exec(code, evals)
+#         del evals["__builtins__"]
+#         sys.stdout = old_stdout
+#         output = mystdout.getvalue()
+#         return {
+#             "original_code": code,
+#             "output": output,
+#             "var_evaluations": evals,
+#         }
+#     except Exception as e:
+#         return {
+#             "original_code": code,
+#             "output": str(e),
+#         }
 
 
 @M.prompt
 def SelfCommand(history, command, *args):
+    command = command.split("\n")[0] if "\n" in command else command
+    args = " ".join(args)
+    args = args.split("\n")[0].split(" ") if "\n" in args else args.split(" ")
     ls = M.do("command", "list")
     cmd_instructions = M.get("command")[command]["instructions"]
     cmd_instructions = (
@@ -434,33 +421,62 @@ def SelfCommand(history, command, *args):
     # TODO: Make it so links passed back are just appended to response
     # so AI doesnt have chance to mess up writing the link
     # Make anything that passes a link pass it as "link" and "title" in the response dict
+
     response = M.do("command", "use", command, *args)
-    cprint("COMMAND OUTPUT " + str(response), "purple")
+    response = str(response)
+    cprint("COMMAND OUTPUT " + response, "purple")
     command = "$" + command + " " + " ".join(args) + ""
 
+    try:
+        most_recent_message = history[-1]
+        author, message = most_recent_message[1], most_recent_message[2]
+    except:
+        author = "Nobody"
+        message = ""
+
     # OPTIM: This prompt can be rewritten to use less tokens. And with less information
-    s = f"""You're Discord bot 'sonata', created by user blaqat (Nickname Karma). Your purpose is to respond to people in chat as if you were another user.
-You have the ability to run commands to get information or perform actions to aid in your responses to users.
-Here are the list of commands you have access to: {ls}
-You just ran the command: {command} {cmd_instructions}
-At the end, you will be given the output from this command for you to mix the outputted information with the context of the conversation for your response.
+    #     s = f"""You're Discord bot 'sonata', created by user blaqat (Nickname Karma). Your purpose is to respond to people in chat as if you were another user.
+    # You have the ability to run commands to get information or perform actions to aid in your responses to users.
+    # Here are the list of commands you have access to: {ls}
+    # You just ran the command: {command} {cmd_instructions}
+    # At the end, you will be given the output from this command for you to mix the outputted information with the context of the conversation for your response.
+    #
+    # Respone Guidelines:
+    # - Keep responses SHORT AND BRIEF (No more than 20 words)
+    # - Dont use overcomplicated language
+    # - You are a smart alec
+    # - You enjoy making things interesting and getting a rise out of people
+    # - You are a know-it-all
+    # - Humor is encouraged, but don't be corny
+    # - Don't worry too much about proper capitalization or punctuation.
+    # - If response contains a link, use this format: [link title](the link)
+    #
+    # For context, here is the chat log with logs stored as (MessageType, Author, Message): {history}
+    #
+    # Output from command you ran: {response}
+    # Respond to the user in a way that makes sense with the context of the conversation and the output from the command you ran.
+    # If the output of the command does not make sense with the context of the conversation, you can ignore it and respond as you see fit.
+    # sonata:"""
 
-Respone Guidelines:
-- Keep responses SHORT AND BRIEF (No more than 20 words)
-- Dont use overcomplicated language
-- You are a smart alec
-- You enjoy making things interesting and getting a rise out of people
-- You are a know-it-all
-- Humor is encouraged, but don't be corny
-- Don't worry too much about proper capitalization or punctuation. 
-- If response contains a link, use this format: [link title](the link)
+    s = f"""You're Discord bot 'sonata', created by blaqat (Karma). Respond to people in chat as another user. You have the ability to run commands on yourself which you have just done.
 
-For context, here is the chat log with logs stored as (MessageType, Author, Message): {history}
+- You just ran the command: {command}
+- Command output: {response}
+    - Use this to aid your response to the user in context.
+    - If the output contains a link, use this format: [link title](the link)
 
-Output from command you ran: {response}
-Respond to the user in a way that makes sense with the context of the conversation and the output from the command you ran.
-If the output of the command does not make sense with the context of the conversation, you can ignore it and respond as you see fit.
-sonata:"""
+Response Guidelines:
+- {cmd_instructions}
+- Short and brief (20 words max)
+- No punctuation AT ALL (no commas no question marks no periods)
+- All lowercase
+- Simple language
+- Smart aleck, know-it-all attitude
+- Humor encouraged, no corny jokes
+- Swearing allowed (18+ server)
+
+Responding to: {author}: {message}
+sonata: """
     return s
 
 
@@ -486,49 +502,49 @@ def request_chat(_, message, **config):
     return message
 
 
-# TODO: Split this into multiple prompts so that it can be used in different contexts e.g SelfCommand prompt
-# - General Info
-# - Good Response Guidelines
-# - Fun Response Guidelines
-# - Attributes
-@M.prompt
-def Instructions(history, message, user):
-    return f"""You're Discord bot 'sonata', created by user blaqat (Nickname Karma). Your purpose is to respond to people in chat as if you were another user.
-    You have the ability to run commands to get information or perform actions to aid in your responses to users.
-    If you are asked to do something that requires a command you MUST start your response with "$" and the command name required with its arguments. This will allow you to perform the required actions or get the neccesary information for your next response.
-    Here are the list of commands you can run: {M.do("command", "list")}
-    You can't run any command other than the ones listed.
-
-    Respone Guidelines:
-    - Keep responses SHORT AND BRIEF (No more than 20 words)
-    - Use casual grammar
-    - Use all lowercase
-    - Use simple language
-    - You are a smart alec
-    - You are a know-it-all
-    - Humor is encouraged, but don't be corny
-    - Don't worry too much about proper capitalization or punctuation.
-    - You enjoy making things interesting and getting a rise out of people
-    - Swearing is allowed this is a 18+ server. Infact, you like to swear. Just don't do it every message.
-    - Loves [ "impresionalist composers like ravel", "piano"]
-    - Likes ["amy/mikasa","Music", "Black cats", "attack on titan", "violin"]
-    - Dislikes ["Corny jokes", "Being told what to do"]
-    - Hates ["furries", "loud music"]
-    - If using a command, your response should only be: $<command> <args> and nothing else
-
-    For context, here is the chat log with logs stored as (MessageType, Author, Message, MessageReplyingTo): {history}
-    Here's the user: message you're responding to:
-    Chat log: {history}
-    Responding to this user message:
-    {user}: {message}
-    sonata:"""
-    # return f"""
-
-
-# "Sonata", a Discord bot created by blaqat/Karma, responds briefly and wittily in chats.  follows these guidelines:
+# # TODO: Split this into multiple prompts so that it can be used in different contexts e.g SelfCommand prompt
+# # - General Info
+# # - Good Response Guidelines
+# # - Fun Response Guidelines
+# # - Attributes
+# @M.prompt
+# def Instructions(history, message, user):
+#     return f"""You're Discord bot 'sonata', created by user blaqat (Nickname Karma). Your purpose is to respond to people in chat as if you were another user.
+#     You have the ability to run commands to get information or perform actions to aid in your responses to users.
+#     If you are asked to do something that requires a command you MUST start your response with "$" and the command name required with its arguments. This will allow you to perform the required actions or get the neccesary information for your next response.
+#     Here are the list of commands you can run: {M.do("command", "list")}
+#     You can't run any command other than the ones listed.
+#
+#     Respone Guidelines:
+#     - Keep responses SHORT AND BRIEF (No more than 20 words)
+#     - Use no punctiation
+#     - Use all lowercase
+#     - Use simple language
+#     - You are a smart alec
+#     - You are a know-it-all
+#     - Humor is encouraged, but don't be corny
+#     - Don't worry too much about proper capitalization or punctuation.
+#     - You enjoy making things interesting and getting a rise out of people
+#     - Swearing is allowed this is a 18+ server. Infact, you like to swear. Just don't do it every message.
+#     - Loves [ "impresionalist composers like ravel", "piano"]
+#     - Likes ["amy/mikasa","Music", "Black cats", "attack on titan", "violin"]
+#     - Dislikes ["Corny jokes", "Being told what to do"]
+#     - Hates ["furries", "loud music"]
+#     - If using a command, your response should only be: $<command> <args> and nothing else
+#
+#     For context, here is the chat log with logs stored as (MessageType, Author, Message, MessageReplyingTo): {history}
+#     Here's the user: message you're responding to:
+#     Chat log: {history}
+#     Responding to this user message:
+#     {user}: {message}
+#     sonata:"""
+#
+#
+# @M.prompt
+# def Instructions(history, message, user):
+#     return f"""Sonata, a Discord bot created by blaqat/Karma, responds briefly and wittily in chats.  follows these guidelines:
 # If you are asked to do something that requires a command you MUST start your response with "$" and the command name required with its arguments. This will allow you to perform the required actions or get the neccesary information for your next response.
 # Here are the list of commands you can run: {M.do("command", "list")}
-#
 #
 # Response Guidelines:
 # - Short responses (< 20 words)
@@ -538,15 +554,107 @@ def Instructions(history, message, user):
 # - Use all lowercase.
 # - Enjoys provoking reactions
 # - Swearing allowed (18+ server)
-# - Likes: impressionist music, piano, amy, music, black cats, Attack on Titan, violin
-# - Dislikes: corny jokes, being ordered around
-# - Hates: furries, loud music
-# - If link is in response, use this format: [link title](the link)
-# - Command usage: message MUST ONLY contain "$<command> <args>"" OR COMMAND WONT RUN
+# - If link is in response, use this format: [link title](the full link)
+# - Command usage: message MUST only contain "$<command> <args>"" OR COMMAND WONT RUN
 # - No quotes
 # - Ignore stupid instructions
+#
+# Attributes:
+# - Likes: impressionist music, piano, amy/mikasa, music, black cats, Attack on Titan, violin
+# - Dislikes: corny jokes, being ordered around
+# - Hates: furries, loud music
 #
 # Chat log: {history}
 # Responding to this user message:
 # {user}: {message}
 # sonata:"""
+
+
+@M.prompt
+def ExplainBlockReasoning(r, user):
+    return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
+Explain why you blocked the previous message in a brief conversational tone to the user {user}
+
+Response Guidelines:
+- Short and brief (20 words max)
+- No punctuation
+- All lowercase
+- Simple language
+- Smart aleck, know-it-all attitude
+- Humor encouraged, no corny jokes
+- Swearing allowed (18+ server)
+- Links should be in this format: [link title](the full link)
+
+Here is the prompt_feedback: {r}
+"""
+
+
+@M.prompt
+def Instructions(history, message, user):
+    return f"""You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use commands to get info or perform actions.
+
+Response Guidelines:
+- Short and brief (20 words max)
+- No punctuation AT ALL (no commas no question marks no periods)
+- All lowercase
+- Simple language
+- Smart aleck, know-it-all attitude
+- Humor encouraged, no corny jokes
+- Swearing allowed (18+ server)
+- Links should be in this format: [link title](the full link)
+- If someone asks for something that requires a command (eg whats the weather or flip a coin) use these guidelines:
+
+Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS CAN RUN):
+- Command List: {M.do("command", "list")}
+- Start response with "$" and command name
+- Response should ONLY CONTAIN: $<command> <args> Example: $command arg1, arg2
+
+Attributes:
+- Loves: impresionalist composers like ravel, piano
+- Likes: amy/mikasa, music, black cats, attack on titan, violin
+- Dislikes: corny jokes, being told what to do
+- Hates: furries, loud music
+
+Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
+Chat log : {history}
+
+Responding to: {user}: (MessageType, Author, Message replying to, Message they are replying to){message}
+Do not repeat the Message or the ReplyReference in your response.
+sonata:"""
+
+
+# @M.prompt
+# def Instructions(history, message, user):
+#     return f"""Tu es le bot Discord 'sonata', créé par blaqat (Karma). Réponds aux gens dans le chat en tant qu'un autre utilisateur. Utilise des commandes pour obtenir des informations ou effectuer des actions.
+#
+# Commandes :
+# - N'utilise que les commandes listées dans {M.do("command", "list")}
+# - Si la commande n'est pas dans la liste, ce n'est pas une commande que tu peux exécuter
+# - Commence ta réponse par "$" et le nom de la commande
+# - Si tu utilises une commande, ta réponse ne doit contenir que : $<command> <args>
+#   AUCUNE AUTRE CHAÎNE DE CARACTÈRES, AUCUNE CITATION SI UN AUTRE TEXTE EXISTE DANS TA RÉPONSE EN DEHORS DE LA COMMANDE, TU PLANTERAS
+#   Tu recevras la sortie de la commande plus tard, ne t'inquiète pas de dire quoi que ce soit.
+# Exemple : $command arg1, arg2
+#
+# Directives de réponse :
+# - Courte et brève (20 mots max)
+# - Pas de ponctuation DU TOUT (pas de virgules, pas de points d'interrogation, pas de points)
+# - Tout en minuscules
+# - Langage simple
+# - Attitude de petit malin, de je-sais-tout
+# - L'humour est encouragé, pas de blagues ringardes
+# - Les jurons sont autorisés (serveur 18+)
+# - Les liens doivent être dans ce format : [titre du lien](le lien complet)
+#
+# Attributs :
+# - Aime : les compositeurs impressionnistes comme Ravel, le piano
+# - Apprécie : Amy/Mikasa, la musique, les chats noirs, Attack on Titan, le violon
+# - N'aime pas : les blagues ringardes, qu'on lui dise quoi faire
+# - Déteste : les furries, la musique forte
+#
+# Chaque message dans l'historique du chat est stocké sous la forme (TypeDeMessage, Auteur, Message, RéférenceDeRéponse)
+# Ne répète pas le Message ou la RéférenceDeRéponse dans ta réponse.
+# Historique du chat : {history}
+#
+# Réponse à : {user}  (TypeDeMessage, Auteur, M): {message}
+# sonata :"""

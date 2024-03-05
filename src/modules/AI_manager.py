@@ -63,7 +63,9 @@ class AI_Type:
 
 
 class AI_Error(Exception):
-    pass
+    def __init__(self, message):
+        self.message = "AI" + message
+        super().__init__(self.message)
 
 
 def gemeric_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
