@@ -245,6 +245,28 @@ class AI_Manager:
             return decorator
 
         @classmethod
+        def new_helper(cls, name):
+            def decorator(hook_func):
+                def helper(*args, **kwargs):
+                    calling = len(args) == 1 and callable(args[0])
+
+                    def decorator_func(func):
+                        hook_func(func, *args, **kwargs)
+                        return func
+
+                    if calling:
+                        func, rest = args[0], args[1:]
+                        hook_func(func, *rest, **kwargs)
+                        return
+
+                    return decorator_func
+
+                setattr(cls, name, helper)
+                return helper
+
+            return decorator
+
+        @classmethod
         def prompt(cls, func, prompt_name=None):
             if prompt_name is None:
                 prompt_name = func.__name__
@@ -555,7 +577,7 @@ class AI_Manager:
                 return
             return self.do(key, "set", *args, **kwargs)
 
-    def get(self, key, val="value", inner=True, default=None):
+    def get(self, key, val="value", default=None, inner=True):
         if not inner:
             return self.memory.get(key, default)
         if not key in self.memory:

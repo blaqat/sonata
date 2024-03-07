@@ -20,7 +20,7 @@ def sort_plugins():
 
     # Build a map of dependencies and list of plugins with no dependencies
     for plugin_name, plugin in PLUGINS_DICT.items():
-        if "dependencies" in plugin.__dict__ and plugin.__dependencies__:
+        if "__dependencies__" in plugin.__dict__ and plugin.__dependencies__:
             dependencies_map[plugin_name] = set(plugin.__dependencies__)
         else:
             no_deps.append(plugin_name)
@@ -51,7 +51,7 @@ def sort_plugins():
 # Or choose to allow all except listed
 def PLUGINS(extend: list[str], mode: str = "allow"):
     if mode == "allow":
-        return [PLUGINS_DICT[plugin] for plugin in extend]
+        return [PLUGINS_DICT[plugin] for plugin in PLUGINS_DICT if plugin in extend]
     elif mode == "deny":
         return [PLUGINS_DICT[plugin] for plugin in PLUGINS_DICT if plugin not in extend]
     else:

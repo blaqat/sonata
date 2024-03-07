@@ -326,7 +326,7 @@ def chat(self: AI_Manager):
             except Exception as e:
                 if error_prompt is not None:
                     response = prompt_manager.send(
-                        error_prompt(e, message[2]), AI=AI, config=c
+                        str(error_prompt(e, message[2])), AI=AI, config=c
                     )
                     if response is None:
                         response = (
@@ -389,10 +389,29 @@ def chat(self: AI_Manager):
 def SummarizeChat(chat_log):
     return f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:
-- Mention people by name or nickname.
+- Mention people by name, not nickname. 
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
+- If there is a PreviousChatSummary, include it in the summary.
 Chat Log: {chat_log}
 """
+
+
+async def __chat(M, bot, channel_id, message, dm=False, replying_to=None, ping=False):
+    if replying_to is not None:
+        await replying_to.reply(message, mention_author=ping)
+    elif dm:
+        await bot.get_user(channel_id).send(message)
+    else:
+        await bot.get_channel(channel_id).send(message)
+
+    M["set"](
+        M,
+        channel_id,
+        "Bot",
+        bot.user.name,
+        message,
+        (replying_to.author.name, replying_to.content) if replying_to else None,
+    )
 
 
 @M.mem(
@@ -409,8 +428,11 @@ Chat Log: {chat_log}
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
     dm_hook=dm_hook,
+    chat=__chat,
 )
 def set_chat(M, chat_id, message_type, author, message, replying_to=None):
+    if M["value"].get(chat_id) is None:
+        M["value"][chat_id] = []
     M["value"][chat_id].append((message_type, author, message, replying_to))
     return (chat_id, message_type, author, message, replying_to)
 

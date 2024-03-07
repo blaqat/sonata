@@ -27,15 +27,11 @@ __dependencies__ = ["chat"]
 
 
 # NOTE: IF GPT-4 is the final solution, this can be integrated with the new Assistant API
-def __command(name, usage, desc=None, inst=None):
-    def wrapper(func):
-        M.set("command", name, func, usage, desc, inst)
-        return func
-
-    return wrapper
-
-
-M.command = __command
+@M.new_helper(
+    "command",
+)
+def command(F, name, usage, desc=None, inst=None):
+    M.set("command", name, F, usage, desc, inst)
 
 
 @M.mem(
@@ -162,38 +158,38 @@ def get_weather(*city):
 #     }
 
 
-# OPTIM: Should be rewritten to use AI_Manager
-@M.command(
-    "imagine",
-    "$imagine <prompt>",
-    "Generate 2 images based on a prompt.",
-    "Make sure to post the link. Also make sure to post the entire link.",
-)
-def imagine(*prompt):
-    prompt = " ".join(prompt)
-    url = "https://api.openai.com/v1/images/generations"
-    payload = {
-        "model": "dall-e-3",
-        "prompt": prompt,
-        "n": 1,
-        "size": "1024x1024",
-        "response_format": "url",
-    }
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {settings.OPEN_AI}",
-    }
-
-    try:
-        response = requests.post(url, headers=headers, data=json.dumps(payload)).json()
-        response = response["data"][0]
-        print(response)
-        return {
-            "prompt": response["revised_prompt"],
-            "image_link": response["url"],
-        }
-    except Exception as _:
-        return f"Error generating image. {response['error']['message']}"
+# # OPTIM: Should be rewritten to use AI_Manager
+# @M.command(
+#     "imagine",
+#     "$imagine <prompt>",
+#     "Generate 2 images based on a prompt.",
+#     "Make sure to post the link. Also make sure to post the entire link.",
+# )
+# def imagine(*prompt):
+#     prompt = " ".join(prompt)
+#     url = "https://api.openai.com/v1/images/generations"
+#     payload = {
+#         "model": "dall-e-3",
+#         "prompt": prompt,
+#         "n": 1,
+#         "size": "1024x1024",
+#         "response_format": "url",
+#     }
+#     headers = {
+#         "Content-Type": "application/json",
+#         "Authorization": f"Bearer {settings.OPEN_AI}",
+#     }
+#
+#     try:
+#         response = requests.post(url, headers=headers, data=json.dumps(payload)).json()
+#         response = response["data"][0]
+#         print(response)
+#         return {
+#             "prompt": response["revised_prompt"],
+#             "image_link": response["url"],
+#         }
+#     except Exception as _:
+#         return f"Error generating image. {response['error']['message']}"
 
 
 # OPTIM: Should be rewritten to use AI_Manager
@@ -252,7 +248,7 @@ def combined_search(*search_term):
 # OPTIM: Should be rewritten to use AI_Manager
 @M.command(
     "analyze-image",
-    "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url>",
+    "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
     "Analyze and image and return text analysis based on what the user asks for.",
 )
 def read_image(*args):
