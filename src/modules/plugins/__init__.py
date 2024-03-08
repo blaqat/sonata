@@ -2,6 +2,11 @@ import os
 import importlib
 from collections import OrderedDict
 
+
+def ord_list(l):
+    return list(dict.fromkeys(l))
+
+
 # Import and Add all modules in src/modules/plugins/ to a list
 PLUGINS_DICT = {}
 PLUGINS_LIST = set()
@@ -46,16 +51,41 @@ def sort_plugins():
     PLUGINS_LIST = sorted_plugins
 
 
-# TEST: Add a way to choose what plugins to extend.
-# Either choose to only allow listed
-# Or choose to allow all except listed
-def PLUGINS(extend: list[str], mode: str = "allow"):
+def PLUGINS(extend: list = None, mode: str = "allow", **kwags):
+    if extend is None:
+        return PLUGINS_LIST
+    dependencies = []
+    plugins = None
     if mode == "allow":
-        return [PLUGINS_DICT[plugin] for plugin in PLUGINS_DICT if plugin in extend]
+        plugins = [PLUGINS_DICT[plugin] for plugin in PLUGINS_DICT if plugin in extend]
     elif mode == "deny":
-        return [PLUGINS_DICT[plugin] for plugin in PLUGINS_DICT if plugin not in extend]
+        plugins = [
+            PLUGINS_DICT[plugin] for plugin in PLUGINS_DICT if plugin not in extend
+        ]
     else:
         raise ValueError("Mode must be either 'allow' or 'deny'")
+
+    for k, v in kwags.items():
+        if v == True:
+            plugins.append(PLUGINS_DICT[k])
+
+        if v == False:
+            plugins.remove(PLUGINS_DICT[k])
+
+    # Find all dependencies of the plugins
+    found_new = True
+    while found_new:
+        found_new = False
+        for plugin in plugins:
+            if "__dependencies__" not in plugin.__dict__:
+                continue
+            for dependency in plugin.__dependencies__:
+                d = PLUGINS_DICT[dependency]
+                if d not in dependencies:
+                    dependencies.insert(0, d)
+                    found_new = True
+
+    return ord_list(dependencies + plugins)
 
 
 sort_plugins()

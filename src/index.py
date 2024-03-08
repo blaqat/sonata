@@ -27,7 +27,8 @@ import anthropic
 import google.generativeai as genai
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
-from modules.plugins import *
+from modules.plugins import PLUGINS as get_plugins
+import os
 import asyncio
 import aioconsole
 
@@ -67,7 +68,6 @@ Sonata.config.set(temp=0.8)
 Sonata.config.setup()
 
 
-# ISSUE: Figure out a cheaper solution other than gpt-4 that works well
 # TODO: Update openai to newest version. (Will require some rewrite to client)
 @M.ai(
     client=openai.ChatCompletion,
@@ -128,7 +128,6 @@ def Gemini(client, prompt, model, config):
         raise AI_Error(r.prompt_feedback)
 
 
-# ISSUE: Mistral AI just sucks, figuure out a better solution or remove it
 @M.ai(
     None,
     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
@@ -159,11 +158,8 @@ Here is the prompt_feedback: {r}
 """
 
 
-# TEST: New PLUGINS(extend_list, mode=allow | deny) system
-# If no likey, change to always input all plugins in .extend
-# and change .extend to support *str extend_list and mode kwarg
 Sonata.extend(
-    PLUGINS_LIST,
+    get_plugins(),
     chat={
         "summarize": True,
         "max_chats": 25,
@@ -211,7 +207,7 @@ async def ctx_reply(ctx, r):
     try:
         _ = ctx.author
         await ctx.reply(r[:2000], mention_author=False)
-    except AttributeError as _Exception:
+    except AttributeError as _:
         await ctx.send(r[:2000])
 
 
@@ -219,7 +215,7 @@ async def get_channel(ctx):
     try:
         _ = ctx.author
         return ctx.channel
-    except AttributeError as _Exception:
+    except AttributeError as _:
         return ctx
 
 
@@ -315,7 +311,6 @@ async def oute(ctx):
     await ctx.send(text)
 
 
-# TODO: Delete all current and make the actual bot
 @sonata.command()
 async def ping(ctx):
     await ctx_reply(ctx, "pong")
