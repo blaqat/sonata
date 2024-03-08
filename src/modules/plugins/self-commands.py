@@ -3,12 +3,9 @@ from modules.utils import (
     async_print as print,
     settings,
     setter,
-    check_inside as inside,
 )
 import requests
 from modules.AI_manager import AI_Manager
-from io import StringIO
-import sys
 import json
 from urllib import parse, request
 import random
@@ -19,11 +16,42 @@ L, M, P = AI_Manager.init(lazy=True)
 __plugin_name__ = "self-commands"
 __dependencies__ = ["chat"]
 
-# TODO: Organize module
-# 1. Helper functions
-# 2. Commands
-# 3. Prompts
-# 4. Effecs
+
+"""
+Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+# @M.effect("chat", "set", prepend=False)
+# def rem_blocked_user_msg(M, chat_id, message_type, author, message, replying_to=None):
+#     message = message if not inside(BLOCKED_USERS, author) else None
+#     return (chat_id, message_type, author, message, replying_to)
+
+
+@M.effect_post
+def request_chat(_, message, **config):
+    if message[0] == "$":
+        splits = message[1:].split(" ")
+        command = splits[0]
+        cprint("COMMAND " + command, "cyan")
+        cprint("ARGS " + " ".join(splits[1:]), "purple")
+        if not M.do("command", "validate", command):
+            return message
+        args = splits[1:]
+        return L.prompt_manager.send(
+            "SelfCommand",
+            config["config"]["history"],
+            command,
+            *args,
+            AI=config["AI"],
+            config=config["config"],
+        )
+
+    return message
+
+
+"""
+Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
 
 
 # NOTE: IF GPT-4 is the final solution, this can be integrated with the new Assistant API
@@ -32,6 +60,49 @@ __dependencies__ = ["chat"]
 )
 def command(F, name, usage, desc=None, inst=None):
     M.set("command", name, F, usage, desc, inst)
+
+
+# OPTIM: Should be rewritten to use AI_Manager
+def perplexity_search(*search_term):
+    search_term = " ".join(search_term)
+    url = "https://api.perplexity.ai/chat/completions"
+    payload = {
+        # "model": "mistral-7b-instruct",
+        "model": "pplx-7b-online",
+        "messages": [
+            {"role": "system", "content": "Be precise and concise."},
+            {"role": "user", "content": search_term},
+        ],
+    }
+    headers = {
+        "accept": "application/json",
+        "content-type": "application/json",
+        "authorization": f"Bearer {settings.PPLX_AI}",
+    }
+
+    response = requests.post(url, json=payload, headers=headers).json()
+    return {
+        "result": response["choices"][0]["message"]["content"],
+    }
+
+
+def google_search(*search_term):
+    search_term = " ".join(search_term)
+    service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
+    res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
+    if "items" not in res:
+        return {"results": []}
+    else:
+        res = res["items"]
+
+    results = [{"title": r["title"], "link": r["link"]} for r in res]
+
+    return {"results": results}
+
+
+"""
+Setup    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
 
 
 @M.mem(
@@ -55,6 +126,11 @@ def update_command(M, **kwargs):
         M["set"](M, k, *v)
 
     return M["value"]
+
+
+"""
+Commands    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
 
 
 @M.command(
@@ -157,7 +233,6 @@ def get_weather(*city):
 #         "blocked_users": BLOCKED_USERS,
 #     }
 
-
 # # OPTIM: Should be rewritten to use AI_Manager
 # @M.command(
 #     "imagine",
@@ -190,44 +265,6 @@ def get_weather(*city):
 #         }
 #     except Exception as _:
 #         return f"Error generating image. {response['error']['message']}"
-
-
-# OPTIM: Should be rewritten to use AI_Manager
-def perplexity_search(*search_term):
-    search_term = " ".join(search_term)
-    url = "https://api.perplexity.ai/chat/completions"
-    payload = {
-        # "model": "mistral-7b-instruct",
-        "model": "pplx-7b-online",
-        "messages": [
-            {"role": "system", "content": "Be precise and concise."},
-            {"role": "user", "content": search_term},
-        ],
-    }
-    headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "authorization": f"Bearer {settings.PPLX_AI}",
-    }
-
-    response = requests.post(url, json=payload, headers=headers).json()
-    return {
-        "result": response["choices"][0]["message"]["content"],
-    }
-
-
-def google_search(*search_term):
-    search_term = " ".join(search_term)
-    service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
-    res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
-    if "items" not in res:
-        return {"results": []}
-    else:
-        res = res["items"]
-
-    results = [{"title": r["title"], "link": r["link"]} for r in res]
-
-    return {"results": results}
 
 
 @M.command(
@@ -364,12 +401,6 @@ def get_music(*search_term):
         return "Song not fond."
 
 
-# @M.effect("chat", "set", prepend=False)
-# def rem_blocked_user_msg(M, chat_id, message_type, author, message, replying_to=None):
-#     message = message if not inside(BLOCKED_USERS, author) else None
-#     return (chat_id, message_type, author, message, replying_to)
-
-
 # # FIX: When the code contains a \n or \t, it crashes
 # # - When code crashes the other thread is never gone back to (chats dont send in terminal) but everything works. Investigate.
 # @M.command(
@@ -398,6 +429,10 @@ def get_music(*search_term):
 #             "original_code": code,
 #             "output": str(e),
 #         }
+
+"""
+Prompts    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
 
 
 @M.prompt
@@ -474,28 +509,6 @@ Response Guidelines:
 Responding to: {author}: {message}
 sonata: """
     return s
-
-
-@M.effect_post
-def request_chat(_, message, **config):
-    if message[0] == "$":
-        splits = message[1:].split(" ")
-        command = splits[0]
-        cprint("COMMAND " + command, "cyan")
-        cprint("ARGS " + " ".join(splits[1:]), "purple")
-        if not M.do("command", "validate", command):
-            return message
-        args = splits[1:]
-        return L.prompt_manager.send(
-            "SelfCommand",
-            config["config"]["history"],
-            command,
-            *args,
-            AI=config["AI"],
-            config=config["config"],
-        )
-
-    return message
 
 
 # # TODO: Split this into multiple prompts so that it can be used in different contexts e.g SelfCommand prompt

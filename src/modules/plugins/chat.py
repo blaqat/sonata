@@ -27,55 +27,10 @@ L, M, P = AI_Manager.init(
 )
 __plugin_name__ = "chat"
 
-BANNED_WORDS = {
-    "jerking it",
-    "jerking off",
-    "cunt",
-    "cock",
-    "balls",
-    "aggin",
-    "reggin",
-    "nigger",
-    "rape",
-    # "tit",
-    "tiddies",
-    "penis",
-    # "boob",
-    "puss",
-    "nig",
-    "kys",
-    "retard",
-    # "sex",
-    # "porn",
-    "kill yourself",
-    "kill your self",
-    "black people",
-    # "dick",
-    "blow in from",
-    "fuck me",
-    "fuck you",
-    # "pussy",
-    "kill themself",
-    "kiya self",
-    "shut the fuck up",
-    "stfu",
-    # "stupid",
-    "suck my",
-    "suck me",
-    "bitch",
-}
 
-# TODO: Convert channel blacklist into more ergonomic thing
-# 1. Should control if bot can speak in
-# 2. Should control if bot speaks to all messages or just invokations
-# 3. Should control what commands bot can do
-# etc
-CHANNEL_BLACKLIST = {
-    743280190452400159,
-    1175907292072398858,
-    724158738138660894,
-    725170957206945859,
-}
+"""
+Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
 
 
 async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
@@ -260,6 +215,95 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     await kelf.process_commands(message)
 
 
+@M.effect("chat", "set", prepend=True)
+def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
+    return (
+        chat_id,
+        message_type,
+        author,
+        censor_message(message, BANNED_WORDS),
+        replying_to,
+    )
+
+
+"""
+Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+
+async def __chat(M, bot, channel_id, message, dm=False, replying_to=None, ping=False):
+    if replying_to is not None:
+        await replying_to.reply(message, mention_author=ping)
+    elif dm:
+        await bot.get_user(channel_id).send(message)
+    else:
+        await bot.get_channel(channel_id).send(message)
+
+    M["set"](
+        M,
+        channel_id,
+        "Bot",
+        bot.user.name,
+        message,
+        (replying_to.author.name, replying_to.content) if replying_to else None,
+    )
+
+
+"""
+Setup    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+BANNED_WORDS = {
+    "jerking it",
+    "jerking off",
+    "cunt",
+    "cock",
+    "balls",
+    "aggin",
+    "reggin",
+    "nigger",
+    "rape",
+    # "tit",
+    "tiddies",
+    "penis",
+    # "boob",
+    "puss",
+    "nig",
+    "kys",
+    "retard",
+    # "sex",
+    # "porn",
+    "kill yourself",
+    "kill your self",
+    "black people",
+    # "dick",
+    "blow in from",
+    "fuck me",
+    "fuck you",
+    # "pussy",
+    "kill themself",
+    "kiya self",
+    "shut the fuck up",
+    "stfu",
+    # "stupid",
+    "suck my",
+    "suck me",
+    "bitch",
+}
+
+# TODO: Convert channel blacklist into more ergonomic thing
+# 1. Should control if bot can speak in
+# 2. Should control if bot speaks to all messages or just invokations
+# 3. Should control what commands bot can do
+# etc
+CHANNEL_BLACKLIST = {
+    743280190452400159,
+    1175907292072398858,
+    724158738138660894,
+    725170957206945859,
+}
+
+
 @M.builder
 def chat(self: AI_Manager):
     prompt_manager = self.prompt_manager
@@ -385,35 +429,6 @@ def chat(self: AI_Manager):
     return Chat
 
 
-@M.prompt
-def SummarizeChat(chat_log):
-    return f"""Summarize the chat log in as little tokens as possible.
-Use the following guidelines:
-- Mention people by name, not nickname. 
-- Don't just copy and paste the chat log. Summarize/paraphrase it.
-- If there is a PreviousChatSummary, include it in the summary.
-Chat Log: {chat_log}
-"""
-
-
-async def __chat(M, bot, channel_id, message, dm=False, replying_to=None, ping=False):
-    if replying_to is not None:
-        await replying_to.reply(message, mention_author=ping)
-    elif dm:
-        await bot.get_user(channel_id).send(message)
-    else:
-        await bot.get_channel(channel_id).send(message)
-
-    M["set"](
-        M,
-        channel_id,
-        "Bot",
-        bot.user.name,
-        message,
-        (replying_to.author.name, replying_to.content) if replying_to else None,
-    )
-
-
 @M.mem(
     {},
     default_value=[],
@@ -437,12 +452,17 @@ def set_chat(M, chat_id, message_type, author, message, replying_to=None):
     return (chat_id, message_type, author, message, replying_to)
 
 
-@M.effect("chat", "set", prepend=True)
-def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
-    return (
-        chat_id,
-        message_type,
-        author,
-        censor_message(message, BANNED_WORDS),
-        replying_to,
-    )
+"""
+Prompts    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+
+@M.prompt
+def SummarizeChat(chat_log):
+    return f"""Summarize the chat log in as little tokens as possible.
+Use the following guidelines:
+- Mention people by name, not nickname. 
+- Don't just copy and paste the chat log. Summarize/paraphrase it.
+- If there is a PreviousChatSummary, include it in the summary.
+Chat Log: {chat_log}
+"""

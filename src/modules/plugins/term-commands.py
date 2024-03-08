@@ -14,66 +14,12 @@ import asyncio
 import aioconsole
 
 L, M, P = AI_Manager.init(lazy=True, config={})
-__plugin_name__ = "godmode"
+__plugin_name__ = "term-commands"
 __dependencies__ = ["chat"]
 
-
-class CustomEmoji:
-    def __init__(self, name, e):
-        self.name = name
-        self.id = ""
-        self.animated = False
-        self.e = e
-
-    @classmethod
-    def from_dict(cls, d):
-        new_d = []
-        for k, v in d.items():
-            new_d.append(cls(k, v))
-        return new_d
-
-
-def __save_favs(M):
-    with open("trm.favs", "w") as f:
-        f.write(str(M["saved"]["channels"]) + "\n")
-        f.write(str(M["saved"]["users"]) + "\n")
-
-
-def __load_favs(M):
-    try:
-        if not os.path.exists("trm.favs"):
-            with open("trm.favs", "w") as f:
-                f.write(str(M["saved"]["channels"]) + "\n")
-                f.write(str(M["saved"]["users"]) + "\n")
-            return
-        with open("trm.favs", "r") as f:
-            lines = f.readlines()
-            M["saved"]["channels"] = eval(lines[0])
-            M["saved"]["users"] = eval(lines[1])
-    except Exception as e:
-        cprint("Error loading favs", "red")
-        cprint(e, "red")
-
-
-M.remember(
-    "emojis",
-    {
-        "sparkling_heart": "💖",
-        "ok_hand": "👌",
-        "thumbsup": "👍",
-        "grey_question": "❔",
-        "red_circle": "🔴",
-    },
-    set_func=lambda M, name, e: setter(M["value"], name, e)
-    if isinstance(M["value"], dict)
-    else M["value"].append(CustomEmoji(name, e)),
-    update_func=lambda M: CustomEmoji.from_dict(M["value"])
-    if isinstance(M["value"], dict)
-    else M["value"],
-)
-
-
-EMOJIS = M.update("emojis")
+"""
+Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
 
 
 async def term_handler(A, client):
@@ -88,51 +34,16 @@ async def term_handler(A, client):
             cprint(e, "red")
 
 
-@M.mem(
-    {},
-    set=lambda M, name, func: setter(M["value"], name, func),
-    save=__save_favs,
-    load=__load_favs,
-    intercepting=False,
-    recents={
-        "pinned": None,
-        "channel": None,
-        "server": None,
-        "self_msg": None,
-        "voice_chat": None,
-    },
-    saved={
-        "channels": {"test": 876743264139624458},
-        "users": {"amy": 754188427699945592},
-    },
-    hook=term_handler,
-)
-def run_termcmd(M, name, client, manager):
-    num_required = M["value"][name].__code__.co_argcount
-    args = [M, client, manager]
-    return M["value"][name](*args[:num_required])
-
-
 @M.effect("chat", "set", prepend=False)
 def save_recent_message(_, chat_id, message_type, author, message, replying_to=None):
     M.get("termcmd", "recents")["channel"] = chat_id
     if message_type == "Bot":
-        print("Saving recent message", chat_id, message)
         M.get("termcmd", "recents")["self_msg"] = chat_id
-        print(M.get("termcmd", "recents")["self_msg"])
     return (chat_id, message_type, author, message, replying_to)
 
 
-M.do("termcmd", "load")
-
-
-@M.new_helper("term")
-def term_command(F, name=None):
-    M.set("termcmd", name or F.__name__, F)
-
-
 """
-Helper Functions
+Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
 
@@ -157,7 +68,6 @@ async def prompt(text, convert=None, exit_if=None, exit_msg=None):
 
 
 def get_channel(M, self):
-    print(M["recents"])
     c = self.get_channel(M["recents"]["pinned"] or M["recents"]["channel"])
     if c is None:
         cprint("No channel set", "red")
@@ -229,8 +139,104 @@ async def get_recent_msg(M, self):
     return m[0]
 
 
+class CustomEmoji:
+    def __init__(self, name, e):
+        self.name = name
+        self.id = ""
+        self.animated = False
+        self.e = e
+
+    @classmethod
+    def from_dict(cls, d):
+        new_d = []
+        for k, v in d.items():
+            new_d.append(cls(k, v))
+        return new_d
+
+
+def __save_favs(M):
+    with open("trm.favs", "w") as f:
+        f.write(str(M["saved"]["channels"]) + "\n")
+        f.write(str(M["saved"]["users"]) + "\n")
+
+
+def __load_favs(M):
+    try:
+        if not os.path.exists("trm.favs"):
+            with open("trm.favs", "w") as f:
+                f.write(str(M["saved"]["channels"]) + "\n")
+                f.write(str(M["saved"]["users"]) + "\n")
+            return
+        with open("trm.favs", "r") as f:
+            lines = f.readlines()
+            M["saved"]["channels"] = eval(lines[0])
+            M["saved"]["users"] = eval(lines[1])
+    except Exception as e:
+        cprint("Error loading favs", "red")
+        cprint(e, "red")
+
+
+@M.new_helper("term")
+def term_command(F, name=None):
+    M.set("termcmd", name or F.__name__, F)
+
+
 """
-Commands
+Setup    -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+
+M.remember(
+    "emojis",
+    {
+        "sparkling_heart": "💖",
+        "ok_hand": "👌",
+        "thumbsup": "👍",
+        "grey_question": "❔",
+        "red_circle": "🔴",
+    },
+    set_func=lambda M, name, e: setter(M["value"], name, e)
+    if isinstance(M["value"], dict)
+    else M["value"].append(CustomEmoji(name, e)),
+    update_func=lambda M: CustomEmoji.from_dict(M["value"])
+    if isinstance(M["value"], dict)
+    else M["value"],
+)
+
+
+EMOJIS = M.update("emojis")
+
+
+@M.mem(
+    {},
+    set=lambda M, name, func: setter(M["value"], name, func),
+    save=__save_favs,
+    load=__load_favs,
+    intercepting=False,
+    recents={
+        "pinned": None,
+        "channel": None,
+        "server": None,
+        "self_msg": None,
+        "voice_chat": None,
+    },
+    saved={
+        "channels": {"test": 876743264139624458},
+        "users": {"amy": 754188427699945592},
+    },
+    hook=term_handler,
+)
+def run_termcmd(M, name, client, manager):
+    num_required = M["value"][name].__code__.co_argcount
+    args = [M, client, manager]
+    return M["value"][name](*args[:num_required])
+
+
+M.do("termcmd", "load")
+
+
+"""
+Commands  -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
 
@@ -271,7 +277,6 @@ async def chn(M, _):
         c = await prompt(
             "Enter fav name: ", FAV_CHN.get, lambda x: x is None, "Fav not found"
         )
-        print(FAV_CHN, c)
     M["recents"]["pinned"] = int(c)
 
 
@@ -485,7 +490,7 @@ async def dm(m, self):
 
 
 @M.term
-async def dmr(m, self):
+async def dmr(_, self):
     id = await prompt("Enter user id: ")
     user = await get_user(M, self, id)
     c = user.dm_channel

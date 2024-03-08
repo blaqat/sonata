@@ -13,14 +13,11 @@ P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 _____________________________________________________                                                         
 """
 
-from posixpath import expandvars
 from modules.utils import (
     async_cprint as cprint,
     async_print as print,
-    check_inside,
     settings,
     get_full_name,
-    print_list as lprint,
 )
 from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error
 import discord
@@ -175,6 +172,7 @@ Sonata.extend(
     },
 )
 
+
 AI_Type.initalize(
     ("OpenAI", settings.OPEN_AI),
     ("Gemini", settings.GOOGLE_AI),
@@ -324,7 +322,7 @@ async def ping(ctx):
 
 
 async def ai_question(ctx, *message, ai, short, error_prompt=None):
-    global INTERCEPT
+    INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
     try:
         message = " ".join(message)
         name = get_full_name(ctx)
@@ -389,21 +387,14 @@ async def mistral_ai_question(ctx, *message):
 
 async def main():
     try:
-        # load_favs()
         await sonata.start(settings.BOT_TOKEN)
     except:
         cprint("Exiting...", "red")
     finally:
         # TODO: Store memory on crash and reload it
         cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
-        # save_favs()
+        Sonata.do("termcmd", "save")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except Exception as _:
-        cprint("Exiting...", "red")
-        # TODO: Store memory on crash and reload it
-        cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
-        # save_favs()
+    asyncio.run(main())
