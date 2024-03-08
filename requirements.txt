@@ -1,5 +1,5 @@
 google-generativeai
-openai==0.28.1
+openai
 langchain==0.0.330
 discord.py[voice]
 python-dotenv
@@ -10,3 +10,4 @@ dotenv
 youtube-search-python
 google-api-python-client
 anthropic
+pillow

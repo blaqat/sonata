@@ -240,39 +240,45 @@ def combined_search(*search_term):
 def read_image(*args):
     args = " ".join(args).split(",")
     prompt, image_url = args[0].strip(), args[1].strip()
+    config = {"images": [image_url]}
 
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {settings.OPEN_AI}",
-    }
-    data = {
-        "model": "gpt-4-vision-preview",
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": f"{prompt}\n Respond in less than 50 words.",
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_url,
-                        },
-                    },
-                ],
-            }
-        ],
-        "max_tokens": 500,
-    }
     try:
-        response = requests.post(url, headers=headers, data=json.dumps(data))
-        return response.json()["choices"][0]["message"]["content"]
-    except Exception as _:
-        m = response.json()
-        return str(m["error"]["message"])
+        return P.send(prompt, config=config)
+    except Exception as e:
+        return f"Error analyzing image: {e}"
+
+    # url = "https://api.openai.com/v1/chat/completions"
+    # headers = {
+    #     "Content-Type": "application/json",
+    #     "Authorization": f"Bearer {settings.OPEN_AI}",
+    # }
+    # data = {
+    #     "model": "gpt-4-vision-preview",
+    #     "messages": [
+    #         {
+    #             "role": "user",
+    #             "content": [
+    #                 {
+    #                     "type": "text",
+    #                     "text": f"{prompt}\n Respond in less than 50 words.",
+    #                 },
+    #                 {
+    #                     "type": "image_url",
+    #                     "image_url": {
+    #                         "url": image_url,
+    #                     },
+    #                 },
+    #             ],
+    #         }
+    #     ],
+    #     "max_tokens": 500,
+    # }
+    # try:
+    #     response = requests.post(url, headers=headers, data=json.dumps(data))
+    #     return response.json()["choices"][0]["message"]["content"]
+    # except Exception as _:
+    #     m = response.json()
+    #     return str(m["error"]["message"])
 
 
 @M.command(
@@ -322,7 +328,6 @@ def get_vid(*search_term):
 )
 def get_music(*search_term):
     search_term = " ".join(search_term)
-    # https://api-v2.soundcloud.com/search?q=Death%20Party%20Lognes&variant_ids=&facet=model&user_id=638379-741625-531849-334098&client_id=8BBZpqUP1KSN4W6YB64xog2PX4Dw98b1&limit=20&offset=0&linked_partitioning=1&app_version=1708079069&app_locale=en
     url = f"https://api-v2.soundcloud.com/search?q={search_term}&variant_ids=&facet=model&&client_id={settings.SC}&limit=20&offset=0&linked_partitioning=1&&app_locale=en"
     response = requests.get(url)
     doc = json.loads(response.text)
@@ -338,8 +343,6 @@ def get_music(*search_term):
             if e["kind"] == "track":
                 links.append((e["title"], e["permalink_url"]))
 
-        # ran = random.randint(0, len(links) - 1)
-        # result = links[ran]
         result = links[0]
 
         return {

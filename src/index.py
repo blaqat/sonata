@@ -31,7 +31,8 @@ from modules.plugins import PLUGINS as get_plugins
 import os
 import asyncio
 import aioconsole
-
+from PIL import Image
+from io import BytesIO
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -68,25 +69,47 @@ Sonata.config.set(temp=0.8)
 Sonata.config.setup()
 
 
-# TODO: Update openai to newest version. (Will require some rewrite to client)
 @M.ai(
-    client=openai.ChatCompletion,
+    # client=openai.ChatCompletion,
+    client=openai.chat.completions,
     default=True,
     setup=lambda _, key: setattr(openai, "api_key", key),
     # model="gpt-3.5-turbo-0125",
     model="gpt-4-turbo-preview",
 )
 def OpenAI(client, prompt, model, config):
+    content = [{"type": "text", "text": prompt}]
+    i = config.get("images", False)
+    if i:
+        model = "gpt-4-vision-preview"
+        i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
+        content.extend(i)
     return (
         client.create(
             model=model,
-            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+            messages=[{"role": "user", "content": content}],
             max_tokens=config.get("max_tokens", 1250),
             temperature=config.get("temp") or config.get("temperature") or 0,
         )
         .choices[0]
         .message.content
     )
+
+
+# def OpenAI(client, prompt, model, config):
+#     return (
+#         client.create(
+#             model=model,
+#             messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
+#             max_tokens=config.get("max_tokens", 1250),
+#             temperature=config.get("temp") or config.get("temperature") or 0,
+#         )
+#         .choices[0]
+#         .message.content
+#     )
+
+
+import base64
 
 
 @M.ai(
@@ -97,6 +120,21 @@ def OpenAI(client, prompt, model, config):
     # model="claude-3-haiku-20240229",
 )
 def Claude(client, prompt, model, config):
+    content = [{"type": "text", "text": prompt}]
+    i = config.get("images", False)
+    if i:
+        i = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/jpeg",
+                    "data": base64.b64encode(requests.get(u).content),
+                },
+            }
+            for u in i
+        ]
+        content.extend(i)
     return (
         client.messages.create(
             model=model,
@@ -116,16 +154,43 @@ def Claude(client, prompt, model, config):
     model="gemini-1.0-pro-latest",
 )
 def Gemini(client, prompt, model, config):
+    block = [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE",
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE",
+        },
+    ]
+    content = [prompt]
+    i = config.get("images", False)
+    if i:
+        model = "gemini-pro-vision"
+        i = [Image.open(BytesIO(requests.get(u).content)) for u in i]
+        content.extend(i)
     try:
-        r = client(
-            model,
-            generation_config={
-                "temperature": config.get("temp") or config.get("temperature", 0.4)
-            },
-        ).generate_content(prompt)
-        return r.text
-    except Exception as _:
-        raise AI_Error(r.prompt_feedback)
+        return (
+            client(
+                model,
+                generation_config={
+                    "temperature": config.get("temp") or config.get("temperature", 0.4)
+                },
+            )
+            .generate_content(content, safety_settings=block)
+            .text
+        )
+    except Exception as e:
+        raise AI_Error(str(e))
 
 
 @M.ai(

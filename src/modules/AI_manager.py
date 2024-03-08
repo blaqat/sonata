@@ -22,12 +22,11 @@ The PromptManager class provides the following methods:
 from os import close
 from typing import Any, Callable, Dict, List, Tuple, Union
 import copy
-
 from discord.ext.commands import core, errors
 from modules.utils import setter
 
 
-AI_TYPES = {"default": None}
+AI_TYPES = {"default": None, "recent": None}
 
 
 class AI_Type:
@@ -71,12 +70,13 @@ class AI_Error(Exception):
 def gemeric_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
     if isinstance(ai_type, str):
         ai_type = AI_TYPES.get(ai_type, None)
-    ai_type = ai_type or AI_TYPES["default"]
+    ai_type = ai_type or AI_TYPES["recent"] or AI_TYPES["default"]
     ai_config = ai_type.config
     config.update(ai_config)
     model = model or config.get("model", None)
     if model is None:
         raise AI_Error("No model specified")
+    AI_TYPES["recent"] = ai_type
     return ai_type.func(ai_type.client, prompt_text, model, config)
 
 
