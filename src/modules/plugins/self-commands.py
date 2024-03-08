@@ -61,28 +61,35 @@ def command(F, name, usage, desc=None, inst=None):
     M.set("command", name, F, usage, desc, inst)
 
 
-# OPTIM: Should be rewritten to use AI_Manager
 def perplexity_search(*search_term):
     search_term = " ".join(search_term)
-    url = "https://api.perplexity.ai/chat/completions"
-    payload = {
-        # "model": "mistral-7b-instruct",
-        "model": "pplx-7b-online",
-        "messages": [
-            {"role": "system", "content": "Be precise and concise."},
-            {"role": "user", "content": search_term},
-        ],
-    }
-    headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
-        "authorization": f"Bearer {settings.PPLX_AI}",
-    }
-
-    response = requests.post(url, json=payload, headers=headers).json()
+    response = P.send(
+        f"Be precise and as concise as possible: {search_term}",
+        AI="Perplexity",
+    )
     return {
-        "result": response["choices"][0]["message"]["content"],
+        "result": response,
     }
+    # url = "https://api.perplexity.ai/chat/completions"
+    # payload = {
+    #     # "model": "mistral-7b-instruct",
+    #     "model": "pplx-7b-online",
+    #     "messages": [
+    #         {"role": "system", "content": "Be precise and concise."},
+    #         {"role": "user", "content": search_term},
+    #     ],
+    # }
+    # headers = {
+    #     "accept": "application/json",
+    #     "content-type": "application/json",
+    #     "authorization": f"Bearer {settings.PPLX_AI}",
+    # }
+    #
+    # response = requests.post(url, json=payload, headers=headers).json()
+    # return {
+    #     "result": response["choices"][0]["message"]["content"],
+    # }
+    #
 
 
 def google_search(*search_term):
@@ -182,38 +189,44 @@ def get_weather(*city):
     }
 
 
-# # OPTIM: Should be rewritten to use AI_Manager
-# @M.command(
-#     "imagine",
-#     "$imagine <prompt>",
-#     "Generate 2 images based on a prompt.",
-#     "Make sure to post the link. Also make sure to post the entire link.",
-# )
-# def imagine(*prompt):
-#     prompt = " ".join(prompt)
-#     url = "https://api.openai.com/v1/images/generations"
-#     payload = {
-#         "model": "dall-e-3",
-#         "prompt": prompt,
-#         "n": 1,
-#         "size": "1024x1024",
-#         "response_format": "url",
-#     }
-#     headers = {
-#         "Content-Type": "application/json",
-#         "Authorization": f"Bearer {settings.OPEN_AI}",
-#     }
-#
-#     try:
-#         response = requests.post(url, headers=headers, data=json.dumps(payload)).json()
-#         response = response["data"][0]
-#         print(response)
-#         return {
-#             "prompt": response["revised_prompt"],
-#             "image_link": response["url"],
-#         }
-#     except Exception as _:
-#         return f"Error generating image. {response['error']['message']}"
+@M.command(
+    "imagine",
+    "$imagine <prompt>",
+    "Generate 2 images based on a prompt.",
+    "Make sure to post the link. Also make sure to post the entire link.",
+)
+def imagine(*prompt):
+    prompt = " ".join(prompt)
+    response = P.send(prompt, AI="DallE")
+    print(response)
+    return {
+        "title": prompt,
+        "link": response,
+    }
+
+    # url = "https://api.openai.com/v1/images/generations"
+    # payload = {
+    #     "model": "dall-e-3",
+    #     "prompt": prompt,
+    #     "n": 1,
+    #     "size": "1024x1024",
+    #     "response_format": "url",
+    # }
+    # headers = {
+    #     "Content-Type": "application/json",
+    #     "Authorization": f"Bearer {settings.OPEN_AI}",
+    # }
+    #
+    # try:
+    #     response = requests.post(url, headers=headers, data=json.dumps(payload)).json()
+    #     response = response["data"][0]
+    #     print(response)
+    #     return {
+    #         "prompt": response["revised_prompt"],
+    #         "image_link": response["url"],
+    #     }
+    # except Exception as _:
+    #     return f"Error generating image. {response['error']['message']}"
 
 
 @M.command(
@@ -231,7 +244,6 @@ def combined_search(*search_term):
     }
 
 
-# OPTIM: Should be rewritten to use AI_Manager
 @M.command(
     "analyze-image",
     "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
@@ -426,9 +438,6 @@ def SelfCommand(history, command, *args):
         + "\n"
         or ""
     )
-    # TODO: Make it so links passed back are just appended to response
-    # so AI doesnt have chance to mess up writing the link
-    # Make anything that passes a link pass it as "link" and "title" in the response dict
 
     response = str(M.do("command", "use", command, *args))
     cprint("COMMAND OUTPUT " + response, "purple")

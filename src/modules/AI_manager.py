@@ -67,7 +67,7 @@ class AI_Error(Exception):
         super().__init__(self.message)
 
 
-def gemeric_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
+def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
     if isinstance(ai_type, str):
         ai_type = AI_TYPES.get(ai_type, None)
     ai_type = ai_type or AI_TYPES["recent"] or AI_TYPES["default"]
@@ -129,7 +129,7 @@ class PromptManager:
         if prompt in self.prompts:
             prompt = self.get(prompt, *prompt_args)
 
-        return gemeric_ai_prompt(AI, str(prompt), model, config)
+        return generic_ai_prompt(AI, str(prompt), model, config)
 
 
 def _config_builder(aiman):

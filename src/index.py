@@ -33,6 +33,7 @@ import asyncio
 import aioconsole
 from PIL import Image
 from io import BytesIO
+import base64
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -70,6 +71,26 @@ Sonata.config.setup()
 
 
 @M.ai(
+    client=openai.images,
+    default=False,
+    setup=lambda _, key: setattr(openai, "api_key", key),
+    model="dall-e-3",
+    # model="dell-e-2",
+)
+def DallE(client, prompt, model, config):
+    return (
+        client.generate(
+            model=model,
+            prompt=prompt,
+            quality=config.get("quality", "standard"),
+            n=config.get("num_images", 1),
+        )
+        .data[0]
+        .url
+    )
+
+
+@M.ai(
     # client=openai.ChatCompletion,
     client=openai.chat.completions,
     default=True,
@@ -84,6 +105,7 @@ def OpenAI(client, prompt, model, config):
         model = "gpt-4-vision-preview"
         i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
         content.extend(i)
+        config["images"] = None
     return (
         client.create(
             model=model,
@@ -94,22 +116,6 @@ def OpenAI(client, prompt, model, config):
         .choices[0]
         .message.content
     )
-
-
-# def OpenAI(client, prompt, model, config):
-#     return (
-#         client.create(
-#             model=model,
-#             messages=[{"role": "user", "content": [{"type": "text", "text": prompt}]}],
-#             max_tokens=config.get("max_tokens", 1250),
-#             temperature=config.get("temp") or config.get("temperature") or 0,
-#         )
-#         .choices[0]
-#         .message.content
-#     )
-
-
-import base64
 
 
 @M.ai(
@@ -135,6 +141,7 @@ def Claude(client, prompt, model, config):
             for u in i
         ]
         content.extend(i)
+        config["images"] = None
     return (
         client.messages.create(
             model=model,
@@ -144,6 +151,34 @@ def Claude(client, prompt, model, config):
         )
         .content[0]
         .text
+    )
+
+
+@M.ai(
+    None,
+    default=True,
+    setup=lambda S, key: setattr(
+        S,
+        "client",
+        openai.OpenAI(
+            api_key=key, base_url="https://api.perplexity.ai"
+        ).chat.completions,
+    ),
+    # model="pplx-7b-online",
+    model="sonar-small-online",
+    # model="sonar-medium-online",
+)
+def Perplexity(client, prompt, model, config):
+    content = [{"type": "text", "text": prompt}]
+    return (
+        client.create(
+            model=model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=config.get("max_tokens", 1250),
+            temperature=config.get("temp") or config.get("temperature") or 0,
+        )
+        .choices[0]
+        .message.content
     )
 
 
@@ -178,6 +213,7 @@ def Gemini(client, prompt, model, config):
         model = "gemini-pro-vision"
         i = [Image.open(BytesIO(requests.get(u).content)) for u in i]
         content.extend(i)
+        config["images"] = None
     try:
         return (
             client(
@@ -239,6 +275,8 @@ AI_Type.initalize(
     ("Gemini", settings.GOOGLE_AI),
     ("Mistral", settings.MISTRAL_AI),
     ("Claude", settings.ANTHROPIC_AI),
+    ("Perplexity", settings.PPLX_AI),
+    ("DALLE", settings.OPEN_AI),
 )
 
 # for m in genai.list_models():

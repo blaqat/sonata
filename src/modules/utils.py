@@ -649,8 +649,11 @@ def find_matches(a, b):
     return pattern.findall(b)
 
 
-def setter(thing, key, value):
-    thing[key] = value
+def setter(thing, key, value, **kwargs):
+    if key is not None:
+        thing[key] = value
+    for k, v in kwargs.items():
+        thing[k] = v
     return thing
 
 
