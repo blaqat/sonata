@@ -15,6 +15,7 @@ from modules.utils import (
     settings,
 )
 import random
+import re
 
 L, M, P = AI_Manager.init(
     lazy=True,
@@ -187,31 +188,36 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         if attachment:
             message.content += f"\nAttachment: {attachment}"
 
-    # TODO: Add a way to pass the reference of the replied message to the AI
-    # Might require a change in the Chat.send method and promptings
-    # Or just store each message as (ID, Type, Author, Message, ReplyingToID) and see if AI can understand that
+    # Pass referenced messages to AI
     if message.reference is not None and not message.author.bot:
         # Check if reference is pointing to a message sent by the bot
         _ref = await message.channel.fetch_message(message.reference.message_id)
         if _ref.author.id == kelf.user.id:
-            # HACK: This is a hacky way to invoke AI response, change to use AI_Manager so config can be used
             message.content = f"${AI} " + message.content
             await kelf.process_commands(message)
             return
 
-    # PERF: Rewrite this to be less hacky and more efficient
-    if (
-        "sonata" in message.content.lower()
-        or "<@1187145990931763250>" in message.content.lower()
-        or "sona " in message.content.lower()
-        or " sona" in message.content.lower()
-    ) and not message.author.bot:
-        message.content = message.content.replace("sonata", "")
-        message.content = message.content.replace("<@1187145990931763250>", "")
-        message.content = message.content.replace("sona ", "")
-        message.content = message.content.replace(" sona", "")
-        # HACK: This is a hacky way to invoke AI response, change to use AI_Manager so config can be used
-        message.content = f"${AI} " + message.content
+    # if (
+    #     "sonata" in message.content.lower()
+    #     or "<@1187145990931763250>" in message.content.lower()
+    #     or "sona " in message.content.lower()
+    #     or " sona" in message.content.lower()
+    # ) and not message.author.bot:
+    #     message.content = message.content.replace("sonata", "")
+    #     message.content = message.content.replace("<@1187145990931763250>", "")
+    #     message.content = message.content.replace("sona ", "")
+    #     message.content = message.content.replace(" sona", "")
+    #     message.content = f"${AI} " + message.content
+
+    sonata_names = {"sonata", "sona"}
+    sonata_exp = re.compile(
+        f"<@{kelf.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
+        re.IGNORECASE,
+    )
+    if not message.author.bot and sonata_exp.search(message.content):
+        message.content = sonata_exp.sub("", message.content).strip()
+        message.content = f"${AI} {message.content}"
+
     await kelf.process_commands(message)
 
 
