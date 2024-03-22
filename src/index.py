@@ -18,8 +18,11 @@ from modules.utils import (
     async_print as print,
     settings,
     get_full_name,
+    print_available_genai_models,
 )
-from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error
+from modules.plugins import PLUGINS as get_plugins
+from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error, AI_TYPES
+
 import discord
 from discord.ext import commands
 import openai
@@ -27,13 +30,15 @@ import anthropic
 import google.generativeai as genai
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
-from modules.plugins import PLUGINS as get_plugins
+
 import os
+import re
+import base64
 import asyncio
+import requests
 import aioconsole
 from PIL import Image
 from io import BytesIO
-import base64
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -74,8 +79,8 @@ Sonata.config.setup()
     client=openai.images,
     default=False,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="dall-e-3",
-    # model="dell-e-2",
+    # model="dall-e-3",
+    model="dall-e-2",
 )
 def DallE(client, prompt, model, config):
     return (
@@ -91,7 +96,6 @@ def DallE(client, prompt, model, config):
 
 
 @M.ai(
-    # client=openai.ChatCompletion,
     client=openai.chat.completions,
     default=True,
     setup=lambda _, key: setattr(openai, "api_key", key),
@@ -185,8 +189,7 @@ def Perplexity(client, prompt, model, config):
 @M.ai(
     genai.GenerativeModel,
     setup=lambda _, key: genai.configure(api_key=key),
-    # model="gemini-pro",
-    model="gemini-1.0-pro-latest",
+    model="gemini-pro",
 )
 def Gemini(client, prompt, model, config):
     block = [
@@ -207,22 +210,24 @@ def Gemini(client, prompt, model, config):
             "threshold": "BLOCK_NONE",
         },
     ]
-    content = [prompt]
+    content = prompt
     i = config.get("images", False)
     if i:
         model = "gemini-pro-vision"
         i = [Image.open(BytesIO(requests.get(u).content)) for u in i]
+        content = [content]
         content.extend(i)
         config["images"] = None
     try:
         return (
             client(
-                model,
+                model_name=model,
                 generation_config={
                     "temperature": config.get("temp") or config.get("temperature", 0.4)
                 },
+                safety_settings=block,
             )
-            .generate_content(content, safety_settings=block)
+            .generate_content(content)
             .text
         )
     except Exception as e:
@@ -279,10 +284,6 @@ AI_Type.initalize(
     ("DALLE", settings.OPEN_AI),
 )
 
-# for m in genai.list_models():
-#     if "generateContent" in m.supported_generation_methods:
-#         print(m.name)
-
 
 class SonataClient(commands.Bot):
     current_guild = ""
@@ -322,9 +323,6 @@ async def get_channel(ctx):
         return ctx
 
 
-import re
-
-
 def get_emoji_id(emoji_str):
     # regex: :\d*>
     animated = "a:" in emoji_str
@@ -352,9 +350,6 @@ def get_emoji_link_from_id(emoji_id, animated=False, name=""):
 
 def trans_emo(emoji):
     return get_emoji_link_from_id(*get_emoji_id(emoji))
-
-
-import requests
 
 
 def download_emoji(direct_link, filename, ext):
@@ -424,9 +419,18 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
     try:
         message = " ".join(message)
         name = get_full_name(ctx)
+        _ref = None
         try:
-            _ref = (ctx.author, message)
-        except Exception as _:
+            if Sonata.config.get("view_replies", False):
+                _ref = (
+                    ctx.message.reference is not None
+                    and await ctx.message.channel.fetch_message(
+                        ctx.message.reference.message_id
+                    )
+                    or None
+                )
+                _ref = (_ref.author.name, _ref.content)
+        except Exception as e:
             _ref = None
         async with ctx.typing():
             r = Sonata.chat.request(

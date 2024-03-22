@@ -13,6 +13,7 @@ from modules.utils import (
     runner,
     setter,
     settings,
+    has_inside
 )
 import random
 import re
@@ -105,11 +106,27 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
         if message.content is None:
             return
 
+    # TODO: Add way to store attachments since can send them in message now
+    # Add way to convert stickers into images
+    # Add way to convert any image link into same system as attched images
+    #
     # Handle message attachments
-    if message.attachments and not message.author.bot:
-        attachment = message.attachments[0].url
-        if attachment:
-            message.content += f"\nAttachment: {attachment}"
+    image_types = ["png", "jpg", "jpeg", "webp"]
+    if message.attachments and not message.author.bot and len(message.attachments) > 0:
+        # attachment = [x.url for x in message.attachments]
+        attachment = []
+        not_grabbed = []
+        for x in message.attachments:
+            if has_inside(x.url, image_types):
+                attachment.append(x.url)
+            else:
+                not_grabbed.append(x.url)
+        Sonata.config.set(images=attachment)
+        if len(not_grabbed) > 0:
+            message.content += f"\nAttachment: {not_grabbed}"
+        # attachment = message.attachments[0].url
+        # if attachment:
+        #     message.content += f"\nAttachment: {attachment}"
 
     message.content = f"${AI} " + message.content
     # Process the message
@@ -185,11 +202,24 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         if message.content is None:
             return
 
+    # TODO: Add way to store attachments since can send them in message now
+    # Add way to convert stickers into images
+    # Add way to convert any image link into same system as attched images
+    #
     # Handle message attachments
+    image_types = ["png", "jpg", "jpeg", "webp"]
     if message.attachments and not message.author.bot and len(message.attachments) > 0:
-        attachment = [x.url for x in message.attachments]
-        Sonata.get("config")["images"] = attachment
-        print(Sonata.get("config"))
+        # attachment = [x.url for x in message.attachments]
+        attachment = []
+        not_grabbed = []
+        for x in message.attachments:
+            if has_inside(x.url, image_types):
+                attachment.append(x.url)
+            else:
+                not_grabbed.append(x.url)
+        Sonata.config.set(images=attachment)
+        if len(not_grabbed) > 0:
+            message.content += f"\nAttachment: {not_grabbed}"
         # attachment = message.attachments[0].url
         # if attachment:
         #     message.content += f"\nAttachment: {attachment}"
@@ -349,19 +379,27 @@ def chat(self: AI_Manager):
             kelf,
             id,
             message: str,
+            user_name: str,
             replying_to=None,
             *args,
             AI=self.config.get("AI"),
             error_prompt=None,
             **config,
         ):
+            # TODO: Add way to store attachments since can send them in message now
+            # They are accessed in config['images']
             response = None
             c = self.get("config")
             c.update(config)
             c["history"] = kelf.get_history(id)
             try:
                 prompt = prompt_manager.get(
-                    "Instructions", kelf.get_history(id), message, *args
+                    "Instructions",
+                    kelf.get_history(id),
+                    message,
+                    user_name,
+                    replying_to,
+                    *args,
                 )
 
                 response = self.do(
@@ -370,6 +408,8 @@ def chat(self: AI_Manager):
                     prompt,
                     kelf.get_history(id),
                     message,
+                    user_name,
+                    replying_to,
                     *args,
                     AI=AI,
                     config=c,
@@ -378,16 +418,16 @@ def chat(self: AI_Manager):
                 kelf.send(id, "Bot", self.name, response, replying_to)
                 return response
             except Exception as e:
-                if error_prompt is not None:
-                    response = prompt_manager.send(
-                        str(error_prompt(e, message[2])), AI=AI, config=c
-                    )
-                    if response is None:
-                        response = (
-                            f"Response failed in using the error prompt silly :3: {e}"
-                        )
-                else:
-                    response = f"Response failed: {e}"
+                # if error_prompt is not None:
+                #     response = prompt_manager.send(
+                #         str(error_prompt(e, message)), AI=AI, config=c
+                #     )
+                #     if response is None:
+                #         response = (
+                #             f"Response failed in using the error prompt silly :3: {e}"
+                #         )
+                # else:
+                response = f"{e}"
                 kelf.send(id, "Bot", self.name, response, replying_to)
                 return response
 

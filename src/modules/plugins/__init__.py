@@ -15,6 +15,13 @@ for plugin in os.listdir(os.path.dirname(__file__)):
     if plugin.endswith(".py") and not plugin.startswith("__"):
         module = importlib.import_module("modules.plugins." + plugin[:-3])
         PLUGINS_DICT[module.__plugin_name__] = module
+    elif os.path.isdir(os.path.join(os.path.dirname(__file__), plugin)):
+        for file in os.listdir(os.path.join(os.path.dirname(__file__), plugin)):
+            if file.startswith("module.py"):
+                module = importlib.import_module(
+                    "modules.plugins." + plugin + "." + file[:-3]
+                )
+                PLUGINS_DICT[module.__plugin_name__] = module
 
 
 # Sort the plugins by their dependencies

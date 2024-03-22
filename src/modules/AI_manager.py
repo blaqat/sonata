@@ -19,16 +19,13 @@ The PromptManager class provides the following methods:
 - stream(prompt: str, *prompt_args, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Generates a stream of AI-generated text based on the given prompt.
 """
 
-from os import close
-from typing import Any, Callable, Dict, List, Tuple, Union
+from typing import Any, Callable, Tuple, Union
 import copy
-from discord.ext.commands import core, errors
-from modules.utils import setter
-
 
 AI_TYPES = {"default": None, "recent": None}
 
 
+# TODO: Add tags to the AI_Type class e.g "audio", "text", "vision", "search", etc.
 class AI_Type:
     can_start = False
 
@@ -63,10 +60,14 @@ class AI_Type:
 
 class AI_Error(Exception):
     def __init__(self, message):
-        self.message = "AI" + message
+        # self.message = "AI " + message
+        self.message = message
         super().__init__(self.message)
 
 
+# TODO: Using recent is nto exactly what I want, I want to have model types.
+# If reuesting something with an image should default to the most recent model with vision
+# Types can be: Audio, Text, Vision, Search, etc.
 def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
     if isinstance(ai_type, str):
         ai_type = AI_TYPES.get(ai_type, None)
@@ -136,8 +137,11 @@ def _config_builder(aiman):
     self = aiman
 
     class Config:
-        def get(kelf, name: str, *default_to):
+        def get(kelf, name: str = None, *default_to):
             _c = self.get("config")
+            if name is None:
+                return _c
+
             if name in _c:
                 return _c[name]
             else:

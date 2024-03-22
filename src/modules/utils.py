@@ -638,6 +638,12 @@ def picker(choices: list = [], delay_count=0, reverse_on_end: bool = False):
 
     return pick
 
+def has_inside(str, list):
+    for i in list:
+        if i in str:
+            return True
+    return False
+
 
 def inside(a, b):
     pattern = re.compile(re.escape(a), re.IGNORECASE)
@@ -705,5 +711,9 @@ def async_input(*args, **kwargs):
     return loop.run_in_executor(None, __input, *args, **kwargs)
 
 
-def print_list(lst, color):
+def print_list(lst, color=None):
     async_cprint("\n".join("{}: {}".format(*k) for k in enumerate(lst)), color)
+
+
+def print_available_genai_models(genai):
+    async_print("\n".join("{}".format(k.name[7:]) for k in genai.list_models()))

@@ -17,6 +17,7 @@ L, M, P = AI_Manager.init(lazy=True, config={})
 __plugin_name__ = "term-commands"
 __dependencies__ = ["chat"]
 
+
 """
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
@@ -36,9 +37,11 @@ async def term_handler(A, client):
 
 @M.effect("chat", "set", prepend=False)
 def save_recent_message(_, chat_id, message_type, author, message, replying_to=None):
-    M.get("termcmd", "recents")["channel"] = chat_id
+    RECENTS = M.get("termcmd", "recents")
+
+    RECENTS["channel"] = chat_id
     if message_type == "Bot":
-        M.get("termcmd", "recents")["self_msg"] = chat_id
+        RECENTS["self_msg"] = chat_id
     return (chat_id, message_type, author, message, replying_to)
 
 

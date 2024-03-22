@@ -70,26 +70,6 @@ def perplexity_search(*search_term):
     return {
         "result": response,
     }
-    # url = "https://api.perplexity.ai/chat/completions"
-    # payload = {
-    #     # "model": "mistral-7b-instruct",
-    #     "model": "pplx-7b-online",
-    #     "messages": [
-    #         {"role": "system", "content": "Be precise and concise."},
-    #         {"role": "user", "content": search_term},
-    #     ],
-    # }
-    # headers = {
-    #     "accept": "application/json",
-    #     "content-type": "application/json",
-    #     "authorization": f"Bearer {settings.PPLX_AI}",
-    # }
-    #
-    # response = requests.post(url, json=payload, headers=headers).json()
-    # return {
-    #     "result": response["choices"][0]["message"]["content"],
-    # }
-    #
 
 
 def google_search(*search_term):
@@ -189,44 +169,20 @@ def get_weather(*city):
     }
 
 
-@M.command(
-    "imagine",
-    "$imagine <prompt>",
-    "Generate 2 images based on a prompt.",
-    "Make sure to post the link. Also make sure to post the entire link.",
-)
-def imagine(*prompt):
-    prompt = " ".join(prompt)
-    response = P.send(prompt, AI="DallE")
-    print(response)
-    return {
-        "title": prompt,
-        "link": response,
-    }
-
-    # url = "https://api.openai.com/v1/images/generations"
-    # payload = {
-    #     "model": "dall-e-3",
-    #     "prompt": prompt,
-    #     "n": 1,
-    #     "size": "1024x1024",
-    #     "response_format": "url",
-    # }
-    # headers = {
-    #     "Content-Type": "application/json",
-    #     "Authorization": f"Bearer {settings.OPEN_AI}",
-    # }
-    #
-    # try:
-    #     response = requests.post(url, headers=headers, data=json.dumps(payload)).json()
-    #     response = response["data"][0]
-    #     print(response)
-    #     return {
-    #         "prompt": response["revised_prompt"],
-    #         "image_link": response["url"],
-    #     }
-    # except Exception as _:
-    #     return f"Error generating image. {response['error']['message']}"
+# @M.command(
+#     "imagine",
+#     "$imagine <prompt>",
+#     "Generate 2 images based on a prompt.",
+#     "Make sure to post the link. Also make sure to post the entire link.",
+# )
+# def imagine(*prompt):
+#     prompt = " ".join(prompt)
+#     response = P.send(prompt, AI="DallE")
+#     print(response)
+#     return {
+#         "title": prompt,
+#         "link": response,
+#     }
 
 
 @M.command(
@@ -244,53 +200,20 @@ def combined_search(*search_term):
     }
 
 
-@M.command(
-    "analyze-image",
-    "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
-    "Analyze and image and return text analysis based on what the user asks for.",
-)
-def read_image(*args):
-    args = " ".join(args).split(",")
-    prompt, image_url = args[0].strip(), args[1].strip()
-    config = {"images": [image_url]}
-
-    try:
-        return P.send(prompt, config=config)
-    except Exception as e:
-        return f"Error analyzing image: {e}"
-
-    # url = "https://api.openai.com/v1/chat/completions"
-    # headers = {
-    #     "Content-Type": "application/json",
-    #     "Authorization": f"Bearer {settings.OPEN_AI}",
-    # }
-    # data = {
-    #     "model": "gpt-4-vision-preview",
-    #     "messages": [
-    #         {
-    #             "role": "user",
-    #             "content": [
-    #                 {
-    #                     "type": "text",
-    #                     "text": f"{prompt}\n Respond in less than 50 words.",
-    #                 },
-    #                 {
-    #                     "type": "image_url",
-    #                     "image_url": {
-    #                         "url": image_url,
-    #                     },
-    #                 },
-    #             ],
-    #         }
-    #     ],
-    #     "max_tokens": 500,
-    # }
-    # try:
-    #     response = requests.post(url, headers=headers, data=json.dumps(data))
-    #     return response.json()["choices"][0]["message"]["content"]
-    # except Exception as _:
-    #     m = response.json()
-    #     return str(m["error"]["message"])
+# @M.command(
+#     "analyze-image",
+#     "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
+#     "Analyze and image and return text analysis based on what the user asks for.",
+# )
+# def analyze_image(*args):
+#     args = " ".join(args).split(",")
+#     prompt, image_url = args[0].strip(), args[1].strip()
+#     config = {"images": [image_url]}
+#
+#     try:
+#         return P.send(prompt, config=config)
+#     except Exception as e:
+#         return f"Error analyzing image: {e}"
 
 
 @M.command(
@@ -389,8 +312,8 @@ ATTRIBUTES = """Attributes:
 - Hates: furries, loud music
 """
 
-RESPONDING = """Responding to: {user}: (MessageType, Author, Message replying to, Message they are replying to){message}
-Do not repeat the Message or the Message they are replying to in your response.
+RESPONDING = """Responding to: {user}: (User Message, Message they are replying to){message}
+Do not repeat the User Message or the Message they are replying to in your response.
 sonata:"""
 
 
@@ -406,7 +329,8 @@ Here is the prompt_feedback: {r}
 
 
 @M.prompt
-def Instructions(history, message, user):
+def Instructions(history, message, user, replying_to):
+    print(message, user)
     return f"""{BEGINING}
 
 {RESPONSE_GUIDELINES}
@@ -421,7 +345,7 @@ Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS 
 Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
 Here is the chat log: {history}
 
-{RESPONDING.format(user=user, message=message)}"""
+{RESPONDING.format(user=user, message=( message, replying_to ))}"""
 
 
 @M.prompt
