@@ -559,7 +559,7 @@ async def god_cmd(M, self):
 async def cmd(m, self, client):
     c = get_channel(m, self)
     history = client.chat.get_history(c.id)
-    ai = client.config.get("AI")
+    # ai = client.config.get("AI")
     config = client.get("config")
     command = await prompt("Enter self-command: ")
     args = await prompt("Enter args: ")
@@ -568,7 +568,7 @@ async def cmd(m, self, client):
         history,
         command,
         args,
-        AI=ai,
+        AI="Gemini",
         config=config,
     )
     # await c.send(r)

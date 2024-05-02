@@ -1,44 +1,46 @@
 """
-_____________________________________________________                                                   
-                                                     
- .M'"'bgd                              mm            
-,MI    "Y                              MM            
-`MMb.      ,pW"Wq.`7MMpMMMb.   ,6"Yb.mmMMmm  ,6"Yb.  
-  `YMMNq. 6W'   `Wb MM    MM  8)   MM  MM   8)   MM  
-.     `MM 8M     M8 MM    MM   ,pm9MM  MM    ,pm9MM  
-Mb     dM YA.   ,A9 MM    MM  8M   MM  MM   8M   MM  
+_____________________________________________________
+
+ .M'"'bgd                              mm
+,MI    "Y                              MM
+`MMb.      ,pW"Wq.`7MMpMMMb.   ,6"Yb.mmMMmm  ,6"Yb.
+  `YMMNq. 6W'   `Wb MM    MM  8)   MM  MM   8)   MM
+.     `MM 8M     M8 MM    MM   ,pm9MM  MM    ,pm9MM
+Mb     dM YA.   ,A9 MM    MM  8M   MM  MM   8M   MM
 P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 
-               a discord bot by @blaqat 
-_____________________________________________________                                                         
+               a discord bot by @blaqat
+_____________________________________________________
 """
 
+import asyncio
+import base64
+import os
+import re
+from io import BytesIO
+
+import aioconsole
+import anthropic
+import discord
+import google.generativeai as genai
+import openai
+import requests
+from discord.ext import commands
+from mistralai.client import MistralClient
+from mistralai.models.chat_completion import ChatMessage
+from PIL import Image
+
+from modules.AI_manager import AI_Error, AI_Manager, AI_Type, PromptManager
+from modules.plugins import PLUGINS as get_plugins
 from modules.utils import (
     async_cprint as cprint,
     async_print as print,
-    settings,
-    get_full_name,
-    print_available_genai_models,
 )
-from modules.plugins import PLUGINS as get_plugins
-from modules.AI_manager import PromptManager, AI_Manager, AI_Type, AI_Error, AI_TYPES
-
-import discord
-from discord.ext import commands
-import openai
-import anthropic
-import google.generativeai as genai
-from mistralai.client import MistralClient
-from mistralai.models.chat_completion import ChatMessage
-
-import os
-import re
-import base64
-import asyncio
-import requests
-import aioconsole
-from PIL import Image
-from io import BytesIO
+from modules.utils import (
+    get_full_name,
+    settings,
+    # print_available_genai_models,
+)
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -50,7 +52,7 @@ from io import BytesIO
 # User {2}: "{1}"
 # sonata:"""
 
-PROMPT = """You're Discord bot 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
+PROMPT = """You're a Discord bot named 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
 For context, the chat so far is summarized as: {0}
 Here's the user and message you're responding to:
@@ -58,17 +60,19 @@ Here's the user and message you're responding to:
 sonata:"""
 
 
-P = PromptManager(prompt_name="Instructions", prompt_text=lambda *a: PROMPT.format(*a))
+P = PromptManager(prompt_name="Instructions",
+                  prompt_text=lambda *a: PROMPT.format(*a))
 P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
 # TODO: Add specific events for on_load, on_message, on_exit, etc
 # - Specifically connect to Chat hooks (on_message) and Term Command Saving (on_exit)
 Sonata, M = AI_Manager.init(
     P,
-    "OpenAI",
+    "Gemini",
+    # "OpenAI",
     (settings.OPEN_AI, "gpt-3.5-turbo-0125", 0.4, 2500),
     summarize_chat=True,
-    name="sonata",
+    NAME="SONATA",
 )
 
 Sonata.config.set(temp=0.8)
@@ -124,7 +128,8 @@ def OpenAI(client, prompt, model, config):
 
 @M.ai(
     None,
-    setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
+    setup=lambda S, key: setattr(
+        S, "client", anthropic.Anthropic(api_key=key)),
     # model="claude-3-opus-20240229",
     model="claude-3-sonnet-20240229",
     # model="claude-3-haiku-20240229",
@@ -284,6 +289,8 @@ AI_Type.initalize(
     ("DALLE", settings.OPEN_AI),
 )
 
+print(Sonata.memory["chat"]["set"])
+
 
 class SonataClient(commands.Bot):
     current_guild = ""
@@ -324,7 +331,6 @@ async def get_channel(ctx):
 
 
 def get_emoji_id(emoji_str):
-    # regex: :\d*>
     animated = "a:" in emoji_str
     name = re.search(r":\w*:", emoji_str)
     if name:
@@ -337,7 +343,6 @@ def get_emoji_id(emoji_str):
 
 def get_emoji_link_from_id(emoji_id, animated=False, name=""):
     if emoji_id is None:
-        # cprint("Invalid emoji id", "red")
         return
     link = f"https://cdn.discordapp.com/emojis/{emoji_id}"
     if animated:
@@ -362,7 +367,7 @@ def download_emoji(direct_link, filename, ext):
 
 def chunk_list(lst, chunk_size):
     for i in range(0, len(lst), chunk_size):
-        yield lst[i : i + chunk_size]
+        yield lst[i: i + chunk_size]
 
 
 def read_images():
@@ -401,7 +406,7 @@ async def oute(ctx):
         s = text[:2000]
         a = ""
         if s[-1] != ":":
-            a = s[s.rfind(":") + 1 :]
+            a = s[s.rfind(":") + 1:]
             s = s[: s.rfind(":") + 1]
         await ctx.send(s)
         text = a + text[2000:]
@@ -415,6 +420,7 @@ async def ping(ctx):
 
 
 async def ai_question(ctx, *message, ai, short, error_prompt=None):
+    Sonata.config.set(AI=ai)
     INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
     try:
         message = " ".join(message)

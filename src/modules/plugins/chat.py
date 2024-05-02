@@ -13,7 +13,7 @@ from modules.utils import (
     runner,
     setter,
     settings,
-    has_inside
+    has_inside,
 )
 import random
 import re
@@ -34,9 +34,12 @@ __plugin_name__ = "chat"
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
+# TODO: Make new hook system for general hooks that can b iterated on in the main loop
+
 
 async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     AI = Sonata.config.get("auto")
+    # AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
     # Ignore messages from bots except 'sonata'
     if message.author.bot:
@@ -370,7 +373,8 @@ def chat(self: AI_Manager):
             if len(chat) > self.config.get("max_chats") + 1 and self.config.get(
                 "summarize"
             ):
-                summary = self.do("chat", "summarize", id, self.get("config"))
+                config = self.get("config")
+                summary = self.do("chat", "summarize", id, config)
                 kelf.delete(id)
                 kelf.send(id, "System", "PreviousChatSummary", summary, None)
             return a[3]

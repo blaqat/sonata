@@ -6,8 +6,10 @@ python-dotenv
 requests
 pretty_errors
 mistralai
-dotenv
 youtube-search-python
 google-api-python-client
 anthropic
 pillow
+aioconsole
+nuvem_de_som
+Google-Images-Search

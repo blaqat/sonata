@@ -1,3 +1,4 @@
+from asyncio import threads
 from modules.utils import (
     async_cprint as cprint,
     async_print as print,
@@ -11,6 +12,8 @@ from urllib import parse, request
 import random
 from youtubesearchpython import VideosSearch
 from googleapiclient.discovery import build
+from nuvem_de_som import SoundCloud as sc
+from google_images_search import GoogleImagesSearch
 
 L, M, P = AI_Manager.init(lazy=True)
 __plugin_name__ = "self-commands"
@@ -34,6 +37,7 @@ def request_chat(_, message, **config):
         command = splits[0]
         cprint("COMMAND " + command, "cyan")
         cprint("ARGS " + " ".join(splits[1:]), "purple")
+        # Validate the command
         if not M.do("command", "validate", command):
             return message
         args = splits[1:]
@@ -54,9 +58,7 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
-@M.new_helper(
-    "command",
-)
+@M.new_helper
 def command(F, name, usage, desc=None, inst=None):
     M.set("command", name, F, usage, desc, inst)
 
@@ -84,6 +86,98 @@ def google_search(*search_term):
     results = [{"title": r["title"], "link": r["link"]} for r in res]
 
     return {"results": results}
+
+
+GIF_CACHE = {}
+
+
+def get_n(search_term, results_len):
+    # Convert the search term to lowercase and remove spaces
+    search_term = search_term.lower().replace(" ", "")
+
+    # If the search term is not in the cache, initialize it with 0
+    if search_term not in GIF_CACHE:
+        GIF_CACHE[search_term] = {0}
+        return 0
+
+    # If the cache already contains all the possible results, return a random one
+    if len(GIF_CACHE[search_term]) == results_len - 1:
+        return random.choice(list(GIF_CACHE[search_term]))
+
+    # If the cache is close to containing all the possible results, find the first missing one and return it
+    if len(GIF_CACHE[search_term]) >= results_len - 4:
+        hasnt_done = 1
+        for i in range(1, results_len):
+            if i not in GIF_CACHE[search_term]:
+                GIF_CACHE[search_term].add(hasnt_done)
+                return hasnt_done
+
+    # If none of the above conditions are met, generate a random number that hasn't been used yet
+    while True:
+        n = random.randint(1, results_len - 1)
+        if n not in GIF_CACHE[search_term]:
+            GIF_CACHE[search_term].add(n)
+            return n
+
+
+def gif_giphy_search(*search_term, limit=15):
+    search_term = " ".join(search_term)
+    url = "http://api.giphy.com/v1/gifs/search"
+    params = parse.urlencode(
+        {"q": search_term, "api_key": settings.GIPHY, "limit": limit}
+    )
+    with request.urlopen("".join((url, "?", params))) as response:
+        data = json.loads(response.read())
+    n = get_n(search_term, len(data["data"]))
+    if len(data) == 0:
+        return "Gif not found."
+    return {
+        "link": data["data"][n]["url"],
+    }
+
+
+def gif_tenor_search(*search_term, limit=15):
+    search_term = " ".join(search_term)
+    url = f"https://tenor.googleapis.com/v2/search?q={
+        search_term}&key={settings.TENOR_G}&limit={limit}"
+    with requests.get(url) as response:
+        gifs = json.loads(response.text)["results"]
+    n = get_n(search_term, len(gifs))
+    if len(gifs) == 0:
+        return "Gif not found."
+    return {
+        "link": gifs[n]["media_formats"]["gif"]["url"],
+    }
+
+
+def gif_google_search(*search_term, limit=15):
+    search_term = " ".join(search_term)
+
+    _search_params = {
+        "q": search_term,
+        "num": limit,
+        "fileType": "gif",
+        "safe": "off",
+        "imgSize": "large",
+    }
+
+    gis = GoogleImagesSearch(settings.SEARCH_KEY, settings.SEARCH_ID)
+
+    gis.search(search_params=_search_params)
+
+    result = gis.results()
+    if len(result) == 0:
+        return "Gif not found."
+
+    try:
+        n = get_n(search_term, len(result))
+        url = result[n].url
+    except:
+        return result[0].url
+
+    return {"link": url}
+
+    return "Testing no gif found"
 
 
 """
@@ -159,7 +253,8 @@ def roll(*args):
 @M.command("weather", "$weather <city>", "Get the weather for a location.")
 def get_weather(*city):
     city = " ".join(city)
-    url = f"https://api.weatherapi.com/v1/current.json?key={settings.WEATHER}&q={city}"
+    url = f"https://api.weatherapi.com/v1/current.json?key={
+        settings.WEATHER}&q={city}"
     response = requests.get(url)
     data = response.json()
     return {
@@ -223,17 +318,23 @@ def combined_search(*search_term):
     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so that the link embeds (no periods or commas).",
 )
 def get_gif(*search_term):
-    search_term = " ".join(search_term)
-    url = "http://api.giphy.com/v1/gifs/search"
-    params = parse.urlencode({"q": search_term, "api_key": settings.GIPHY, "limit": 25})
-    with request.urlopen("".join((url, "?", params))) as response:
-        data = json.loads(response.read())
-    n = random.randint(0, len(data))
-    if len(data) == 0:
-        return "Gif not found."
-    return {
-        "link": data["data"][n]["url"],
-    }
+    limit = 15
+    # search = random.choice([gif_google_search, gif_giphy_search, gif_tenor_search])
+    # search = gif_google_search
+    search = gif_tenor_search
+    # search = gif_giphy_search
+    return search(*search_term, limit=limit)
+
+    # url = "http://api.giphy.com/v1/gifs/search"
+    # params = parse.urlencode({"q": search_term, "api_key": settings.GIPHY, "limit": 25})
+    # with request.urlopen("".join((url, "?", params))) as response:
+    #     data = json.loads(response.read())
+    # n = random.randint(0, len(data))
+    # if len(data) == 0:
+    #     return "Gif not found."
+    # return {
+    #     "link": data["data"][n]["url"],
+    # }
 
 
 @M.command(
@@ -257,35 +358,70 @@ def get_vid(*search_term):
 
 @M.command(
     "music",
-    "$music <search term>",
+    "$music <song title>, <artist name or 'None'>",
     "Search for a music link on soundcloud to post in chat.",
     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas).",
 )
 def get_music(*search_term):
-    search_term = " ".join(search_term)
-    url = f"https://api-v2.soundcloud.com/search?q={search_term}&variant_ids=&facet=model&&client_id={settings.SC}&limit=20&offset=0&linked_partitioning=1&&app_locale=en"
-    response = requests.get(url)
-    doc = json.loads(response.text)
-    runs = 0
-    while "collection" not in doc and runs < 3:
-        response = requests.get(url)
-        doc = json.loads(response.text)
-        runs = runs + 1
-
+    search_term = " ".join(search_term).split(",")
+    song_name = search_term[0].strip()
+    artist = search_term[1].strip().lower() if len(search_term) > 1 else None
+    if artist == "none":
+        artist = None
+    num_links = 1
     links = []
-    try:
-        for e in doc["collection"]:
-            if e["kind"] == "track":
-                links.append((e["title"], e["permalink_url"]))
+    max_runs = 5
 
-        result = links[0]
+    search = song_name
+    if artist is not None:
+        search += f" {artist}"
 
-        return {
-            "title": result[0],
-            "link": result[1],
-        }
-    except:
-        return "Song not fond."
+    cprint(f"Searching for {search}", "yellow")
+
+    for t in sc.search_tracks(search):
+        max_runs -= 1
+        if max_runs < 0:
+            return "Song not found. Ran out of attempts."
+        if artist is not None and artist not in t["artist"].lower().replace(" ", ""):
+            print(f"Attempt {max_runs} {t['title']} {t['artist']}")
+            continue
+        links.append((t["title"], t["url"]))
+        if len(links) >= num_links:
+            break
+
+    if len(links) == 0:
+        return "Song not found."
+
+    result = links[0]
+
+    return {
+        "title": result[0],
+        "link": result[1],
+    }
+
+    # url = f"https://api.soundcloud.com/search?q={search_term}&variant_ids=&facet=model&&client_id={settings.SC}&limit=20&offset=0&linked_partitioning=1&&app_locale=en"
+    # response = requests.get(url)
+    # doc = json.loads(response.text)
+    # runs = 0
+    # while "collection" not in doc and runs < 3:
+    #     response = requests.get(url)
+    #     doc = json.loads(response.text)
+    #     runs = runs + 1
+    #
+    # links = []
+    # try:
+    #     for e in doc["collection"]:
+    #         if e["kind"] == "track":
+    #             links.append((e["title"], e["permalink_url"]))
+    #
+    #     result = links[0]
+    #
+    #     return {
+    #         "title": result[0],
+    #         "link": result[1],
+    #     }
+    # except:
+    #     return "Song not fond."
 
 
 """
@@ -330,7 +466,7 @@ Here is the prompt_feedback: {r}
 
 @M.prompt
 def Instructions(history, message, user, replying_to):
-    print(message, user)
+    # print(message, user)
     return f"""{BEGINING}
 
 {RESPONSE_GUIDELINES}
@@ -345,7 +481,7 @@ Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS 
 Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
 Here is the chat log: {history}
 
-{RESPONDING.format(user=user, message=( message, replying_to ))}"""
+{RESPONDING.format(user=user, message=(message, replying_to))}"""
 
 
 @M.prompt
@@ -353,9 +489,9 @@ def SelfCommand(history, command, *args):
     command = command.split("\n")[0] if "\n" in command else command
     args = " ".join(args)
     args = args.split("\n")[0].split(" ") if "\n" in args else args.split(" ")
-    ls = M.do("command", "list")
+    # ls = M.do("command", "list")
     cmd_instructions = M.get("command")[command]["instructions"]
-    cmd_instructions = (
+    d_instructions = (
         cmd_instructions
         and "\nInstructions for this command (MUST ADHERE TO): "
         + cmd_instructions
