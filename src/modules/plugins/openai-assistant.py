@@ -22,7 +22,9 @@ L, M, P = AI_Manager.init(
     config={"using_assistant": True},
 )
 __plugin_name__ = "openai_assistant"
-__dependencies__ = ["chat", "self_commands"]
+__dependencies__ = ["beacon", "chat", "self_commands"]
+
+BEACON = None
 
 
 """
@@ -89,16 +91,18 @@ Setup    -----------------------------------------------------------------------
     {},
     s=lambda M, channel_id, thread_id: setter(M["value"], channel_id, thread_id),
 )
-def validate_thread(M, channel_id):
-    if channel_id not in M["value"]:
-        new_thread = M["client"].create()
-        M["value"][channel_id] = new_thread.id
-    return M["value"][channel_id]
+def validate_thread(STOR, channel_id):
+    if channel_id not in STOR["value"]:
+        new_thread = STOR["client"].create()
+        STOR["value"][channel_id] = new_thread.id
+    BEACON.guide("threads", STOR["value"])
+    return STOR["value"][channel_id]
 
 
 @M.builder
 def chat_assistant(self: AI_Manager):
     openai = L.config.get("ai_types")["OpenAIAssistant"].client
+    local_beacon = self.beacon.branch("assistant")
 
     class Assistant:
         using = False
@@ -109,11 +113,12 @@ def chat_assistant(self: AI_Manager):
             kelf.using = True
             kelf.init(
                 openai,
-                instructions=self.prompt_manager.get_instructions(),
+                instructions=P.get_instructions(),
                 model="gpt-4o",
             )
 
         def init(kelf, client, instructions: str = None, model: str = "gpt-4o"):
+            local_beacon.reflect("threads", self.get("thread"))
             self_commands = self.get("command")
             kelf.instructions = (
                 instructions
@@ -218,3 +223,12 @@ Attributes:
 - Dislikes: corny jokes, being told what to do
 - Hates: furries, loud music
 """
+
+
+P.set_instructions("Instructions")
+
+
+@M.on_load
+def on_load(self: AI_Manager):
+    global BEACON
+    BEACON = self.beacon.branch("assistant")
