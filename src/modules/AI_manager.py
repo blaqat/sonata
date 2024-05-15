@@ -47,11 +47,14 @@ class AI_Type:
         # arg (aitype, key, **kwargs)
         for arg in args:
             _ai = arg[0]
+            # If _ai is a string, get the AI_Type object from the AI_TYPES dictionary
             if isinstance(_ai, str):
                 _ai = AI_TYPES.get(_ai, None)
+            # If _ai is still None, skip to the next argument
             if _ai is None:
                 # Warn user that _ai is not specified
                 continue
+            # If the argument has more than 2 elements, call the setup method with the key and the remaining elements as keyword arguments
             if len(arg) > 2 and _ai.can_start:
                 _ai.setup(arg[1], **arg[2])
             else:
@@ -85,10 +88,13 @@ class PromptManager:
     def __init__(
         self,
         *prompts: Tuple[str, Union[str, Callable]],
+        instructions: Union[str, callable] = None,
         prompt_name: str = None,
         prompt_text: Union[str, callable] = None,
     ):
         self.prompts = dict()
+        if instructions is not None:
+            self.add_instructions(instructions)
         if prompt_name is not None and prompt_text is not None:
             self.add(prompt_name, prompt_text)
         if prompts is not None:
@@ -101,16 +107,9 @@ class PromptManager:
     def add(self, prompt_name: str, prompt: Union[str, callable]):
         self.prompts[prompt_name] = prompt
 
-    def get(self, prompt_name: str, *prompt_args):
-        if prompt_name not in self.prompts:
-            return None
-        if callable(self.prompts[prompt_name]):
-            return self.prompts[prompt_name](*prompt_args)
-        else:
-            return self.prompts[prompt_name]
-
-    def exists(self, prompt_name: str):
-        return prompt_name in self.prompts
+    def add_instructions(self, prompt: Union[str, callable]):
+        self.add("Instructions", prompt)
+        self.instructions = "Instructions"
 
     def add_prompts_from(self, prompt_manager):
         if isinstance(prompt_manager, PromptManager):
@@ -126,11 +125,46 @@ class PromptManager:
                 f"Cannot add prompts from object of type {type(prompt_manager)}"
             )
 
+    def set_instructions(self, prompt_name: str, prompt: Union[str, callable]):
+        if prompt is None:
+            if not self.exists(prompt_name):
+                return
+        else:
+            self.add(prompt_name, prompt)
+        self.instructions = prompt_name
+
+    def get(self, prompt_name: str, *prompt_args):
+        if prompt_name not in self.prompts:
+            return None
+        if callable(self.prompts[prompt_name]):
+            return self.prompts[prompt_name](*prompt_args)
+        else:
+            return self.prompts[prompt_name]
+
+    def get_instructions(self, *prompt_args):
+        if not self.has_instructions():
+            return None
+        return self.get(self.instructions, *prompt_args)
+
+    def has_instructions(self):
+        return hasattr(self, "instructions")
+
+    def exists(self, prompt_name: str):
+        return prompt_name in self.prompts
+
+    def list_prompts(self):
+        return self.prompts.keys()
+
     def send(self, prompt, *prompt_args, model=None, AI=None, config={}):
-        if prompt in self.prompts:
+        if prompt in self.prompts and type(prompt) is str:
             prompt = self.get(prompt, *prompt_args)
+        # elif type(prompt) is str:
+        #     prompt = prompt.format(*prompt_args)
+        elif callable(prompt):
+            prompt = prompt(*prompt_args)
 
         return generic_ai_prompt(AI, str(prompt), model, config)
+        # return "HELLO"
 
 
 def _config_builder(aiman):
@@ -180,13 +214,13 @@ class AI_Manager:
         return super().__getattribute__(__name)
 
     class M:  # Higher order function alternatives
-        _a = None
-        _p = None
-        m = None
+        MANAGER = None
+        PROMPTS = None
+        MEMORY = None
 
         @classmethod
         def cls(cls, class_name, class_body):
-            cls._a.sub_classes[class_name] = class_body
+            cls.MANAGER.sub_classes[class_name] = class_body
 
         @classmethod
         def builder(cls, func):
@@ -196,46 +230,50 @@ class AI_Manager:
 
         @classmethod
         def do(cls, *args, **kwargs):
-            return cls._a.do(*args, **kwargs)
+            return cls.MANAGER.do(*args, **kwargs)
 
         @classmethod
         def get(cls, *args, **kwargs):
-            return cls._a.get(*args, **kwargs)
+            return cls.MANAGER.get(*args, **kwargs)
 
         @classmethod
         def set(cls, *args, **kwargs):
-            return cls._a.set(*args, **kwargs)
+            return cls.MANAGER.set(*args, **kwargs)
 
         @classmethod
         def update(cls, *args, **kwargs):
-            return cls._a.update(*args, **kwargs)
+            return cls.MANAGER.update(*args, **kwargs)
 
         @classmethod
         def reset(cls, *args, **kwargs):
-            return cls._a.reset(*args, **kwargs)
+            return cls.MANAGER.reset(*args, **kwargs)
 
         @classmethod
         def add(cls, *args, **kwargs):
-            return cls._a.add(*args, **kwargs)
+            return cls.MANAGER.add(*args, **kwargs)
 
         @classmethod
         def forget(cls, *args, **kwargs):
-            return cls._a.forget(*args, **kwargs)
+            return cls.MANAGER.forget(*args, **kwargs)
 
         @classmethod
         def remember(cls, *args, **kwargs):
-            return cls._a.remember(*args, **kwargs)
+            return cls.MANAGER.remember(*args, **kwargs)
 
         @classmethod
         def init(cls, aim):
-            cls._a = aim
-            cls._p = aim.prompt_manager
-            cls.m = aim.memory
+            cls.MANAGER = aim
+            cls.PROMPTS = aim.prompt_manager
+            cls.MEMORY = aim.memory
 
         @classmethod
-        def ai(cls, client=None, setup=Callable, default=False, **kwargs):
+        def ai(cls, client=None, setup=Callable, default=False, key=None, **kwargs):
+            ai_name = None
+
             def decorator(func):
                 name = func.__name__
+                nonlocal ai_name
+                ai_name = name
                 # print(client, func, kwargs)
                 new_ai = AI_Type(client, func, **kwargs)
                 if setup is not None:
@@ -245,6 +283,10 @@ class AI_Manager:
                 if default:
                     AI_TYPES["default"] = new_ai
                     return new_ai
+
+            # Simple initialization
+            if key is not None:
+                AI_Type.initalize((ai_name, key))
 
             return decorator
 
@@ -274,37 +316,44 @@ class AI_Manager:
         def prompt(cls, func, prompt_name=None):
             if prompt_name is None:
                 prompt_name = func.__name__
-            cls._p.add(prompt_name, func)
+            cls.PROMPTS.add(prompt_name, func)
             return func
+
+        @classmethod
+        def on_load(cls, func):
+            if cls.MANAGER.lazy:
+                cls.MANAGER.on_load.append(func)
+                return func
+            func(cls.MANAGER)
 
         @classmethod
         def effect(cls, key, event_name=None, prepend=True):
             def decorator(hook_func):
                 nonlocal key, event_name, prepend
-                if cls._a.lazy:
+                if cls.MANAGER.lazy:
 
                     def lazy():
-                        cls._a.effect(key, event_name, hook_func, prepend)
+                        cls.MANAGER.effect(key, event_name, hook_func, prepend)
                         return hook_func
 
-                    cls._a.on_load.append(lazy)
+                    cls.MANAGER.on_load.append(lazy)
                 else:
-                    cls._a.effect(key, event_name, hook_func, prepend)
+                    cls.MANAGER.effect(key, event_name, hook_func, prepend)
                 return hook_func
 
             if not event_name:
                 # Function name should be "key_eventname"
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
-                if cls._a.lazy:
+                if cls.MANAGER.lazy:
 
                     def lazy():
-                        cls._a.effect(k, event_name, key, prepend)
+                        cls.MANAGER.effect(k, event_name, key, prepend)
                         return key
 
-                    cls._a.on_load.append(lazy)
+                    cls.MANAGER.on_load.append(lazy)
                     return lazy
-                cls._a.effect(k, event_name, key)
+                cls.MANAGER.effect(k, event_name, key)
                 return key
 
             return decorator
@@ -313,30 +362,30 @@ class AI_Manager:
         def effect_post(cls, key, event_name=None, prepend=False):
             def decorator(hook_func):
                 nonlocal key, event_name, prepend
-                if cls._a.lazy:
+                if cls.MANAGER.lazy:
 
                     def lazy():
-                        cls._a.effect(key, event_name, hook_func, prepend)
+                        cls.MANAGER.effect(key, event_name, hook_func, prepend)
                         return hook_func
 
-                    cls._a.on_load.append(lazy)
+                    cls.MANAGER.on_load.append(lazy)
                     return lazy
 
-                cls._a.effect(key, event_name, hook_func, prepend)
+                cls.MANAGER.effect(key, event_name, hook_func, prepend)
                 return hook_func
 
             if not event_name:
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
-                if cls._a.lazy:
+                if cls.MANAGER.lazy:
 
                     def lazy():
-                        cls._a.effect(k, event_name, key, prepend)
+                        cls.MANAGER.effect(k, event_name, key, prepend)
                         return key
 
-                    cls._a.on_load.append(lazy)
+                    cls.MANAGER.on_load.append(lazy)
                     return lazy
-                cls._a.effect(k, event_name, key, prepend)
+                cls.MANAGER.effect(k, event_name, key, prepend)
                 return key
 
             return decorator
@@ -345,14 +394,14 @@ class AI_Manager:
         def event(cls, key, event_name=None):
             def decorator(func):
                 nonlocal key, event_name
-                cls._a.add(key, event_name, func)
+                cls.MANAGER.add(key, event_name, func)
                 return func
 
             if not event_name:
                 # Function name should be "key_eventname"
                 name = key.__name__.split("_")
                 event_name, k = name[0], name[1]
-                cls._a.add(k, event_name, key)
+                cls.MANAGER.add(k, event_name, key)
                 return key
 
             return decorator
@@ -371,7 +420,7 @@ class AI_Manager:
                     split = event_name.split("_")
                     event_name, inner = split[0], split[1]
 
-                cls._a.remember(
+                cls.MANAGER.remember(
                     key,
                     v,
                     update_func=func if event_name == "update" else u,
@@ -382,7 +431,7 @@ class AI_Manager:
                 )
 
                 if event_name not in ["update", "set", "reset", "add"]:
-                    cls._a.add(key, event_name, func)
+                    cls.MANAGER.add(key, event_name, func)
 
                 return func
 
@@ -423,8 +472,7 @@ class AI_Manager:
             and not prompt_manager.exists("Instructions")
             and not prompt_manager.exists("SystemInstructions")
         ):
-            prompt_manager.add(
-                "Instructions",
+            prompt_manager.add_instructions(
                 lambda _,
                 message,
                 nick: f"I am a User you are an AI Assisant, Respond to my messages to aid me. My message: {message}",
@@ -446,7 +494,7 @@ class AI_Manager:
         self.add("config", "update", update_config, ignore_lazy=True)
         self.add("config", "set", set_config, ignore_lazy=True)
         self.config.merge(config)
-        self.config.set(AI=default_AI, setup=default_args, **config)
+        self.config.set(AI=default_AI, setup=default_args, ai_types=AI_TYPES, **config)
 
     def extend(A, Plugins, **configs):
         for LM in Plugins:
@@ -478,7 +526,10 @@ class AI_Manager:
                         class_body = class_body(A)()
                     A.sub_classes[class_name] = class_body
 
-            for func in L.on_load:
+            pre_load = [f for f in L.on_load if len(f.__code__.co_varnames) == 0]
+            post_load = [f for f in L.on_load if len(f.__code__.co_varnames) > 0]
+
+            for func in pre_load:
                 func()
             # print(
             #     LM.__plugin_name__, L.plugin_config, configs.get(LM.__plugin_name__, {})
@@ -489,6 +540,10 @@ class AI_Manager:
             A.config.merge(plugin_config)
             A.prompt_manager.add_prompts_from(L.prompt_manager)
             L.prompt_manager = A.prompt_manager
+            L.sub_classes = A.sub_classes
+
+            for func in post_load:
+                func(A)
 
             del L
 
@@ -567,7 +622,10 @@ class AI_Manager:
                     passed_args = func(self.memory[key], *passed_args, **kwargs)
                 return passed_args
 
-    def forget(self, key):
+    def forget(self, key, inner=False):
+        if inner:
+            del self.memory[key][inner]
+            return
         del self.memory[key]
 
     def update(self, key, *args, **kwargs):
