@@ -1,3 +1,11 @@
+"""
+Chat
+----
+This plugin is responsible for handling chat messages and processing them through the AI model.
+In addition, it provides a way to store and retrieve chat logs for summarization and other purposes.
+Also, it provides a way to send messages to a specific channel or user.
+"""
+
 import copy
 
 import discord
@@ -393,26 +401,40 @@ def chat(self: AI_Manager):
             # TODO: Add way to store attachments since can send them in message now
             # They are accessed in config['images']
             response = None
+            chat_history = kelf.get_history(id)
             c = self.get("config")
             c.update(config)
-            c["history"] = kelf.get_history(id)
+            c["history"] = chat_history
+            c["instructions"] = prompt_manager.get_instructions()
+            c["channel_id"] = id
             try:
-                prompt = prompt_manager.get(
-                    "Instructions",
-                    kelf.get_history(id),
-                    message,
-                    user_name,
-                    replying_to,
-                    *args,
-                )
+                # TODO: Refactor this to seperate Instructions from the message to allow use of system instructions
+                # config["instructions"] = instruction message
+                # response = self.do("chat", "request", message, AI=AI, config=c)
+                #
+                # prompt = prompt_manager.get_instructions(
+                #     "Instructions",
+                #     kelf.get_history(id),
+                #     message,
+                #     user_name,
+                #     replying_to,
+                #     *args,
+                # )
+
+                # prompt = prompt_manager.get(
+                #     "Message",
+                #     user_name,
+                #     message,
+                #     replying_to,
+                # )
 
                 response = self.do(
                     "chat",
                     "request",
-                    prompt,
-                    kelf.get_history(id),
-                    message,
+                    prompt_manager.prompts["Message"],
+                    # kelf.get_history(id),
                     user_name,
+                    message,
                     replying_to,
                     *args,
                     AI=AI,

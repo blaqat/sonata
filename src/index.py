@@ -30,7 +30,7 @@ from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
 from PIL import Image
 
-from modules.AI_manager import AI_Error, AI_Manager, AI_Type, PromptManager
+from modules.AI_manager import AI_Error, AI_Manager, AI_Type, PromptManager, AI_TYPES
 from modules.plugins import PLUGINS as get_plugins
 from modules.utils import (
     async_cprint as cprint,
@@ -54,15 +54,22 @@ from modules.utils import (
 
 PROMPT = """You're a Discord bot named 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
-For context, the chat so far is summarized as: {0}
-Here's the user and message you're responding to:
-{2}: {1}
-sonata:"""
+"""
+# For context, the chat so far is summarized as: {0}
+# Here's the user and message you're responding to:
+# {2}: {1}
+# sonata:"""
 
 
-P = PromptManager(prompt_name="Instructions",
-                  prompt_text=lambda *a: PROMPT.format(*a))
+P = PromptManager(instructions=lambda *a: PROMPT.format(*a))
+P.add(
+    "Message",
+    lambda user, msg, responding_to: """[replying to: {2}] {0}: {1}""".format(
+        user, msg, responding_to
+    ),
+)
 P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
+
 
 # TODO: Add specific events for on_load, on_message, on_exit, etc
 # - Specifically connect to Chat hooks (on_message) and Term Command Saving (on_exit)
@@ -70,9 +77,9 @@ Sonata, M = AI_Manager.init(
     P,
     "Gemini",
     # "OpenAI",
-    (settings.OPEN_AI, "gpt-3.5-turbo-0125", 0.4, 2500),
+    (settings.GOOGLE_AI, "Gemini", 0.4, 2500),
     summarize_chat=True,
-    NAME="SONATA",
+    name="Sonata",
 )
 
 Sonata.config.set(temp=0.8)
@@ -82,6 +89,7 @@ Sonata.config.setup()
 @M.ai(
     client=openai.images,
     default=False,
+    key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
     # model="dall-e-3",
     model="dall-e-2",
@@ -100,24 +108,64 @@ def DallE(client, prompt, model, config):
 
 
 @M.ai(
+    client=openai,
+    default=False,
+    key=settings.OPEN_AI,
+    setup=lambda _, k: print("starting up assistant"),
+    model="gpt-4o",
+)
+def OpenAIAssistant(client, prompt, model, config):
+    content = [{"type": "text", "text": prompt}]
+    i = config.get("images", False)
+    if i:
+        # model = "gpt-4-vision-preview"
+        i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
+        content.extend(i)
+        config["images"] = None
+
+    A = Sonata.chat_assistant
+    messages = A.send_request(config["channel_id"], "user", content).data
+
+    # print(messages)
+    reply = ""
+    # appent all messages until role is user
+    for message in messages:
+        if message.role == "user":
+            break
+        content = message.content
+        for c in content:
+            if c.type == "text":
+                reply += c.text.value
+            elif c.type == "image":
+                reply += f":{c.source.url}:"
+
+    return reply
+
+
+@M.ai(
     client=openai.chat.completions,
     default=True,
+    key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
     # model="gpt-3.5-turbo-0125",
-    model="gpt-4-turbo-preview",
+    # model="gpt-4-turbo-preview",
+    model="gpt-4o",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     i = config.get("images", False)
     if i:
-        model = "gpt-4-vision-preview"
+        # model = "gpt-4-vision-preview"
         i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
         content.extend(i)
         config["images"] = None
     return (
         client.create(
             model=model,
-            messages=[{"role": "user", "content": content}],
+            messages=[
+                {"role": "system", "content": config["instructions"]},
+                {"role": "user", "content": content},
+            ],
             max_tokens=config.get("max_tokens", 1250),
             temperature=config.get("temp") or config.get("temperature") or 0,
         )
@@ -128,8 +176,8 @@ def OpenAI(client, prompt, model, config):
 
 @M.ai(
     None,
-    setup=lambda S, key: setattr(
-        S, "client", anthropic.Anthropic(api_key=key)),
+    setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
+    key=settings.ANTHROPIC_AI,
     # model="claude-3-opus-20240229",
     model="claude-3-sonnet-20240229",
     # model="claude-3-haiku-20240229",
@@ -166,6 +214,7 @@ def Claude(client, prompt, model, config):
 @M.ai(
     None,
     default=True,
+    key=settings.PPLX_AI,
     setup=lambda S, key: setattr(
         S,
         "client",
@@ -193,6 +242,7 @@ def Perplexity(client, prompt, model, config):
 
 @M.ai(
     genai.GenerativeModel,
+    key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
     model="gemini-pro",
 )
@@ -241,6 +291,7 @@ def Gemini(client, prompt, model, config):
 
 @M.ai(
     None,
+    key=settings.MISTRAL_AI,
     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
     # model="mistral-medium",
     model="mistral-large-latest",
@@ -270,26 +321,16 @@ Here is the prompt_feedback: {r}
 
 
 Sonata.extend(
-    get_plugins(),
+    get_plugins(self_commands=False),
+    # WARNING: Dont allow self commands until new history/system instructions are implemented
+    # get_plugins(),
     chat={
         "summarize": True,
         "max_chats": 25,
         "view_replies": True,
-        "auto": "g",
+        "auto": "o",
     },
 )
-
-
-AI_Type.initalize(
-    ("OpenAI", settings.OPEN_AI),
-    ("Gemini", settings.GOOGLE_AI),
-    ("Mistral", settings.MISTRAL_AI),
-    ("Claude", settings.ANTHROPIC_AI),
-    ("Perplexity", settings.PPLX_AI),
-    ("DALLE", settings.OPEN_AI),
-)
-
-print(Sonata.memory["chat"]["set"])
 
 
 class SonataClient(commands.Bot):
@@ -367,7 +408,7 @@ def download_emoji(direct_link, filename, ext):
 
 def chunk_list(lst, chunk_size):
     for i in range(0, len(lst), chunk_size):
-        yield lst[i: i + chunk_size]
+        yield lst[i : i + chunk_size]
 
 
 def read_images():
@@ -406,7 +447,7 @@ async def oute(ctx):
         s = text[:2000]
         a = ""
         if s[-1] != ":":
-            a = s[s.rfind(":") + 1:]
+            a = s[s.rfind(":") + 1 :]
             s = s[: s.rfind(":") + 1]
         await ctx.send(s)
         text = a + text[2000:]
@@ -491,6 +532,11 @@ async def claude_ai_question(ctx, *message):
 @sonata.command(name="mi", description="Ask a question using MistralAI.")
 async def mistral_ai_question(ctx, *message):
     await ai_question(ctx, *message, ai="Mistral", short="mi")
+
+
+@sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
+async def open_ai_assistant_question(ctx, *message):
+    await ai_question(ctx, *message, ai="OpenAIAssistant", short="a")
 
 
 async def main():

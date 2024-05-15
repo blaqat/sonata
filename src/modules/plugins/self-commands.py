@@ -1,3 +1,11 @@
+"""
+Self-Commands
+-------------
+This plugin allows the bot to run commands on itself. The commands are defined in the plugin and can be run by the bot to get information or perform actions. The plugin also provides a prompt for the bot to explain the reasoning behind blocking a message.
+Inspired by the assistants functions from Openai Assistants endpoint.
+Also provides web access to the bot.
+"""
+
 from asyncio import threads
 from modules.utils import (
     async_cprint as cprint,
@@ -16,7 +24,7 @@ from nuvem_de_som import SoundCloud as sc
 from google_images_search import GoogleImagesSearch
 
 L, M, P = AI_Manager.init(lazy=True)
-__plugin_name__ = "self-commands"
+__plugin_name__ = "self_commands"
 __dependencies__ = ["chat"]
 
 
@@ -58,7 +66,9 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
-@M.new_helper
+@M.new_helper(
+    "command",
+)
 def command(F, name, usage, desc=None, inst=None):
     M.set("command", name, F, usage, desc, inst)
 
@@ -196,6 +206,7 @@ Setup    -----------------------------------------------------------------------
     list=lambda M: "; ".join(
         [f"{k} - {v['usage']} - {v['desc']}" for k, v in M["value"].items()]
     ),
+    names=lambda M: list(M["value"].keys()),
 )
 def use_command(M, command, *args):
     try:
@@ -224,11 +235,12 @@ def coin(*_):
 
 @M.command(
     "roll",
-    "$roll <number of dice> <number of sides>",
+    "$roll <number of dice>, <number of sides>",
     "Roll a number of dice with a number of sides.",
 )
 def roll(*args):
     try:
+        args = " ".join(args).split(",")
         num_dice, num_sides = int(args[0]), int(args[1])
         rolls = [random.randint(1, num_sides) for _ in range(num_dice)]
         return {
@@ -448,9 +460,12 @@ ATTRIBUTES = """Attributes:
 - Hates: furries, loud music
 """
 
-RESPONDING = """Responding to: {user}: (User Message, Message they are replying to){message}
-Do not repeat the User Message or the Message they are replying to in your response.
-sonata:"""
+CHAT_HISTORY = """"Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
+Here is the chat log: {history}
+"""
+
+RESPONDING = """[User Message, Message they are replying to]{user}: {message}
+Do not repeat the User Message or the Message they are replying to in your response."""
 
 
 @M.prompt
@@ -465,8 +480,7 @@ Here is the prompt_feedback: {r}
 
 
 @M.prompt
-def Instructions(history, message, user, replying_to):
-    # print(message, user)
+def Instructions():
     return f"""{BEGINING}
 
 {RESPONSE_GUIDELINES}
@@ -477,11 +491,15 @@ Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS 
 - Response should ONLY CONTAIN: $<command> <args> Example: $command arg1, arg2
 
 {ATTRIBUTES}
+"""
 
-Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
-Here is the chat log: {history}
 
-{RESPONDING.format(user=user, message=(message, replying_to))}"""
+M.PROMPTS.instructions = "Instructions"
+
+
+@M.prompt
+def Message(user, message, replying_to):
+    return RESPONDING.format(user=user, message=(message, replying_to))
 
 
 @M.prompt
@@ -491,7 +509,7 @@ def SelfCommand(history, command, *args):
     args = args.split("\n")[0].split(" ") if "\n" in args else args.split(" ")
     # ls = M.do("command", "list")
     cmd_instructions = M.get("command")[command]["instructions"]
-    d_instructions = (
+    cmd_instructions = (
         cmd_instructions
         and "\nInstructions for this command (MUST ADHERE TO): "
         + cmd_instructions
