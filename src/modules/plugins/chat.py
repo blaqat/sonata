@@ -361,6 +361,8 @@ CHANNEL_BLACKLIST = {
 def chat(self: AI_Manager):
     prompt_manager = self.prompt_manager
 
+    # TODO: Make way to translate history into proper chat log format for each AI
+    #
     class Chat:
         def get_chat(kelf, id):
             chat = self.get("chat")
@@ -408,26 +410,6 @@ def chat(self: AI_Manager):
             c["instructions"] = prompt_manager.get_instructions()
             c["channel_id"] = id
             try:
-                # TODO: Refactor this to seperate Instructions from the message to allow use of system instructions
-                # config["instructions"] = instruction message
-                # response = self.do("chat", "request", message, AI=AI, config=c)
-                #
-                # prompt = prompt_manager.get_instructions(
-                #     "Instructions",
-                #     kelf.get_history(id),
-                #     message,
-                #     user_name,
-                #     replying_to,
-                #     *args,
-                # )
-
-                # prompt = prompt_manager.get(
-                #     "Message",
-                #     user_name,
-                #     message,
-                #     replying_to,
-                # )
-                #
                 if "using_assistant" not in c and prompt_manager.exists("History"):
                     response = self.do(
                         "chat",

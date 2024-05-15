@@ -141,14 +141,6 @@ def beacon(sonata: AI_Manager):
 
             return self
 
-            # module_folder = f"{self.home}/{module_name}"
-            # if not os.path.exists(module_folder):
-            #     os.mkdir(module_folder)
-            #
-            # for key, value in data.items():
-            #     with open(f"{module_folder}/{key}.json", "w") as f:
-            #         json.dump(value, f, indent=4)
-
         def discover(self, module_name: str):
             """Load module from a file"""
             lamp_post = self.branch(module_name)
@@ -167,13 +159,6 @@ def beacon(sonata: AI_Manager):
                         key = str(key)
                 data[key] = lamp_post.locate(i)
             return data
-            # module_folder = f"{self.home}/{module_name}"
-            # data = {}
-            # for key in os.listdir(module_folder):
-            #     with open(f"{module_folder}/{key}", "rb") as f:
-            #         key = key.split(".")[0]
-            #         data[key] = pickle.load(f)
-            # return data
 
         def reflect(self, name: str, replacing: dict, remember: SaveType = None):
             """Update data in a file"""
@@ -225,11 +210,12 @@ def beacon(sonata: AI_Manager):
                 )
                 return self
 
+    # Manager tailored layer for the Beacon class
     def save(key, inner=False, module=False):
         """Illuminate/Guide data to a file"""
-        B = sonata.beacon
         if inner is False and module is False:
             inner = "value"
+        B = sonata.beacon
         if not module:
             if inner:
                 B.branch(key).guide(inner, sonata.memory[key][inner])

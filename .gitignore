@@ -7,3 +7,5 @@ trm.favs
 box/
 images/
 __pycache__/
+.DS_Store
+beacon-mainland/

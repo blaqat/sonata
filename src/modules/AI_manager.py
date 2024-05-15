@@ -125,9 +125,10 @@ class PromptManager:
                 f"Cannot add prompts from object of type {type(prompt_manager)}"
             )
 
-    def set_instructions(self, prompt_name: str, prompt: Union[str, callable]):
+    def set_instructions(self, prompt_name: str, prompt: Union[str, callable] = None):
         if prompt is None:
             if not self.exists(prompt_name):
+                print(f"Prompt {prompt_name} does not exist", "red")
                 return
         else:
             self.add(prompt_name, prompt)

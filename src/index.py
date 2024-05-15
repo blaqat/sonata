@@ -68,6 +68,11 @@ P.add(
         user, msg, responding_to
     ),
 )
+P.add(
+    "History",
+    lambda history: f"""Here is the chat history so far BEGINING :: {history} :: END\n""",
+)
+
 P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
 
@@ -111,7 +116,7 @@ def DallE(client, prompt, model, config):
     client=openai,
     default=False,
     key=settings.OPEN_AI,
-    setup=lambda _, k: print("starting up assistant"),
+    setup=lambda _, k: print("AI's Initialized"),
     model="gpt-4o",
 )
 def OpenAIAssistant(client, prompt, model, config):
@@ -269,7 +274,7 @@ def Gemini(client, prompt, model, config):
     content = prompt
     i = config.get("images", False)
     if i:
-        model = "gemini-pro-vision"
+        # model = "gemini-pro-vision"
         i = [Image.open(BytesIO(requests.get(u).content)) for u in i]
         content = [content]
         content.extend(i)
@@ -323,20 +328,15 @@ Here is the prompt_feedback: {r}
 
 
 Sonata.extend(
-    get_plugins(openai_assistant=False),
-    # WARNING: Dont allow self commands until new history/system instructions are implemented
+    get_plugins(openai_assistant=True),
     # get_plugins(),
     chat={
         "summarize": True,
         "max_chats": 25,
         "view_replies": True,
-        "auto": "g",
+        "auto": "o",
     },
 )
-
-# AI_Type.initalize(
-#     ("Gemini", settings.GOOGLE_AI),
-# )
 
 
 class SonataClient(commands.Bot):
