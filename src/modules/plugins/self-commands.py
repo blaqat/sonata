@@ -460,12 +460,22 @@ ATTRIBUTES = """Attributes:
 - Hates: furries, loud music
 """
 
-CHAT_HISTORY = """"Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
-Here is the chat log: {history}
+CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
+Here is the chat log: 
+-- BEG OF CHAT LOG --
+{history}
+-- END OF CHAT LOG --
 """
 
-RESPONDING = """[User Message, Message they are replying to]{user}: {message}
-Do not repeat the User Message or the Message they are replying to in your response."""
+RESPONDING = """
+Do not repeat the User Message or the Message they are replying to in your response.
+{user}: {message}
+"""
+
+
+@M.prompt
+def History(history):
+    return CHAT_HISTORY.format(history=history)
 
 
 @M.prompt

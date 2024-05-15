@@ -19,7 +19,7 @@ import re
 
 L, M, P = AI_Manager.init(
     lazy=True,
-    config={},
+    config={"using_assistant": True},
 )
 __plugin_name__ = "openai_assistant"
 __dependencies__ = ["chat", "self_commands"]

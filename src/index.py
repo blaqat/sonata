@@ -244,7 +244,8 @@ def Perplexity(client, prompt, model, config):
     genai.GenerativeModel,
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
-    model="gemini-pro",
+    # model="gemini-pro",
+    model="gemini-1.5-pro-latest",
 )
 def Gemini(client, prompt, model, config):
     block = [
@@ -281,6 +282,7 @@ def Gemini(client, prompt, model, config):
                     "temperature": config.get("temp") or config.get("temperature", 0.4)
                 },
                 safety_settings=block,
+                system_instruction=config["instructions"],
             )
             .generate_content(content)
             .text
@@ -321,16 +323,20 @@ Here is the prompt_feedback: {r}
 
 
 Sonata.extend(
-    get_plugins(self_commands=False),
+    get_plugins(openai_assistant=False),
     # WARNING: Dont allow self commands until new history/system instructions are implemented
     # get_plugins(),
     chat={
         "summarize": True,
         "max_chats": 25,
         "view_replies": True,
-        "auto": "o",
+        "auto": "g",
     },
 )
+
+# AI_Type.initalize(
+#     ("Gemini", settings.GOOGLE_AI),
+# )
 
 
 class SonataClient(commands.Bot):
@@ -541,11 +547,12 @@ async def open_ai_assistant_question(ctx, *message):
 
 async def main():
     try:
+        Sonata.reload("chat", "value", module=True)
         await sonata.start(settings.BOT_TOKEN)
     except:
         cprint("Exiting...", "red")
     finally:
-        # TODO: Store memory on crash and reload it
+        Sonata.save("chat", "value", module=True)
         cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
         Sonata.do("termcmd", "save")
 

@@ -268,25 +268,22 @@ class AI_Manager:
 
         @classmethod
         def ai(cls, client=None, setup=Callable, default=False, key=None, **kwargs):
-            ai_name = None
-
             def decorator(func):
                 name = func.__name__
-                nonlocal ai_name
-                ai_name = name
                 # print(client, func, kwargs)
                 new_ai = AI_Type(client, func, **kwargs)
                 if setup is not None:
                     new_ai.init = setup
                     new_ai.can_start = True
                     AI_TYPES[name] = new_ai
+
+                # Simple initialization
+                if key is not None:
+                    AI_Type.initalize((name, key))
+
                 if default:
                     AI_TYPES["default"] = new_ai
                     return new_ai
-
-            # Simple initialization
-            if key is not None:
-                AI_Type.initalize((ai_name, key))
 
             return decorator
 

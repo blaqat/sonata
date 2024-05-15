@@ -427,19 +427,37 @@ def chat(self: AI_Manager):
                 #     message,
                 #     replying_to,
                 # )
-
-                response = self.do(
-                    "chat",
-                    "request",
-                    prompt_manager.prompts["Message"],
-                    # kelf.get_history(id),
-                    user_name,
-                    message,
-                    replying_to,
-                    *args,
-                    AI=AI,
-                    config=c,
-                )
+                #
+                if "using_assistant" not in c and prompt_manager.exists("History"):
+                    response = self.do(
+                        "chat",
+                        "request",
+                        prompt_manager.prompts["History"](chat_history)
+                        + prompt_manager.prompts["Message"](
+                            user_name, message, replying_to
+                        )
+                        + "\nsonata:",
+                        # kelf.get_history(id),
+                        # user_name,
+                        # message,
+                        # replying_to,
+                        *args,
+                        AI=AI,
+                        config=c,
+                    )
+                else:
+                    response = self.do(
+                        "chat",
+                        "request",
+                        prompt_manager.prompts["Message"],
+                        # kelf.get_history(id),
+                        user_name,
+                        message,
+                        replying_to,
+                        *args,
+                        AI=AI,
+                        config=c,
+                    )
 
                 kelf.send(id, "Bot", self.name, response, replying_to)
                 return response

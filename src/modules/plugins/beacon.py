@@ -126,7 +126,18 @@ def beacon(sonata: AI_Manager):
 
             lamp_post = self.branch(module_name)
             for key, value in data.items():
-                lamp_post.guide(key, value)
+                t = ""
+
+                if type(key) == int:
+                    t = "i"
+                elif type(key) == float:
+                    t = "f"
+                elif type(key) == bool:
+                    t = "b"
+                else:
+                    t = "s"
+
+                lamp_post.guide(f"{t}{key}", value)
 
             return self
 
@@ -144,7 +155,17 @@ def beacon(sonata: AI_Manager):
             data = {}
             for key in lamp_post.scan():
                 key = key.split(".")[0]
-                data[key] = lamp_post.locate(key)
+                i = key
+                match key[0]:
+                    case "i":
+                        key = int(key[1:])
+                    case "f":
+                        key = float(key[1:])
+                    case "b":
+                        key = bool(key[1:])
+                    case _:
+                        key = str(key)
+                data[key] = lamp_post.locate(i)
             return data
             # module_folder = f"{self.home}/{module_name}"
             # data = {}
