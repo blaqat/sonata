@@ -1,5 +1,7 @@
 return {
 	theme = "aylin",
+	ui = "dark",
+	run = "sonata",
 	font = {
 		family = "Monaspace Krypton Var",
 		size = 14,

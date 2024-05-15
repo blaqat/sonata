@@ -1,5 +1,8 @@
 """
-This module is to handle the terminal override commands for the bot
+Term-Commands
+-------------
+This plugin allows you to interact with the bot through the terminal. You can send messages, delete messages, join voice channels, and more.
+Additionally, you can set favorite channels and users to easily interact with them.
 """
 
 import discord
@@ -14,7 +17,7 @@ import asyncio
 import aioconsole
 
 L, M, P = AI_Manager.init(lazy=True, config={})
-__plugin_name__ = "term-commands"
+__plugin_name__ = "term_commands"
 __dependencies__ = ["chat"]
 
 
@@ -157,26 +160,26 @@ class CustomEmoji:
         return new_d
 
 
-def __save_favs(M):
-    with open("trm.favs", "w") as f:
-        f.write(str(M["saved"]["channels"]) + "\n")
-        f.write(str(M["saved"]["users"]) + "\n")
+# def __save_favs(TM):
+#     with open("trm.favs", "w") as f:
+#         f.write(str(TM["saved"]["channels"]) + "\n")
+#         f.write(str(TM["saved"]["users"]) + "\n")
 
 
-def __load_favs(M):
-    try:
-        if not os.path.exists("trm.favs"):
-            with open("trm.favs", "w") as f:
-                f.write(str(M["saved"]["channels"]) + "\n")
-                f.write(str(M["saved"]["users"]) + "\n")
-            return
-        with open("trm.favs", "r") as f:
-            lines = f.readlines()
-            M["saved"]["channels"] = eval(lines[0])
-            M["saved"]["users"] = eval(lines[1])
-    except Exception as e:
-        cprint("Error loading favs", "red")
-        cprint(e, "red")
+# def __load_favs(TM):
+#     try:
+#         if not os.path.exists("trm.favs"):
+#             with open("trm.favs", "w") as f:
+#                 f.write(str(TM["saved"]["channels"]) + "\n")
+#                 f.write(str(TM["saved"]["users"]) + "\n")
+#             return
+#         with open("trm.favs", "r") as f:
+#             lines = f.readlines()
+#             TM["saved"]["channels"] = eval(lines[0])
+#             TM["saved"]["users"] = eval(lines[1])
+#     except Exception as e:
+#         cprint("Error loading favs", "red")
+#         cprint(e, "red")
 
 
 @M.new_helper("term")
@@ -213,8 +216,10 @@ EMOJIS = M.update("emojis")
 @M.mem(
     {},
     set=lambda M, name, func: setter(M["value"], name, func),
-    save=__save_favs,
-    load=__load_favs,
+    # save=__save_favs,
+    # load=__load_favs,
+    save=lambda _: M.MANAGER.save("termcmd", "saved"),
+    load=lambda _: M.MANAGER.reload("termcmd", "saved"),
     intercepting=False,
     recents={
         "pinned": None,
@@ -235,7 +240,9 @@ def run_termcmd(M, name, client, manager):
     return M["value"][name](*args[:num_required])
 
 
-M.do("termcmd", "load")
+@M.on_load
+def load_termcmd(M):
+    M.do("termcmd", "load")
 
 
 """
