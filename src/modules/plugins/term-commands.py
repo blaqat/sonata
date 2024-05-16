@@ -18,7 +18,7 @@ import aioconsole
 
 L, M, P = AI_Manager.init(lazy=True, config={})
 __plugin_name__ = "term_commands"
-__dependencies__ = ["chat"]
+__dependencies__ = ["beacon", "chat"]
 
 
 """
@@ -259,6 +259,7 @@ async def help(*_):
         god: Send message in channel
         dlr: Delete last message
         dlm: Delete message
+        dlc: Delete chat memory
         vc: Join voice channel
         leave: Leave voice channel
         react: React to message
@@ -326,6 +327,50 @@ async def dlm(M, self):
         exit_msg="Invalid index",
     )
     await messages[i].delete()
+
+
+@M.term
+async def dlc(m, self):
+    beacon = M.MANAGER.beacon.branch("chat").branch("value")
+    chat = M.MANAGER.chat
+    current_channel = self.get_channel(
+        m["recents"]["pinned"] or m["recents"]["channel"]
+    )
+    choice = await prompt(
+        "Delete (c)urrent chat, (f)avorite chat, (a)ll chats, or (n)new chat:\n",
+        str.lower,
+    )
+    channel = None
+    if choice[0] == "c":
+        if current_channel is None:
+            cprint("No current channel", "red")
+            raise E
+        channel = current_channel.id
+    elif choice[0] == "f":
+        favs = m["saved"]["channels"]
+        print_many(favs.keys())
+        c = await prompt(
+            "Enter fav name: ", favs.get, lambda x: x is None, "Fav not found"
+        )
+        channel = c
+    elif choice == "all":
+        # scan does return os.listdir(self.home)
+        for file in beacon.scan():
+            file = file.split(".")[0]
+            chat.delete(int(file[1:]))
+            beacon.dim(file)
+        return
+    elif choice[0] == "n":
+        channel = await prompt("Enter channel id: ")
+    elif choice == "exit":
+        return
+
+    if channel is None:
+        cprint("Invalid choice", "red")
+        raise E
+    else:
+        chat.delete(int(channel))
+        beacon.dim(f"i{channel}")
 
 
 @M.term

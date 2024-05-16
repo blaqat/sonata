@@ -104,15 +104,6 @@ def beacon(sonata: AI_Manager):
 
             return self
 
-        def locate(self, name: str):
-            """Load data from a file"""
-            try:
-                with open(f"{self.home}/{name}.p", "rb") as f:
-                    return pickle.load(f)
-            except:
-                cprint(f"Can not locate the path, {name} is not found.", "red")
-                return
-
         def illuminate(self, module_name: str, data: dict, remember: SaveType = None):
             """Save module to a file"""
             if remember != None:
@@ -140,6 +131,15 @@ def beacon(sonata: AI_Manager):
                 lamp_post.guide(f"{t}{key}", value)
 
             return self
+
+        def locate(self, name: str):
+            """Load data from a file"""
+            try:
+                with open(f"{self.home}/{name}.p", "rb") as f:
+                    return pickle.load(f)
+            except:
+                cprint(f"Can not locate the path, {name} is not found.", "red")
+                return
 
         def discover(self, module_name: str):
             """Load module from a file"""
@@ -196,6 +196,15 @@ def beacon(sonata: AI_Manager):
         def dim(self, name: str):
             """Delete a file"""
             os.remove(f"{self.home}/{name}.p")
+            return self
+
+        def darken(self, module_name: str = None):
+            """Delete all files in a island"""
+            lamp_post = self
+            if module_name is None:
+                lamp_post = self.branch(module_name)
+            for file in lamp_post.scan():
+                lamp_post.dim(file.split(".")[0])
             return self
 
         def extinguish(self):

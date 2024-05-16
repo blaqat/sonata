@@ -328,7 +328,7 @@ Here is the prompt_feedback: {r}
 
 
 Sonata.extend(
-    get_plugins(openai_assistant=True),
+    get_plugins(openai_assistant=False),
     # get_plugins(),
     chat={
         "summarize": True,
@@ -495,11 +495,13 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                 error_prompt=error_prompt,
             )
             if INTERCEPT:
-                print("Intercepting")
+                print("Intercepting: ", r)
                 new_message = await aioconsole.ainput("Enter message: ")
                 if new_message != "exit":
                     r = new_message
-                INTERCEPT = False
+                else:
+                    Sonata.set("termcmd", False, inner="intercepting")
+                # Sonata.memory["termcmd"]["intercepting"] = False
                 await ctx_reply(ctx, r)
             else:
                 await ctx_reply(ctx, r)

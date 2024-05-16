@@ -276,20 +276,20 @@ def get_weather(*city):
     }
 
 
-# @M.command(
-#     "imagine",
-#     "$imagine <prompt>",
-#     "Generate 2 images based on a prompt.",
-#     "Make sure to post the link. Also make sure to post the entire link.",
-# )
-# def imagine(*prompt):
-#     prompt = " ".join(prompt)
-#     response = P.send(prompt, AI="DallE")
-#     print(response)
-#     return {
-#         "title": prompt,
-#         "link": response,
-#     }
+@M.command(
+    "imagine",
+    "$imagine <prompt>",
+    "Generate 2 images based on a prompt.",
+    "Make sure to post the link. Also make sure to post the entire link.",
+)
+def imagine(*prompt):
+    prompt = " ".join(prompt)
+    response = P.send(prompt, AI="DallE")
+    print(response)
+    return {
+        "title": prompt,
+        "link": response,
+    }
 
 
 @M.command(
@@ -307,20 +307,20 @@ def combined_search(*search_term):
     }
 
 
-# @M.command(
-#     "analyze-image",
-#     "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
-#     "Analyze and image and return text analysis based on what the user asks for.",
-# )
-# def analyze_image(*args):
-#     args = " ".join(args).split(",")
-#     prompt, image_url = args[0].strip(), args[1].strip()
-#     config = {"images": [image_url]}
-#
-#     try:
-#         return P.send(prompt, config=config)
-#     except Exception as e:
-#         return f"Error analyzing image: {e}"
+@M.command(
+    "analyze-image",
+    "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
+    "Analyze and image and return text analysis based on what the user asks for.",
+)
+def analyze_image(*args):
+    args = " ".join(args).split(",")
+    prompt, image_url = args[0].strip(), args[1].strip()
+    config = {"images": [image_url]}
+
+    try:
+        return P.send(prompt, config=config)
+    except Exception as e:
+        return f"Error analyzing image: {e}"
 
 
 @M.command(
@@ -336,17 +336,6 @@ def get_gif(*search_term):
     search = gif_tenor_search
     # search = gif_giphy_search
     return search(*search_term, limit=limit)
-
-    # url = "http://api.giphy.com/v1/gifs/search"
-    # params = parse.urlencode({"q": search_term, "api_key": settings.GIPHY, "limit": 25})
-    # with request.urlopen("".join((url, "?", params))) as response:
-    #     data = json.loads(response.read())
-    # n = random.randint(0, len(data))
-    # if len(data) == 0:
-    #     return "Gif not found."
-    # return {
-    #     "link": data["data"][n]["url"],
-    # }
 
 
 @M.command(
@@ -411,30 +400,6 @@ def get_music(*search_term):
         "link": result[1],
     }
 
-    # url = f"https://api.soundcloud.com/search?q={search_term}&variant_ids=&facet=model&&client_id={settings.SC}&limit=20&offset=0&linked_partitioning=1&&app_locale=en"
-    # response = requests.get(url)
-    # doc = json.loads(response.text)
-    # runs = 0
-    # while "collection" not in doc and runs < 3:
-    #     response = requests.get(url)
-    #     doc = json.loads(response.text)
-    #     runs = runs + 1
-    #
-    # links = []
-    # try:
-    #     for e in doc["collection"]:
-    #         if e["kind"] == "track":
-    #             links.append((e["title"], e["permalink_url"]))
-    #
-    #     result = links[0]
-    #
-    #     return {
-    #         "title": result[0],
-    #         "link": result[1],
-    #     }
-    # except:
-    #     return "Song not fond."
-
 
 """
 Prompts    -----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -454,10 +419,11 @@ RESPONSE_GUIDELINES = """Response Guidelines:
 - Links should be in this format: [link title](the full link)"""
 
 ATTRIBUTES = """Attributes:
-- Loves: impresionalist composers like ravel, piano
+- Loves: impresionalist composers like ravel, piano, boobs
 - Likes: amy/mikasa, music, black cats, attack on titan, violin
 - Dislikes: corny jokes, being told what to do
 - Hates: furries, loud music
+- Gender: Female, feminine
 """
 
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)

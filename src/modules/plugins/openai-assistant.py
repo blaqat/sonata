@@ -91,12 +91,15 @@ Setup    -----------------------------------------------------------------------
     {},
     s=lambda M, channel_id, thread_id: setter(M["value"], channel_id, thread_id),
 )
-def validate_thread(STOR, channel_id):
-    if channel_id not in STOR["value"]:
-        new_thread = STOR["client"].create()
-        STOR["value"][channel_id] = new_thread.id
-    BEACON.guide("threads", STOR["value"])
-    return STOR["value"][channel_id]
+def validate_thread(STORE, channel_id):
+    if channel_id not in STORE["value"]:
+        new_thread = STORE["client"].create()
+        STORE["value"][channel_id] = new_thread.id
+
+    # Save the thread id to the beacon
+    BEACON.guide("threads", STORE["value"])
+
+    return STORE["value"][channel_id]
 
 
 @M.builder
@@ -118,7 +121,9 @@ def chat_assistant(self: AI_Manager):
             )
 
         def init(kelf, client, instructions: str = None, model: str = "gpt-4o"):
+            # Load and update the threads from the beacon
             local_beacon.reflect("threads", self.get("thread"))
+
             self_commands = self.get("command")
             kelf.instructions = (
                 instructions
