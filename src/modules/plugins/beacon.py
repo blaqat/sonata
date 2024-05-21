@@ -55,7 +55,6 @@ def beacon(sonata: AI_Manager):
             elif type(d) == list or type(d) == tuple:
                 return sonata.get(name, *d)
             elif type(d) == str:
-                print(name, d)
                 return sonata.get(name, d)
             else:
                 return sonata.get(name)
@@ -83,7 +82,7 @@ def beacon(sonata: AI_Manager):
             """Set the home folder"""
             self.home = (f"{dir_path}/" if home else "") + path
             if not os.path.exists(self.home):
-                os.mkdir(self.home)
+                os.makedirs(self.home, exist_ok=True)
             return self
 
         def scan(self):
@@ -155,8 +154,8 @@ def beacon(sonata: AI_Manager):
                         key = float(key[1:])
                     case "b":
                         key = bool(key[1:])
-                    case _:
-                        key = str(key)
+                    case "s":
+                        key = str(key[1:])
                 data[key] = lamp_post.locate(i)
             return data
 
@@ -208,16 +207,52 @@ def beacon(sonata: AI_Manager):
             return self
 
         def extinguish(self):
-            """Delete the home folder"""
+            """Puts out the light in the light house"""
             if can_delete_folder(self.home):
                 shutil.rmtree(self.home)
-                del self
             else:
                 cprint(
                     "Can not extinguish the light house, it's not empty and contains non lost files",
                     "red",
                 )
-                return self
+            return self
+
+        def flash(self):
+            """Temporary Clone the beacon files"""
+
+            dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
+            dir = dir.replace(dir_path, "home")
+            flash = self.island(f"beacon-flashes", home=True).branch(dir)
+
+            for file in self.scan():
+                # Locate the data then guide it to the flash
+                if os.path.isdir(f"{self.home}/{file}"):
+                    data = self.discover(file)
+                    flash.illuminate(file, data)
+                else:
+                    data = self.locate(file.split(".")[0])
+                    flash.guide(file.split(".")[0], data)
+
+            return flash
+
+        def absorb(self, flash=None, extinguish=True):
+            """Absorb the flash files"""
+            if flash is None:
+                dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
+                dir = dir.replace(dir_path, "home")
+                flash = self.island(f"beacon-flashes", home=True).branch(dir)
+            for file in flash.scan():
+                if os.path.isdir(f"{flash.home}/{file}"):
+                    data = flash.discover(file)
+                    self.illuminate(file, data)
+                else:
+                    data = flash.locate(file.split(".")[0])
+                    self.guide(file.split(".")[0], data)
+
+            if extinguish:
+                flash.extinguish()
+
+            return self
 
     # Manager tailored layer for the Beacon class
     def save(key, inner=False, module=False):

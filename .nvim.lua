@@ -1,3 +1,9 @@
+local vim = vim
+
+function set_env()
+	vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<space>vc", true, false, true), "x", true)
+end
+
 return {
 	theme = "aylin",
 	ui = "dark",
@@ -8,6 +14,6 @@ return {
 		fallbacks = { "Mononoki Nerd Font" },
 	},
 	lua = {
-		'vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<space>vc", true, false, true), "x", true)',
+		set_env,
 	},
 }
