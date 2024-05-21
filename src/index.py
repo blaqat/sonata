@@ -22,15 +22,18 @@ from io import BytesIO
 import aioconsole
 import anthropic
 import discord
+# import discord.opus as opus
+
 import google.generativeai as genai
 import openai
 import requests
 from discord.ext import commands
+
 from mistralai.client import MistralClient
 from mistralai.models.chat_completion import ChatMessage
 from PIL import Image
 
-from modules.AI_manager import AI_Error, AI_Manager, AI_Type, PromptManager, AI_TYPES
+from modules.AI_manager import AI_Error, AI_Manager, PromptManager
 from modules.plugins import PLUGINS as get_plugins
 from modules.utils import (
     async_cprint as cprint,
@@ -41,6 +44,14 @@ from modules.utils import (
     settings,
     # print_available_genai_models,
 )
+
+import nest_asyncio
+
+nest_asyncio.apply()
+
+if not discord.opus.is_loaded():
+    # The 'libopus.so' path might need to be adjusted based on your installation
+    discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -70,7 +81,8 @@ P.add(
 )
 P.add(
     "History",
-    lambda history: f"""Here is the chat history so far BEGINING :: {history} :: END\n""",
+    lambda history: f"""Here is the chat history so far BEGINING :: {
+        history} :: END\n""",
 )
 
 P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
@@ -96,8 +108,8 @@ Sonata.config.setup()
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    # model="dall-e-3",
-    model="dall-e-2",
+    model="dall-e-3",
+    # model="dall-e-2",
 )
 def DallE(client, prompt, model, config):
     return (
@@ -119,7 +131,7 @@ def DallE(client, prompt, model, config):
     setup=lambda _, k: print("AI's Initialized"),
     model="gpt-4o",
 )
-def OpenAIAssistant(client, prompt, model, config):
+def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     i = config.get("images", False)
     if i:
@@ -133,7 +145,7 @@ def OpenAIAssistant(client, prompt, model, config):
 
     # print(messages)
     reply = ""
-    # appent all messages until role is user
+    # append all messages until role is user
     for message in messages:
         if message.role == "user":
             break
@@ -327,6 +339,11 @@ Here is the prompt_feedback: {r}
 """
 
 
+# TODO: Add task manager plugin
+# - Can handle a queue of async or sequential tasks
+# - Can pass in requested Manager/Clients as arguments to task function
+# - This more easily allows scope access to other plugins
+# - Like self-command cant have a join vc command since it needs to be async and have access to the client
 Sonata.extend(
     get_plugins(openai_assistant=False),
     # get_plugins(),
@@ -359,6 +376,215 @@ class SonataClient(commands.Bot):
 
 INTENTS = discord.Intents.all()
 sonata = SonataClient(command_prefix="$", intents=INTENTS)
+
+
+# TODO: Move all speaking related things to a separate plugin
+# - Need a way to handle passing the discord client (already is one need to remember)
+# - This is to add commands and events
+speaking_mutex = asyncio.Lock()
+
+voice_instructions = """
+You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
+
+Response Guidelines:
+- Short and brief 
+- Simple language
+- Smart aleck, know-it-all attitude
+- Humor encouraged, no corny jokes
+- Swearing allowed (18+ server)
+- In voice chat, so responses should be full thoughts
+
+Attributes:
+- Dislikes: corny jokes, being told what to do
+- Hates: furries, loud music
+- Gender: Female, feminine
+"""
+P.add_prompts(("VoiceInstructions", voice_instructions))
+
+
+# TODO: Add configuration for voice chat
+# - Voice type, live or started by name, etc
+async def say(vc: discord.VoiceClient, message, opts={}):
+    """While in vc send TTS Audio to play"""
+    try:
+        audio_bytes: bytes = openai.audio.speech.create(  # Returns The audio file content. HttpxBinaryResponseContent
+            model="tts-1",
+            # alloy, echo, fable, onyx, nova, shimmer
+            voice=opts.get("voice", "shimmer"),
+            input=message,
+            response_format="opus",
+        ).read()
+    except Exception as e:
+        cprint(f"Error on openai: {e}", "red")
+        return
+
+    buffer = BytesIO(audio_bytes)
+
+    cprint("Playing audio...", "green")
+    vc.play(discord.FFmpegOpusAudio(buffer, pipe=True))
+    while vc.is_playing():
+        await asyncio.sleep(1)
+
+
+async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
+    global is_ready
+    is_ready = False
+    recorded_users = [  # A list of recorded users
+        await channel.guild.fetch_member(int(user_id))
+        for user_id, _ in sink.audio_data.items()
+    ]
+
+    # recorded_users = [await channel.guild.fetch_member(383851442341019658)]
+    # sink_data = sink.audio_data.get(383851442341019658, None)
+    # if sink_data is None:
+    #     return
+    # data: BytesIO = sink_data.file
+
+    def get_name(user):
+        try:
+            if "nick" in dir(user) and user.nick is not None:
+                return user.nick
+            if "name" in dir(user):
+                return user.name
+        except AttributeError as _:
+            return None
+
+    try:
+        for user in recorded_users:
+            name = get_name(user)
+            if name is None:
+                continue
+            sink_data = sink.audio_data.get(user.id, None)
+            if sink_data is None:
+                continue
+            data: BytesIO = sink_data.file
+            data.seek(1)
+            data.name = "audio.mp3"
+
+            # if audio is too short, skip
+            if len(data.read()) <= 60000:
+                continue
+
+            print(f"Transcribing audio from {name}...")
+
+            words = openai.audio.transcriptions.create(
+                file=data,
+                model="whisper-1",
+                prompt="If the name sona/sonata is mentioned, thats how to spell it (lowercase).",
+            ).text.lower()
+
+            id = sink.vc.channel.id
+
+            #  def send( kelf, id, message_type, author, message, replying_to=None,):
+            Sonata.chat.send(id, "User", name, words)
+
+            command = None
+            if "sona" in words or "dave" in words:
+                command = words
+
+            if command:
+                cprint(f"{name}: {words}", "cyan")
+                r = Sonata.chat.request(
+                    id,
+                    command,
+                    name,
+                    None,
+                    AI="OpenAI",
+                    # AI=Sonata.config.get("AI", "Gemini"),
+                    instructions=P.get("VoiceInstructions"),
+                )
+                # if response starts with 'sonata' remove it
+                if r.strip().startswith("sonata"):
+                    r = r.split("sonata")[1].strip()
+                r = name + ": " + r
+                # Wait for speaking mutex to be released
+                await speaking_mutex.acquire()
+                await say(sink.vc, r)
+                speaking_mutex.release()
+
+    except Exception as e:
+        is_ready = True
+        cprint(e, "red")
+
+    await start_recording(sink.vc, channel)
+
+
+async def start_recording(vc, channel):
+    try:
+        print("Starting recording")
+        while not vc.is_connected():
+            await asyncio.sleep(1)
+        vc.start_recording(discord.sinks.MP3Sink(), vc_callback, channel)
+        await asyncio.sleep(8)
+        print("Stopping recording")
+        vc.stop_recording()
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+@sonata.event
+async def on_voice_state_update(member, before, after):
+    if member.id == sonata.user.id:
+        if before.channel is None and after.channel is not None:
+            print(f"Sonata has joined the voice channel: {after.channel.name}")
+            # Start recording audio
+            vc = member.guild.voice_client
+            await start_recording(vc, after.channel)
+        elif before.channel is not None and after.channel is None:
+            print(f"Sonata has left the voice channel: {before.channel.name}")
+        elif (
+            before.channel is not None
+            and after.channel is not None
+            and before.channel != after.channel
+        ):
+            # Bot moved to another voice channel
+            print(
+                f"Sonata has moved from {before.channel.name} to {after.channel.name}"
+            )
+            vc = member.guild.voice_client
+            await start_recording(vc, after.channel)
+
+
+@sonata.command()
+async def talk(ctx, *message):
+    voice = ctx.author.voice
+
+    if voice is None:
+        await ctx.send("You are not in a voice channel.")
+
+    # Check if the bot is already in a voice channel
+    try:
+        vc = await voice.channel.connect()
+    except:
+        server = ctx.message.guild.voice_client
+        if server:
+            await server.disconnect()
+        vc = await voice.channel.connect()
+
+    m = " ".join(message)
+
+    if m != "":
+        await say(vc, m)
+
+
+@sonata.command()
+async def join(ctx):
+    voice = ctx.author.voice
+
+    if voice is None:
+        await ctx.reply("You are not in a voice channel.")
+
+    try:
+        await voice.channel.connect()
+    except:
+        server = ctx.message.guild.voice_client
+        await server.disconnect()
+        await voice.channel.connect()
+
+
+@sonata.command()
+async def leave(ctx):
+    await ctx.message.guild.voice_client.disconnect()
 
 
 async def ctx_reply(ctx, r):
@@ -483,7 +709,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                     or None
                 )
                 _ref = (_ref.author.name, _ref.content)
-        except Exception as e:
+        except Exception:
             _ref = None
         async with ctx.typing():
             r = Sonata.chat.request(
@@ -544,18 +770,21 @@ async def mistral_ai_question(ctx, *message):
 
 @sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
 async def open_ai_assistant_question(ctx, *message):
-    await ai_question(ctx, *message, ai="OpenAIAssistant", short="a")
+    await ai_question(ctx, *message, ai="Assistant", short="a")
 
 
 async def main():
     try:
+        # TODO: Make other run modes like "flash", "view", "absorb"
+        # to handle different pre/post memory scenerios
+        Sonata.beacon.branch("chat").flash()
         Sonata.reload("chat", "value", module=True)
         await sonata.start(settings.BOT_TOKEN)
     except:
         cprint("Exiting...", "red")
     finally:
         Sonata.save("chat", "value", module=True)
-        cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
+        # cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
         Sonata.do("termcmd", "save")
 
 
