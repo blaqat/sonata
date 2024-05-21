@@ -50,7 +50,7 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     # AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
     # Ignore messages from bots except 'sonata'
-    if message.author.bot:
+    if message.author.bot and message.author.name != "sonata":
         return
 
     # Replace certain characters in message content
@@ -370,23 +370,24 @@ def chat(self: AI_Manager):
                 chat[id] = []
             return chat[id]
 
-        def send(
-            kelf,
-            id,
-            message_type,
-            author,
-            message,
-            replying_to=None,
-        ):
+        def summarize(kelf, id):
+            config = self.get("config")
+            config["instructions"] = " "
+            summary = self.do("chat", "summarize", id, config)
+
+            def deleter():
+                kelf.delete(id)
+                kelf.send(id, "System", "PreviousChatSummary", summary, None)
+
+            return summary, deleter
+
+        def send(kelf, id, message_type, author, message, replying_to=None):
             chat = kelf.get_chat(id)
             a = self.set("chat", id, message_type, author, message, replying_to)
             if len(chat) > self.config.get("max_chats") + 1 and self.config.get(
                 "summarize"
             ):
-                config = self.get("config")
-                summary = self.do("chat", "summarize", id, config)
-                kelf.delete(id)
-                kelf.send(id, "System", "PreviousChatSummary", summary, None)
+                kelf.summarize(id)[1]()  # Summarizes and deletes chat
             return a[3]
 
         def request(
@@ -405,10 +406,10 @@ def chat(self: AI_Manager):
             response = None
             chat_history = kelf.get_history(id)
             c = self.get("config")
-            c.update(config)
             c["history"] = chat_history
             c["instructions"] = prompt_manager.get_instructions()
             c["channel_id"] = id
+            c.update(config)
             try:
                 if "using_assistant" not in c and prompt_manager.exists("History"):
                     response = self.do(

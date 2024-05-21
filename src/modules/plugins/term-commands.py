@@ -27,6 +27,7 @@ Hooks    -----------------------------------------------------------------------
 
 
 async def term_handler(A, client):
+    print("Type 'help' for a list of commands")
     while True:
         if A.get("termcmd", "intercepting", default=False):
             await asyncio.sleep(1)
@@ -73,11 +74,20 @@ async def prompt(text, convert=None, exit_if=None, exit_msg=None):
     return x
 
 
-def get_channel(M, self):
+async def async_return(ret=None):
+    return ret
+
+
+def get_channel(M, self, set=False):
     c = self.get_channel(M["recents"]["pinned"] or M["recents"]["channel"])
     if c is None:
-        cprint("No channel set", "red")
-        raise E
+        if not set:
+            cprint("No channel set", "red")
+            raise E
+        return lambda r=True: set_channel(M, self, ret=r)
+
+    if set:
+        return lambda: async_return(ret=c)
     return c
 
 
@@ -143,6 +153,19 @@ async def get_recent_msg(M, self):
         cprint("No recent message...", "red")
         raise E
     return m[0]
+
+
+async def set_channel(M, self=None, ret=True):
+    FAV_CHN = M["saved"]["channels"]
+    c = await prompt("Enter channel id: ")
+    if c == "fav":
+        print_many(FAV_CHN.keys())
+        c = await prompt(
+            "Enter fav name: ", FAV_CHN.get, lambda x: x is None, "Fav not found"
+        )
+    M["recents"]["pinned"] = int(c)
+    if ret:
+        return self.get_channel(int(c))
 
 
 class CustomEmoji:
@@ -275,20 +298,15 @@ async def help(*_):
         int: Intercept messages
         $: Run command
         cmd: Run command
+        sum: Summarize current chat
+        pchn: Print channel chat history
         exit: Exit"""
     )
 
 
 @M.term
 async def chn(M, _):
-    FAV_CHN = M["saved"]["channels"]
-    c = await prompt("Enter channel id: ")
-    if c == "fav":
-        print_many(FAV_CHN.keys())
-        c = await prompt(
-            "Enter fav name: ", FAV_CHN.get, lambda x: x is None, "Fav not found"
-        )
-    M["recents"]["pinned"] = int(c)
+    await set_channel(M, ret=False)
 
 
 @M.term
@@ -397,7 +415,19 @@ async def vc(M, self):
         )
         c = channels[i]
 
-    M["recents"]["voice_chat"] = await c.connect()
+    # try:
+    #     vc = await voice.channel.connect()
+    # except:
+    #     server = ctx.message.guild.voice_client
+    #     await server.disconnect()
+    #     vc = await voice.channel.connect()
+
+    try:
+        M["recents"]["voice_chat"] = await c.connect()
+    except Exception as e:
+        server = g.voice_client
+        await server.disconnect()
+        M["recents"]["voice_chat"] = await c.connect()
 
 
 @M.term
@@ -406,6 +436,63 @@ async def leave(M, _):
     if VOICE_CHAT is not None:
         await VOICE_CHAT.disconnect()
         M["recents"]["voice_chat"] = None
+    else:
+        cprint("Not in a voice channel", "red")
+        raise E
+
+
+@M.term
+async def rejoin(M, self):
+    VOICE_CHAT = M["recents"]["voice_chat"]
+    if VOICE_CHAT is not None:
+        await VOICE_CHAT.disconnect()
+        M["recents"]["voice_chat"] = None
+    chn = await (get_channel(M, self, set=True))()
+    g = chn.guild
+    c = None
+    if g is None:
+        c = await prompt("Enter vc id: ", int)
+        c = await self.fetch_channel(c)
+    else:
+        channels = [c for c in g.channels if c.type == discord.ChannelType.voice]
+        cprint("Select a voice channel:", "yellow")
+        print_many(channels)
+        i = await prompt(
+            "",
+            int,
+            exit_if=lambda i: i < 0 or i >= len(channels),
+            exit_msg="Invalid index",
+        )
+        c = channels[i]
+    try:
+        vc = await c.connect()
+        await vc.disconnect()
+        M["recents"]["voice_chat"] = await c.connect()
+    except Exception as e:
+        vc = await c.connect()
+        await vc.disconnect()
+        M["recents"]["voice_chat"] = await c.connect()
+
+
+@M.term
+async def ai(m, self):
+    ai = await prompt(
+        "Enter AI name: ",
+        exit_if=lambda x: x
+        not in ("OpenAI", "Claude", "Mistral", "Assistant", "Gemini", "Perplexity"),
+        exit_msg="Invalid AI",
+    )
+
+    M.MANAGER.memory["config"]["AI"] = ai
+
+
+@M.term
+async def mute(M, self):
+    set_mute = prompt("Mute? (y/n): ", lambda x: x[0] == "y", lambda x: x[0] == "n")
+    vc = get_channel(M, self).guild.voice_client
+
+    if vc and vc.channel:
+        await vc.edit_voice_state(mute=set_mute)
     else:
         cprint("Not in a voice channel", "red")
         raise E
@@ -497,6 +584,17 @@ async def favp(M, self):
         del FAV_PPL[n]
         FAV_PPL[name] = pid
         cprint(f"Edited {name}:{pid} in favs", "yellow")
+    elif name == "d" or name == "delete":
+        print_many(FAV_PPL.items())
+        name = await prompt(
+            "Delete fav: ",
+            None,
+            lambda x: x is None or x not in FAV_PPL,
+            "Fav not found",
+        )
+        del FAV_PPL[name]
+        cprint(f"Deleted {name} from favs", "yellow")
+        return
 
 
 @M.term
@@ -523,6 +621,17 @@ async def favc(M, self):
         if name == "n" or name == "" or not name:
             name = c.name
         FAV_CHN[name] = c.id
+    elif name == "d" or name == "delete":
+        print_many(FAV_CHN.items())
+        name = await prompt(
+            "Delete fav: ",
+            None,
+            lambda x: x is None or x not in FAV_CHN,
+            "Fav not found",
+        )
+        del FAV_CHN[name]
+        cprint(f"Deleted {name} from favs", "yellow")
+        return
     else:
         if name not in FAV_CHN:
             cprint("Fav not found", "red")
@@ -530,6 +639,9 @@ async def favc(M, self):
         id = await prompt(f"Replace id: {FAV_CHN[name]}")
         if id == "n" or id == "" or not id:
             id = FAV_CHN[name]
+        new_name = await prompt(f"Replace name: {name}")
+        if new_name == "n" or new_name == "" or not new_name:
+            name = new_name
         FAV_CHN[name] = id
     cprint(f"Added {name}:{id} to favs", "yellow")
 
@@ -605,6 +717,44 @@ async def god_cmd(M, self):
     except Exception as _:
         cprint("Command not found", "red")
         raise E
+
+
+@M.term
+async def sum(m, self):
+    id = get_channel(m, self).id
+
+    summary, D = M.MANAGER.chat.summarize(id)
+
+    if summary is None:
+        cprint("No chat to summarize", "red")
+        raise E
+
+    await M.do(
+        "chat",
+        "chat",
+        self,
+        id,
+        "## <a:note:1095495413341110302> Chat Summary:\n" + summary,
+    )
+
+    delete = await prompt(
+        "Do you want to delete the chat after summarizing? (y/n): ",
+        lambda a: a[0] == "y",
+    )
+
+    if delete:
+        D()
+
+
+@M.term
+async def pchn(m, self):
+    c = get_channel(m, self)
+    messages = M.MANAGER.chat.get_chat(c.id)
+    cprint("Channel chat history:", "yellow")
+    # message: (TypeOfTalker, Name, Message, Reply reference)
+    # convert to: Name: Message
+    messages = [f"{m[2]}: {m[3]}" for m in messages]
+    print_many(messages)
 
 
 @M.term

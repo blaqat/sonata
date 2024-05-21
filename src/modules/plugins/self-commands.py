@@ -259,7 +259,6 @@ def roll(*args):
 # )
 # def help(*_):
 #     return M.get("command")
-#
 
 
 @M.command("weather", "$weather <city>", "Get the weather for a location.")
