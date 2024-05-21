@@ -383,6 +383,7 @@ sonata = SonataClient(command_prefix="$", intents=INTENTS)
 # - This is to add commands and events
 speaking_mutex = asyncio.Lock()
 
+# TODO: Connect self-commands to voice chat and filter commands that cant be used
 voice_instructions = """
 You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
 
@@ -479,7 +480,7 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
             Sonata.chat.send(id, "User", name, words)
 
             command = None
-            if "sona" in words or "dave" in words:
+            if "sona" in words:
                 command = words
 
             if command:
