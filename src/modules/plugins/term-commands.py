@@ -753,8 +753,13 @@ async def pchn(m, self):
     cprint("Channel chat history:", "yellow")
     # message: (TypeOfTalker, Name, Message, Reply reference)
     # convert to: Name: Message
-    messages = [f"{m[2]}: {m[3]}" for m in messages]
+    messages = [f"{m[1]}: {m[2]}" for m in messages]
     print_many(messages)
+
+
+@M.term
+async def sc(m, _):
+    M.MANAGER.chat.save("chat", "value", module=True)
 
 
 @M.term
@@ -775,3 +780,47 @@ async def cmd(m, self, client):
     )
     # await c.send(r)
     await M.do("chat", "chat", self, c.id, r)
+
+
+@M.term
+async def respond(m, self, client):
+    response_instructions = """You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use commands to get info or perform actions.
+
+    Response Guidelines:
+    - Short and brief (20 words max)
+    - No punctuation AT ALL (no commas no question marks no periods)
+    - All lowercase
+    - Simple language
+    - Smart aleck, know-it-all attitude
+    - Humor encouraged, no corny jokes
+    - Swearing allowed (18+ server)
+    - Links should be in this format: [link title](the full link)
+
+    Attributes:
+    - Loves: impresionalist composers like ravel, piano, boobs
+    - Likes: amy/mikasa, music, black cats, attack on titan, violin
+    - Dislikes: corny jokes, being told what to do
+    - Hates: furries, loud music
+    - Gender: Female, feminine
+    """
+
+    try:
+        print(m["recents"]["channel"])
+        channel = self.get_channel(m["recents"]["channel"])
+        print(channel)
+        if channel is None:
+            raise E
+    except Exception as e:
+        cprint(e, "red")
+        print("No channel set")
+        channel = await (get_channel(m, self, set=True))()
+
+    r = client.chat.request(
+        channel.id,
+        "Respond to the context based on the chat log",
+        "System",
+        None,
+        instructions=response_instructions,
+    )
+
+    await M.do("chat", "chat", self, channel.id, r)

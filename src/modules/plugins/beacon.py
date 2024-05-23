@@ -62,6 +62,10 @@ def beacon(sonata: AI_Manager):
             return sonata.config.get(name)
         return None
 
+    # TODO: Add a way to encrypt the files before saving and decrypt them when loading as an option flag
+    # Can also make an ecrypted branch that always encrypts
+    # branch(path: str, encrypted: bool = False)
+    # guide(..., encrypted: bool = False)
     class Beacon:
         home: str  # The home folder where things are saved
 

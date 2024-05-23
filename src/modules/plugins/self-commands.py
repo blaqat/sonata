@@ -425,6 +425,15 @@ ATTRIBUTES = """Attributes:
 - Gender: Female, feminine
 """
 
+# CHAT_HISTORY = """Cada mensaje en el registro de chat se almacena como (Respondiendo al mensaje: (Tipo de mensaje, Autor, Texto del mensaje, Mensaje al que están respondiendo)
+# Aquí está el registro de chat:
+# -- INICIO DEL REGISTRO DE CHAT --
+# {history}
+# -- FIN DEL REGISTRO DE CHAT --"""
+#
+# RESPONDING = """
+# No repita en su respuesta el Mensaje del Usuario ni el Mensaje al que responde.
+# {user}: {message}"""
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
 Here is the chat log: 
 -- BEG OF CHAT LOG --

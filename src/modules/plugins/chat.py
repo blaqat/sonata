@@ -405,13 +405,15 @@ def chat(self: AI_Manager):
             # They are accessed in config['images']
             response = None
             chat_history = kelf.get_history(id)
+            new_c = {}
             c = self.get("config")
-            c["history"] = chat_history
-            c["instructions"] = prompt_manager.get_instructions()
-            c["channel_id"] = id
-            c.update(config)
+            new_c.update(c)
+            new_c["history"] = chat_history
+            new_c["instructions"] = prompt_manager.get_instructions()
+            new_c["channel_id"] = id
+            new_c.update(config)
             try:
-                if "using_assistant" not in c and prompt_manager.exists("History"):
+                if "using_assistant" not in new_c and prompt_manager.exists("History"):
                     response = self.do(
                         "chat",
                         "request",
@@ -426,7 +428,7 @@ def chat(self: AI_Manager):
                         # replying_to,
                         *args,
                         AI=AI,
-                        config=c,
+                        config=new_c,
                     )
                 else:
                     response = self.do(
@@ -439,7 +441,7 @@ def chat(self: AI_Manager):
                         replying_to,
                         *args,
                         AI=AI,
-                        config=c,
+                        config=new_c,
                     )
 
                 kelf.send(id, "Bot", self.name, response, replying_to)
@@ -447,7 +449,7 @@ def chat(self: AI_Manager):
             except Exception as e:
                 # if error_prompt is not None:
                 #     response = prompt_manager.send(
-                #         str(error_prompt(e, message)), AI=AI, config=c
+                #         str(error_prompt(e, message)), AI=AI, config=new_c
                 #     )
                 #     if response is None:
                 #         response = (

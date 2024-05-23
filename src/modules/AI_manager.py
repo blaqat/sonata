@@ -76,12 +76,14 @@ def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}
         ai_type = AI_TYPES.get(ai_type, None)
     ai_type = ai_type or AI_TYPES["recent"] or AI_TYPES["default"]
     ai_config = ai_type.config
-    config.update(ai_config)
-    model = model or config.get("model", None)
+    new_config = {}
+    new_config.update(ai_config)
+    new_config.update(config)
+    model = model or new_config.get("model", None)
     if model is None:
         raise AI_Error("No model specified")
     AI_TYPES["recent"] = ai_type
-    return ai_type.func(ai_type.client, prompt_text, model, config)
+    return ai_type.func(ai_type.client, prompt_text, model, new_config)
 
 
 class PromptManager:

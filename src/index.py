@@ -130,12 +130,15 @@ def DallE(client, prompt, model, config):
     key=settings.OPEN_AI,
     setup=lambda _, k: print("AI's Initialized"),
     model="gpt-4o",
+    # model = "gpt-4-turbo-preview",
+    # model="gpt-3.5-turbo",
 )
 def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     i = config.get("images", False)
     if i:
-        # model = "gpt-4-vision-preview"
+        if model != "gpt-4o":
+            model = "gpt-4-vision-preview"
         i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
         content.extend(i)
         config["images"] = None
@@ -164,15 +167,16 @@ def Assistant(client, prompt, model, config):
     default=True,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    # model="gpt-3.5-turbo-0125",
+    model="gpt-3.5-turbo",
     # model="gpt-4-turbo-preview",
-    model="gpt-4o",
+    # model="gpt-4o",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     i = config.get("images", False)
     if i:
-        # model = "gpt-4-vision-preview"
+        if model != "gpt-4o":
+            model = "gpt-4-vision-preview"
         i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
         content.extend(i)
         config["images"] = None
@@ -351,7 +355,7 @@ Sonata.extend(
         "summarize": True,
         "max_chats": 25,
         "view_replies": True,
-        "auto": "o",
+        "auto": "g",
     },
 )
 
@@ -384,22 +388,68 @@ sonata = SonataClient(command_prefix="$", intents=INTENTS)
 speaking_mutex = asyncio.Lock()
 
 # TODO: Connect self-commands to voice chat and filter commands that cant be used
+#
+# voice_instructions = """
+# You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
+#
+# Response Guidelines:
+# - Short and brief
+# - Simple language
+# - Smart aleck
+# - Humor encouraged, no corny jokes
+# - Swearing allowed (18+ server)
+# - In voice chat so responses should be speakable
+#   - express through punctiuation, repeated characters and capsas these control your voice
+#
+# Attributes:
+# - Dislikes: corny jokes
+# - Gender: Female, feminine
+# - Friendly & a little silly
+# """
+
 voice_instructions = """
 You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
 
 Response Guidelines:
-- Short and brief 
+- MOST IMPORTANT: Analyze the chat log and try to match the vibe and way of speaking of the users in the chat.
+
+- Short and brief
 - Simple language
 - Smart aleck, know-it-all attitude
 - Humor encouraged, no corny jokes
 - Swearing allowed (18+ server)
-- In voice chat, so responses should be full thoughts
+- In voice chat so responses should be speakable
+  - express through punctiuation, repeated characters and capsas these control your voice
+- Don't only be mean, be a little silly and friendly *sometimes* too
 
 Attributes:
 - Dislikes: corny jokes, being told what to do
 - Hates: furries, loud music
 - Gender: Female, feminine
 """
+
+# voice_instructions = """Eres el robot de chat de voz de Discord 'sonata'/sona, creado por blaqat (Karma). Responde a las personas en el chat como un usuario más.
+#
+#
+# Pautas de respuesta:
+# - Juego de roles como Peridot de Steven Universe
+# - LO MÁS IMPORTANTE: Analiza el registro del chat e intenta coincidir con la vibra y la forma de hablar de los usuarios en el chat.
+# - Responder SÓLO en español
+# - Corto y breve
+# - lenguaje sencillo
+# - Actitud sabelotodo y sabelotodo.
+# - Se fomenta el humor, sin chistes cursis.
+# - Se permiten malas palabras (servidor 18+)
+# - En el chat de voz, las respuestas deben poder expresarse
+#   - Expresa mediante puntuación, caracteres repetidos y mayúsculas, ya que estos controlan tu voz.
+# - No seas sólo malo, sé un poco tonto y amigable *a veces* también.
+#
+# Atributos:
+# - No le gusta: los chistes cursis, que le digan qué hacer.
+# - Odia: furries, música alta.
+# - Género: Femenino, femenino
+# """
+
 P.add_prompts(("VoiceInstructions", voice_instructions))
 
 
@@ -411,7 +461,7 @@ async def say(vc: discord.VoiceClient, message, opts={}):
         audio_bytes: bytes = openai.audio.speech.create(  # Returns The audio file content. HttpxBinaryResponseContent
             model="tts-1",
             # alloy, echo, fable, onyx, nova, shimmer
-            voice=opts.get("voice", "shimmer"),
+            voice=opts.get("voice", "nova"),
             input=message,
             response_format="opus",
         ).read()
@@ -421,7 +471,7 @@ async def say(vc: discord.VoiceClient, message, opts={}):
 
     buffer = BytesIO(audio_bytes)
 
-    cprint("Playing audio...", "green")
+    cprint(f"Playing audio: {message}", "green")
     vc.play(discord.FFmpegOpusAudio(buffer, pipe=True))
     while vc.is_playing():
         await asyncio.sleep(1)
@@ -466,12 +516,12 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
             if len(data.read()) <= 60000:
                 continue
 
-            print(f"Transcribing audio from {name}...")
+            cprint(f"Transcribing audio from {name}...", "blue")
 
             words = openai.audio.transcriptions.create(
                 file=data,
                 model="whisper-1",
-                prompt="If the name sona/sonata is mentioned, thats how to spell it (lowercase).",
+                prompt="Your name is Sona/Sonata",
             ).text.lower()
 
             id = sink.vc.channel.id
@@ -480,7 +530,7 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
             Sonata.chat.send(id, "User", name, words)
 
             command = None
-            if "sona" in words:
+            if "sona" in words or "?" in words:
                 command = words
 
             if command:
@@ -489,10 +539,10 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
                     id,
                     command,
                     name,
-                    None,
                     AI="OpenAI",
                     # AI=Sonata.config.get("AI", "Gemini"),
                     instructions=P.get("VoiceInstructions"),
+                    # model="gpt-4o",
                 )
                 # if response starts with 'sonata' remove it
                 if r.strip().startswith("sonata"):
@@ -546,21 +596,117 @@ async def on_voice_state_update(member, before, after):
             await start_recording(vc, after.channel)
 
 
+CURRENT_VC = None
+
+
+@sonata.command()
+async def respond(ctx):
+    response_instructions = """
+    You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
+
+    Response Guidelines:
+    - MOST IMPORTANT: Analyze the chat log and try to match the vibe and way of speaking of the users in the chat.
+
+    - Short and brief
+    - Simple language
+    - Smart aleck, know-it-all attitude
+    - Humor encouraged, no corny jokes
+    - Swearing allowed (18+ server)
+    - In voice chat so responses should be speakable
+      - express through punctiuation, repeated characters and capsas these control your voice
+    - Don't only be mean, be a little silly and friendly *sometimes* too
+
+    Attributes:
+    - Dislikes: corny jokes, being told what to do
+    - Hates: furries, loud music
+    - Gender: Female, feminine
+    """
+
+    #     response_instructions = """
+    # Eres el robot de chat de voz de Discord 'sonata'/sona, creado por blaqat (Karma). Responde a las personas en el chat como un usuario más.
+    #
+    # Pautas de respuesta:
+    # - LO MÁS IMPORTANTE: Analiza el registro del chat e intenta coincidir con la vibra y la forma de hablar de los usuarios en el chat.
+    #
+    # - Corto y breve
+    # - lenguaje sencillo
+    # - Actitud sabelotodo y sabelotodo.
+    # - Se fomenta el humor, sin chistes cursis.
+    # - Se permiten malas palabras (servidor 18+)
+    # - En el chat de voz, las respuestas deben poder expresarse
+    #   - Expresa mediante puntuación, caracteres repetidos y mayúsculas, ya que estos controlan tu voz.
+    # - No seas sólo malo, sé un poco tonto y amigable *a veces* también.
+    #
+    # Atributos:
+    # - No le gusta: los chistes cursis, que le digan qué hacer.
+    # - Odia: furries, música alta.
+    # - Género: Femenino, femenino
+    # """
+    global CURRENT_VC
+
+    if ctx.guild.voice_client is not None:
+        CURRENT_VC = ctx.guild.voice_client
+
+    if CURRENT_VC is None:
+        voice = ctx.author.voice
+
+        if voice is None:
+            await ctx.send("You are not in a voice channel.")
+
+        # Check if the bot is already in a voice channel
+        try:
+            vc = await voice.channel.connect()
+        except:
+            server = ctx.message.guild.voice_client
+            if server:
+                await server.disconnect()
+            vc = await voice.channel.connect()
+
+        CURRENT_VC = vc
+    else:
+        vc = CURRENT_VC
+
+    id = ctx.id
+    r = Sonata.chat.request(
+        id,
+        "Respond to the context based on the chat log",
+        "System",
+        None,
+        AI="OpenAI",
+        # AI=Sonata.config.get("AI", "Gemini"),
+        instructions=response_instructions,
+    )
+
+    await speaking_mutex.acquire()
+    await say(vc, r)
+    speaking_mutex.release()
+
+
 @sonata.command()
 async def talk(ctx, *message):
-    voice = ctx.author.voice
+    global CURRENT_VC
 
-    if voice is None:
-        await ctx.send("You are not in a voice channel.")
+    if ctx.guild.voice_client is not None:
+        CURRENT_VC = ctx.guild.voice_client
 
-    # Check if the bot is already in a voice channel
-    try:
-        vc = await voice.channel.connect()
-    except:
-        server = ctx.message.guild.voice_client
-        if server:
-            await server.disconnect()
-        vc = await voice.channel.connect()
+    if CURRENT_VC is None:
+        voice = ctx.author.voice
+
+        if voice is None:
+            await ctx.send("You are not in a voice channel.")
+
+        # Check if the bot is already in a voice channel
+        try:
+            vc = await voice.channel.connect()
+        except:
+            server = ctx.message.guild.voice_client
+            if server:
+                await server.disconnect()
+            vc = await voice.channel.connect()
+
+        CURRENT_VC = vc
+    else:
+        vc = CURRENT_VC
 
     m = " ".join(message)
 
