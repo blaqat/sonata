@@ -66,6 +66,7 @@ if not discord.opus.is_loaded():
 PROMPT = """You're a Discord bot named 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
 """
+
 # For context, the chat so far is summarized as: {0}
 # Here's the user and message you're responding to:
 # {2}: {1}
@@ -90,6 +91,7 @@ P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
 # TODO: Add specific events for on_load, on_message, on_exit, etc
 # - Specifically connect to Chat hooks (on_message) and Term Command Saving (on_exit)
+#  https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
 Sonata, M = AI_Manager.init(
     P,
     "Gemini",
@@ -101,6 +103,25 @@ Sonata, M = AI_Manager.init(
 
 Sonata.config.set(temp=0.8)
 Sonata.config.setup()
+
+
+# TODO: Add task manager plugin
+# - Can handle a queue of async or sequential tasks
+# - Can pass in requested Manager/Clients as arguments to task function
+# - This more easily allows scope access to other plugins
+# - Like self-command cant have a join vc command since it needs to be async and have access to the client
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645203
+def extend(Sonata):
+    Sonata.extend(
+        get_plugins(openai_assistant=False),
+        # get_plugins(),
+        chat={
+            "summarize": True,
+            "max_chats": 25,
+            "view_replies": True,
+            "auto": "g",
+        },
+    )
 
 
 @M.ai(
@@ -343,21 +364,7 @@ Here is the prompt_feedback: {r}
 """
 
 
-# TODO: Add task manager plugin
-# - Can handle a queue of async or sequential tasks
-# - Can pass in requested Manager/Clients as arguments to task function
-# - This more easily allows scope access to other plugins
-# - Like self-command cant have a join vc command since it needs to be async and have access to the client
-Sonata.extend(
-    get_plugins(openai_assistant=False),
-    # get_plugins(),
-    chat={
-        "summarize": True,
-        "max_chats": 25,
-        "view_replies": True,
-        "auto": "g",
-    },
-)
+extend(Sonata)
 
 
 class SonataClient(commands.Bot):
@@ -385,9 +392,12 @@ sonata = SonataClient(command_prefix="$", intents=INTENTS)
 # TODO: Move all speaking related things to a separate plugin
 # - Need a way to handle passing the discord client (already is one need to remember)
 # - This is to add commands and events
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645198
+#
 speaking_mutex = asyncio.Lock()
 
 # TODO: Connect self-commands to voice chat and filter commands that cant be used
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645210
 #
 # voice_instructions = """
 # You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
@@ -455,12 +465,14 @@ P.add_prompts(("VoiceInstructions", voice_instructions))
 
 # TODO: Add configuration for voice chat
 # - Voice type, live or started by name, etc
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645198
 async def say(vc: discord.VoiceClient, message, opts={}):
     """While in vc send TTS Audio to play"""
     try:
         audio_bytes: bytes = openai.audio.speech.create(  # Returns The audio file content. HttpxBinaryResponseContent
             model="tts-1",
             # alloy, echo, fable, onyx, nova, shimmer
+            # voice=opts.get("voice", "nova"),
             voice=opts.get("voice", "nova"),
             input=message,
             response_format="opus",

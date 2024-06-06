@@ -26,6 +26,7 @@ AI_TYPES = {"default": None, "recent": None}
 
 
 # TODO: Add tags to the AI_Type class e.g "audio", "text", "vision", "search", etc.
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645057
 class AI_Type:
     can_start = False
 
@@ -68,9 +69,10 @@ class AI_Error(Exception):
         super().__init__(self.message)
 
 
-# TODO: Using recent is nto exactly what I want, I want to have model types.
+# TODO: Using recent is not exactly what I want, I want to have model types.
 # If reuesting something with an image should default to the most recent model with vision
 # Types can be: Audio, Text, Vision, Search, etc.
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645057
 def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
     if isinstance(ai_type, str):
         ai_type = AI_TYPES.get(ai_type, None)

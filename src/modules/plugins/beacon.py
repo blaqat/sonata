@@ -66,6 +66,7 @@ def beacon(sonata: AI_Manager):
     # Can also make an ecrypted branch that always encrypts
     # branch(path: str, encrypted: bool = False)
     # guide(..., encrypted: bool = False)
+    # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645000
     class Beacon:
         home: str  # The home folder where things are saved
 

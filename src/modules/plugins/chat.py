@@ -43,6 +43,7 @@ Hooks    -----------------------------------------------------------------------
 """
 
 # TODO: Make new hook system for general hooks that can b iterated on in the main loop
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
 
 
 async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
@@ -120,6 +121,7 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
     # Add way to convert any image link into same system as attched images
+    # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645315
     #
     # Handle message attachments
     image_types = ["png", "jpg", "jpeg", "webp"]
@@ -284,7 +286,9 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
-async def __chat(M, bot, channel_id, message, dm=False, replying_to=None, ping=False):
+async def __chat(
+    M, bot, channel_id, message, dm=False, replying_to=None, ping=False, save=True
+):
     if replying_to is not None:
         await replying_to.reply(message, mention_author=ping)
     elif dm:
@@ -292,14 +296,15 @@ async def __chat(M, bot, channel_id, message, dm=False, replying_to=None, ping=F
     else:
         await bot.get_channel(channel_id).send(message)
 
-    M["set"](
-        M,
-        channel_id,
-        "Bot",
-        bot.user.name,
-        message,
-        (replying_to.author.name, replying_to.content) if replying_to else None,
-    )
+    if save:
+        M["set"](
+            M,
+            channel_id,
+            "Bot",
+            bot.user.name,
+            message,
+            (replying_to.author.name, replying_to.content) if replying_to else None,
+        )
 
 
 """
@@ -349,6 +354,7 @@ BANNED_WORDS = {
 # 2. Should control if bot speaks to all messages or just invokations
 # 3. Should control what commands bot can do
 # etc
+# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645262
 CHANNEL_BLACKLIST = {
     743280190452400159,
     1175907292072398858,
@@ -362,6 +368,7 @@ def chat(self: AI_Manager):
     prompt_manager = self.prompt_manager
 
     # TODO: Make way to translate history into proper chat log format for each AI
+    # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645361
     #
     class Chat:
         def get_chat(kelf, id):
@@ -403,6 +410,7 @@ def chat(self: AI_Manager):
         ):
             # TODO: Add way to store attachments since can send them in message now
             # They are accessed in config['images']
+            # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645315
             response = None
             chat_history = kelf.get_history(id)
             new_c = {}
@@ -421,11 +429,7 @@ def chat(self: AI_Manager):
                         + prompt_manager.prompts["Message"](
                             user_name, message, replying_to
                         )
-                        + "\nsonata:",
-                        # kelf.get_history(id),
-                        # user_name,
-                        # message,
-                        # replying_to,
+                        + "Just state your message here: ",
                         *args,
                         AI=AI,
                         config=new_c,
@@ -435,7 +439,6 @@ def chat(self: AI_Manager):
                         "chat",
                         "request",
                         prompt_manager.prompts["Message"],
-                        # kelf.get_history(id),
                         user_name,
                         message,
                         replying_to,

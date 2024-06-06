@@ -6,11 +6,13 @@ Additionally, you can set favorite channels and users to easily interact with th
 """
 
 import discord
+from discord.utils import sleep_until
 from modules.AI_manager import AI_Manager
 from modules.utils import (
     async_cprint as cprint,
     async_print as print,
     setter,
+    cstr,
 )
 import os
 import asyncio
@@ -32,7 +34,7 @@ async def term_handler(A, client):
         if A.get("termcmd", "intercepting", default=False):
             await asyncio.sleep(1)
             continue
-        user_input = await prompt("Enter command: ")
+        user_input = await prompt(cstr("❯ ", "purple"))
         try:
             await A.do("termcmd", "run", user_input, client, A)
         except Exception as e:
@@ -260,7 +262,8 @@ EMOJIS = M.update("emojis")
 def run_termcmd(M, name, client, manager):
     num_required = M["value"][name].__code__.co_argcount
     args = [M, client, manager]
-    return M["value"][name](*args[:num_required])
+    # return M["value"][name](*args[:num_required])
+    return run_command(M["value"], name, args[:num_required])
 
 
 @M.on_load
@@ -271,6 +274,11 @@ def load_termcmd(M):
 """
 Commands  -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
+
+
+async def run_command(V, name, args):
+    output = await V[name](*args)
+    return output
 
 
 @M.term
@@ -784,7 +792,7 @@ async def cmd(m, self, client):
 
 @M.term
 async def respond(m, self, client):
-    response_instructions = """You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use commands to get info or perform actions.
+    response_instructions = """You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. 
 
     Response Guidelines:
     - Short and brief (20 words max)
@@ -797,17 +805,15 @@ async def respond(m, self, client):
     - Links should be in this format: [link title](the full link)
 
     Attributes:
-    - Loves: impresionalist composers like ravel, piano, boobs
+    - Loves: impresionalist composers like ravel or debussy, piano, boobs
     - Likes: amy/mikasa, music, black cats, attack on titan, violin
     - Dislikes: corny jokes, being told what to do
-    - Hates: furries, loud music
+    - Hates: furries, loud music, lukaru (alot)
     - Gender: Female, feminine
     """
 
     try:
-        print(m["recents"]["channel"])
         channel = self.get_channel(m["recents"]["channel"])
-        print(channel)
         if channel is None:
             raise E
     except Exception as e:
@@ -815,12 +821,15 @@ async def respond(m, self, client):
         print("No channel set")
         channel = await (get_channel(m, self, set=True))()
 
+    AI = client.config.get("AI")
+
     r = client.chat.request(
         channel.id,
-        "Respond to the context based on the chat log",
+        "Send a chat",
         "System",
         None,
         instructions=response_instructions,
+        AI=AI,
     )
 
-    await M.do("chat", "chat", self, channel.id, r)
+    await M.do("chat", "chat", self, channel.id, r, save=False)

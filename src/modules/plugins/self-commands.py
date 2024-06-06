@@ -275,20 +275,20 @@ def get_weather(*city):
     }
 
 
-@M.command(
-    "imagine",
-    "$imagine <prompt>",
-    "Generate 2 images based on a prompt.",
-    "Make sure to post the link. Also make sure to post the entire link.",
-)
-def imagine(*prompt):
-    prompt = " ".join(prompt)
-    response = P.send(prompt, AI="DallE")
-    print(response)
-    return {
-        "title": prompt,
-        "link": response,
-    }
+# @M.command(
+#     "imagine",
+#     "$imagine <prompt>",
+#     "Generate 2 images based on a prompt.",
+#     "Make sure to post the link. Also make sure to post the entire link.",
+# )
+# def imagine(*prompt):
+#     prompt = " ".join(prompt)
+#     response = P.send(prompt, AI="DallE")
+#     print(response)
+#     return {
+#         "title": prompt,
+#         "link": response,
+#     }
 
 
 @M.command(
@@ -306,20 +306,20 @@ def combined_search(*search_term):
     }
 
 
-@M.command(
-    "analyze-image",
-    "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
-    "Analyze and image and return text analysis based on what the user asks for.",
-)
-def analyze_image(*args):
-    args = " ".join(args).split(",")
-    prompt, image_url = args[0].strip(), args[1].strip()
-    config = {"images": [image_url]}
-
-    try:
-        return P.send(prompt, config=config)
-    except Exception as e:
-        return f"Error analyzing image: {e}"
+# @M.command(
+#     "analyze-image",
+#     "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
+#     "Analyze and image and return text analysis based on what the user asks for.",
+# )
+# def analyze_image(*args):
+#     args = " ".join(args).split(",")
+#     prompt, image_url = args[0].strip(), args[1].strip()
+#     config = {"images": [image_url]}
+#
+#     try:
+#         return P.send(prompt, config=config)
+#     except Exception as e:
+#         return f"Error analyzing image: {e}"
 
 
 @M.command(
@@ -382,9 +382,14 @@ def get_music(*search_term):
         max_runs -= 1
         if max_runs < 0:
             return "Song not found. Ran out of attempts."
-        if artist is not None and artist not in t["artist"].lower().replace(" ", ""):
+        if (
+            artist is not None
+            and artist not in t["artist"].lower().replace(" ", "")
+            and artist not in t["title"].lower().replace(" ", "")
+        ):
             print(f"Attempt {max_runs} {t['title']} {t['artist']}")
             continue
+
         links.append((t["title"], t["url"]))
         if len(links) >= num_links:
             break
@@ -392,12 +397,10 @@ def get_music(*search_term):
     if len(links) == 0:
         return "Song not found."
 
-    result = links[0]
+    # result = links[0]
+    results = [{"title": r[0], "link": r[1]} for r in links]
 
-    return {
-        "title": result[0],
-        "link": result[1],
-    }
+    return {"results": results}
 
 
 """
@@ -414,7 +417,7 @@ RESPONSE_GUIDELINES = """Response Guidelines:
 - Simple language
 - Smart aleck, know-it-all attitude
 - Humor encouraged, no corny jokes
-- Swearing allowed (18+ server)
+- Swearing and NSFW allowed (18+ server)
 - Links should be in this format: [link title](the full link)"""
 
 ATTRIBUTES = """Attributes:
