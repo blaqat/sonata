@@ -42,10 +42,9 @@ __plugin_name__ = "chat"
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
+
 # TODO: Make new hook system for general hooks that can b iterated on in the main loop
 # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
-
-
 async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     AI = Sonata.config.get("auto")
     # AI = Sonata.config.get("auto")
@@ -219,7 +218,6 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     # Add way to convert stickers into images
     # Add way to convert any image link into same system as attched images
     #
-    # Handle message attachments
     image_types = ["png", "jpg", "jpeg", "webp"]
     if message.attachments and not message.author.bot and len(message.attachments) > 0:
         # attachment = [x.url for x in message.attachments]
@@ -230,6 +228,9 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
                 attachment.append(x.url)
             else:
                 not_grabbed.append(x.url)
+        # FIXME: Images being queued and only loaded when the next @sonata happens
+        # Handle message attachments
+        # FIXME: Images are not locked to the channel they are sent from. (e.g loaded no matter when the next request is made)
         Sonata.config.set(images=attachment)
         if len(not_grabbed) > 0:
             message.content += f"\nAttachment: {not_grabbed}"
@@ -448,6 +449,7 @@ def chat(self: AI_Manager):
                     )
 
                 kelf.send(id, "Bot", self.name, response, replying_to)
+                config["images"] = None
                 return response
             except Exception as e:
                 # if error_prompt is not None:

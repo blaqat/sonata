@@ -152,6 +152,7 @@ def gif_tenor_search(*search_term, limit=15):
         search_term}&key={settings.TENOR_G}&limit={limit}"
     with requests.get(url) as response:
         gifs = json.loads(response.text)["results"]
+
     n = get_n(search_term, len(gifs))
     if len(gifs) == 0:
         return "Gif not found."
@@ -424,7 +425,7 @@ ATTRIBUTES = """Attributes:
 - Loves: impresionalist composers like ravel, piano, boobs
 - Likes: amy/mikasa, music, black cats, attack on titan, violin
 - Dislikes: corny jokes, being told what to do
-- Hates: furries, loud music
+- Hates: furries, loud music, speaking to lukaru (alot)
 - Gender: Female, feminine
 """
 
@@ -481,7 +482,8 @@ Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS 
 """
 
 
-M.PROMPTS.instructions = "Instructions"
+# M.PROMPTS.instructions = "Instructions"
+M.PROMPTS.set_instructions(prompt_name="Instructions")
 
 
 @M.prompt

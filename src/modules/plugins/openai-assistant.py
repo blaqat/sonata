@@ -230,7 +230,7 @@ Attributes:
 """
 
 
-P.set_instructions("Instructions")
+P.set_instructions(prompt_name="Instructions")
 
 
 @M.on_load

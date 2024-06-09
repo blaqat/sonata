@@ -67,6 +67,13 @@ PROMPT = """You're a Discord bot named 'sonata', instantiated by user 'Karma', a
 Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
 """
 
+PROMPT = """
+As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
+- Adopt a friendly and normal tone.
+- Keep responses brief, possibly with a touch of humor.
+- Only provide the response message without additional text or quote symbols.
+"""
+
 # For context, the chat so far is summarized as: {0}
 # Here's the user and message you're responding to:
 # {2}: {1}
@@ -74,19 +81,26 @@ Keep the responses short and don't use overcomplicated language. You can be funn
 
 
 P = PromptManager(instructions=lambda *a: PROMPT.format(*a))
-P.add(
-    "Message",
-    lambda user, msg, responding_to: """[replying to: {2}] {0}: {1}""".format(
-        user, msg, responding_to
-    ),
-)
-P.add(
-    "History",
-    lambda history: f"""Here is the chat history so far BEGINING :: {
-        history} :: END\n""",
-)
 
-P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
+
+def reset_instructions():
+    P.set_instructions(lambda *a: PROMPT.format(*a))
+    P.add(
+        "Message",
+        lambda user, msg, responding_to: """[replying to: {2}] {0}: {1}""".format(
+            user, msg, responding_to
+        ),
+    )
+    P.add(
+        "History",
+        lambda history: f"""Here is the chat history so far BEGINING :: {
+            history} :: END\n""",
+    )
+
+    P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
+
+
+reset_instructions()
 
 
 # TODO: Add specific events for on_load, on_message, on_exit, etc
@@ -95,8 +109,9 @@ P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 Sonata, M = AI_Manager.init(
     P,
     "Gemini",
-    # "OpenAI",
     (settings.GOOGLE_AI, "Gemini", 0.4, 2500),
+    # "OpenAI",
+    # (settings.OPEN_AI, "OpenAI", 0.4, 2500),
     summarize_chat=True,
     name="Sonata",
 )
@@ -286,8 +301,8 @@ def Perplexity(client, prompt, model, config):
     genai.GenerativeModel,
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
-    # model="gemini-pro",
-    model="gemini-1.5-pro-latest",
+    model="gemini-pro",
+    # model="gemini-1.5-pro-latest",
 )
 def Gemini(client, prompt, model, config):
     block = [
@@ -311,24 +326,44 @@ def Gemini(client, prompt, model, config):
     content = prompt
     i = config.get("images", False)
     if i:
-        # model = "gemini-pro-vision"
+        if model != "gemini-1.5-pro-latest":
+            model = "gemini-pro-vision"
         i = [Image.open(BytesIO(requests.get(u).content)) for u in i]
         content = [content]
         content.extend(i)
         config["images"] = None
     try:
-        return (
-            client(
-                model_name=model,
-                generation_config={
-                    "temperature": config.get("temp") or config.get("temperature", 0.4)
-                },
-                safety_settings=block,
-                system_instruction=config["instructions"],
+        if model == "gemini-1.5-pro-latest":
+            return (
+                client(
+                    model_name=model,
+                    generation_config={
+                        "temperature": config.get("temp")
+                        or config.get("temperature", 0.4)
+                    },
+                    safety_settings=block,
+                    system_instruction=config["instructions"],
+                )
+                .generate_content(content)
+                .text
             )
-            .generate_content(content)
-            .text
-        )
+        else:
+            if type(content) == list:
+                content = [config["instructions"]] + content
+            else:
+                content = config["instructions"] + content
+            return (
+                client(
+                    model_name=model,
+                    generation_config={
+                        "temperature": config.get("temp")
+                        or config.get("temperature", 0.4)
+                    },
+                    safety_settings=block,
+                )
+                .generate_content(content)
+                .text
+            )
     except Exception as e:
         raise AI_Error(str(e))
 
@@ -365,6 +400,7 @@ Here is the prompt_feedback: {r}
 
 
 extend(Sonata)
+reset_instructions()
 
 
 class SonataClient(commands.Bot):
@@ -533,7 +569,7 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
             words = openai.audio.transcriptions.create(
                 file=data,
                 model="whisper-1",
-                prompt="Your name is Sona/Sonata",
+                prompt="Your name is Sonata",
             ).text.lower()
 
             id = sink.vc.channel.id
@@ -542,8 +578,10 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
             Sonata.chat.send(id, "User", name, words)
 
             command = None
-            if "sona" in words or "?" in words:
+            if "sonata" in words:
                 command = words
+            # if "sona" in words or "?" in words:
+            #     command = words
 
             if command:
                 cprint(f"{name}: {words}", "cyan")
@@ -939,7 +977,8 @@ async def main():
         Sonata.beacon.branch("chat").flash()
         Sonata.reload("chat", "value", module=True)
         await sonata.start(settings.BOT_TOKEN)
-    except:
+    except Exception as e:
+        print(e)
         cprint("Exiting...", "red")
     finally:
         Sonata.save("chat", "value", module=True)

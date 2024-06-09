@@ -222,21 +222,22 @@ def beacon(sonata: AI_Manager):
                 )
             return self
 
-        def flash(self):
+        def flash(self, save=True):
             """Temporary Clone the beacon files"""
 
             dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
             dir = dir.replace(dir_path, "home")
             flash = self.island(f"beacon-flashes", home=True).branch(dir)
 
-            for file in self.scan():
-                # Locate the data then guide it to the flash
-                if os.path.isdir(f"{self.home}/{file}"):
-                    data = self.discover(file)
-                    flash.illuminate(file, data)
-                else:
-                    data = self.locate(file.split(".")[0])
-                    flash.guide(file.split(".")[0], data)
+            if save:
+                for file in self.scan():
+                    # Locate the data then guide it to the flash
+                    if os.path.isdir(f"{self.home}/{file}"):
+                        data = self.discover(file)
+                        flash.illuminate(file, data)
+                    else:
+                        data = self.locate(file.split(".")[0])
+                        flash.guide(file.split(".")[0], data)
 
             return flash
 

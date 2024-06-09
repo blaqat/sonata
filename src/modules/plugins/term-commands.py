@@ -395,8 +395,16 @@ async def dlc(m, self):
         cprint("Invalid choice", "red")
         raise E
     else:
-        chat.delete(int(channel))
-        beacon.dim(f"i{channel}")
+        chat.delete(int(channel))  # Deletes live chat memory
+        beacon.dim(f"i{channel}")  # Deletes saved chat memory
+
+        delete_backup = await prompt("Delete backups? (y/n): ", lambda x: x[0] == "y")
+
+        if delete_backup:
+            beacon.flash(save=False).dim(f"i{channel}")  # Deletes chat memory backup
+            cprint(f"Deleted chat {channel} and flashbacks", "yellow")
+        else:
+            cprint(f"Deleted chat {channel}", "yellow")
 
 
 @M.term
@@ -811,6 +819,8 @@ async def respond(m, self, client):
     - Hates: furries, loud music, lukaru (alot)
     - Gender: Female, feminine
     """
+
+    response_instructions = client.prompt_manager.get_instructions()
 
     try:
         channel = self.get_channel(m["recents"]["channel"])
