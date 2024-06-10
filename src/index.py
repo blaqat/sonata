@@ -34,7 +34,7 @@ from mistralai.models.chat_completion import ChatMessage
 from PIL import Image
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
-from modules.plugins import PLUGINS as get_plugins
+from modules.plugins import PLUGINS
 from modules.utils import (
     async_cprint as cprint,
     async_print as print,
@@ -128,7 +128,7 @@ Sonata.config.setup()
 # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645203
 def extend(Sonata):
     Sonata.extend(
-        get_plugins(openai_assistant=False),
+        PLUGINS(openai_assistant=False),
         # get_plugins(),
         chat={
             "summarize": True,
@@ -400,7 +400,7 @@ Here is the prompt_feedback: {r}
 
 
 extend(Sonata)
-reset_instructions()
+# reset_instructions()
 
 
 class SonataClient(commands.Bot):

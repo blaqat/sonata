@@ -89,6 +89,8 @@ def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}
 
 
 class PromptManager:
+    instructions = None
+
     def __init__(
         self,
         *prompts: Tuple[str, Union[str, Callable]],
@@ -543,6 +545,13 @@ class AI_Manager:
             # print(plugin_config)
             A.config.merge(plugin_config)
             A.prompt_manager.add_prompts_from(L.prompt_manager)
+            if (
+                L.prompt_manager.instructions
+                and L.prompt_manager.instructions != "instructions"
+            ):
+                A.prompt_manager.set_instructions(
+                    prompt_name=L.prompt_manager.instructions
+                )
             L.prompt_manager = A.prompt_manager
             L.sub_classes = A.sub_classes
 
