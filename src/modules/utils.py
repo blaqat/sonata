@@ -718,3 +718,39 @@ def print_list(lst, color=None):
 
 def print_available_genai_models(genai):
     async_print("\n".join("{}".format(k.name[7:]) for k in genai.list_models()))
+
+
+async def get_reference_message(message):
+    if message.reference is None:
+        return None
+    return await message.channel.fetch_message(message.reference.message_id)
+
+
+async def get_reference_chain(message, max_length=-1, include_message=False):
+    if message is None:
+        return None
+
+    chain = []
+    if include_message:
+        chain.append((message.author.name, message.content))
+
+    if message is None or message.reference is None:
+        return chain if include_message else None
+
+    reference = await get_reference_message(message)
+
+    while reference is not None and max_length != 0:
+        chain.append((reference.author.name, reference.content))
+        if reference.reference is None:
+            break
+        reference = await get_reference_message(reference)
+        max_length -= 1
+
+    if len(chain) == 0:
+        return None
+
+    if max_length == 0:
+        return chain[0]
+
+    chain.reverse()
+    return chain

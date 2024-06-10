@@ -447,7 +447,7 @@ Here is the chat log:
 
 RESPONDING = """
 Do not repeat the User Message or the Message they are replying to in your response.
-{user}: {message}
+{chain}{user}: {message}
 """
 
 
@@ -487,8 +487,14 @@ M.PROMPTS.set_instructions(prompt_name="Instructions")
 
 
 @M.prompt
-def Message(user, message, replying_to):
-    return RESPONDING.format(user=user, message=(message, replying_to))
+def Message(user, message, replying_to=None):
+    if replying_to:
+        chain = "(Message Reply Chain)"
+        for r in replying_to:
+            chain += f"\n{r[0]}: {r[1]}"
+        chain += "\n(Replying To)"
+        replying_to = chain
+    return RESPONDING.format(chain=replying_to, user=user, message=message)
 
 
 @M.prompt
@@ -526,4 +532,4 @@ Command output: {response}
 {RESPONSE_GUIDELINES}
 - {cmd_instructions}
 
-{RESPONDING.format(user=author, message=message)}"""
+{RESPONDING.format(chain="", user=author, message=message)}"""

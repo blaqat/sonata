@@ -22,6 +22,8 @@ from modules.utils import (
     setter,
     settings,
     has_inside,
+    get_reference_message as get_ref,
+    get_reference_chain as get_ref_chain,
 )
 import random
 import re
@@ -160,7 +162,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     _name = (
         message.author.nick if "nick" in dir(message.author) else message.author.name
     )
-    _ref = None
+    message_reference = None
     if _name and _name == "None" or not _name:
         _name = message.author.name
 
@@ -190,6 +192,24 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         f" (Nickname {_name})" if _name != message.author.name else ""
     )
 
+    message_reference = await get_ref(message)
+
+    message_reference_id = (
+        message_reference is not None and message_reference.author.id or None
+    )
+
+    if USE_REPLY_REF and message_reference is not None:
+        message_reference = await get_ref_chain(message_reference, include_message=True)
+        # cprint(message_reference, "green")
+        # print("  Reference Chain:", _ref_chain)
+        # message_reference = (
+        #     message_reference
+        #     and (message_reference.author.name, message_reference.content)
+        #     or None
+        # )
+    else:
+        message_reference = None
+
     memory_text = memory_text.strip()
     if message.author.bot == False and len(message.content) > 0:
         m = message.content
@@ -199,17 +219,8 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
             if len(split[0]) == 1:
                 m = " ".join(split[1:])
 
-        # Check for message references (replies)
-        _ref = (
-            message.reference is not None
-            and await message.channel.fetch_message(message.reference.message_id)
-            or None
-        )
-        _ref = _ref and (_ref.author.name, _ref.content) or None
-        if not USE_REPLY_REF:
-            _ref = None
         message.content = Sonata.chat.send(
-            message.channel.id, "User", get_full_name(message), m, _ref
+            message.channel.id, "User", get_full_name(message), m
         )
         if message.content is None:
             return
@@ -239,10 +250,12 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         #     message.content += f"\nAttachment: {attachment}"
 
     # Pass referenced messages to AI
-    if message.reference is not None and not message.author.bot:
+    if message_reference_id is not None and not message.author.bot:
         # Check if reference is pointing to a message sent by the bot
-        _ref = await message.channel.fetch_message(message.reference.message_id)
-        if _ref.author.id == kelf.user.id:
+        # message_reference = await message.channel.fetch_message(
+        #     message.reference.message_id
+        # )
+        if message_reference_id == kelf.user.id:
             message.content = f"${AI} " + message.content
             await kelf.process_commands(message)
             return
@@ -449,7 +462,8 @@ def chat(self: AI_Manager):
                     )
 
                 kelf.send(id, "Bot", self.name, response, replying_to)
-                config["images"] = None
+                # HACK: This is a hack to get the images from the config to clear
+                c["images"] = None
                 return response
             except Exception as e:
                 # if error_prompt is not None:
