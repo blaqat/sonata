@@ -42,6 +42,7 @@ from modules.utils import (
 from modules.utils import (
     get_full_name,
     settings,
+    get_reference_chain as get_chain,
     # print_available_genai_models,
 )
 
@@ -69,6 +70,7 @@ Keep the responses short and don't use overcomplicated language. You can be funn
 
 PROMPT = """
 As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
+- You are a general expert on most subjects including math, coding, doctor, etc. 
 - Adopt a friendly and normal tone.
 - Keep responses brief, possibly with a touch of humor.
 - Only provide the response message without additional text or quote symbols.
@@ -87,7 +89,9 @@ def reset_instructions():
     P.set_instructions(lambda *a: PROMPT.format(*a))
     P.add(
         "Message",
-        lambda user, msg, responding_to: """[replying to: {2}] {0}: {1}""".format(
+        lambda user,
+        msg,
+        responding_to: """message chain:\n{2}\nnew message: {0}: {1}""".format(
             user, msg, responding_to
         ),
     )
@@ -106,7 +110,7 @@ reset_instructions()
 # TODO: Add specific events for on_load, on_message, on_exit, etc
 # - Specifically connect to Chat hooks (on_message) and Term Command Saving (on_exit)
 #  https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
-Sonata, M = AI_Manager.init(
+Sonata, MEMORY = AI_Manager.init(
     P,
     "Gemini",
     (settings.GOOGLE_AI, "Gemini", 0.4, 2500),
@@ -132,14 +136,14 @@ def extend(Sonata):
         # get_plugins(),
         chat={
             "summarize": True,
-            "max_chats": 25,
+            "max_chats": 30,
             "view_replies": True,
-            "auto": "g",
+            "auto": "o",
         },
     )
 
 
-@M.ai(
+@MEMORY.ai(
     client=openai.images,
     default=False,
     key=settings.OPEN_AI,
@@ -160,7 +164,7 @@ def DallE(client, prompt, model, config):
     )
 
 
-@M.ai(
+@MEMORY.ai(
     client=openai,
     default=False,
     key=settings.OPEN_AI,
@@ -186,36 +190,34 @@ def Assistant(client, prompt, model, config):
     reply = ""
     # append all messages until role is user
     for message in messages:
-        if message.role == "user":
+        if message.role != "user":
             break
         content = message.content
         for c in content:
-            if c.type == "text":
-                reply += c.text.value
-            elif c.type == "image":
-                reply += f":{c.source.url}:"
+            reply = c.text.value if c.type == "text" else f":{c.source.url}:"
 
     return reply
 
 
-@M.ai(
+@MEMORY.ai(
     client=openai.chat.completions,
-    default=True,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-3.5-turbo",
+    # model="gpt-3.5-turbo",
     # model="gpt-4-turbo-preview",
-    # model="gpt-4o",
+    model="gpt-4o",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
-    if i:
+    images = config.get("images", False)
+
+    if images:
         if model != "gpt-4o":
             model = "gpt-4-vision-preview"
-        i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
-        content.extend(i)
+        images = [{"type": "image_url", "image_url": {"url": url}} for url in images]
+        content.extend(images)
         config["images"] = None
+
     return (
         client.create(
             model=model,
@@ -231,7 +233,7 @@ def OpenAI(client, prompt, model, config):
     )
 
 
-@M.ai(
+@MEMORY.ai(
     None,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
     key=settings.ANTHROPIC_AI,
@@ -268,7 +270,7 @@ def Claude(client, prompt, model, config):
     )
 
 
-@M.ai(
+@MEMORY.ai(
     None,
     default=True,
     key=settings.PPLX_AI,
@@ -297,8 +299,9 @@ def Perplexity(client, prompt, model, config):
     )
 
 
-@M.ai(
+@MEMORY.ai(
     genai.GenerativeModel,
+    default=True,
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
     model="gemini-pro",
@@ -368,7 +371,7 @@ def Gemini(client, prompt, model, config):
         raise AI_Error(str(e))
 
 
-@M.ai(
+@MEMORY.ai(
     None,
     key=settings.MISTRAL_AI,
     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
@@ -391,7 +394,7 @@ def Mistral(client, prompt, model, _):
     )
 
 
-@M.prompt
+@MEMORY.prompt
 def ExplainBlockReasoning(r, user):
     return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
 Explain why you blocked the previous message in a brief conversational tone to the user {user}
@@ -400,6 +403,8 @@ Here is the prompt_feedback: {r}
 
 
 extend(Sonata)
+
+# HACK: This is a hack to DESTROY SONATAS MEMORY
 # reset_instructions()
 
 
@@ -898,14 +903,16 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
         _ref = None
         try:
             if Sonata.config.get("view_replies", False):
-                _ref = (
-                    ctx.message.reference is not None
-                    and await ctx.message.channel.fetch_message(
-                        ctx.message.reference.message_id
-                    )
-                    or None
-                )
-                _ref = (_ref.author.name, _ref.content)
+                # _ref = (
+                #     ctx.message.reference is not None
+                #     and await ctx.message.channel.fetch_message(
+                #         ctx.message.reference.message_id
+                #     )
+                #     or None
+                # )
+                # _ref = (_ref.author.name, _ref.content)
+                _ref = await get_chain(ctx.message)
+                print(_ref)
         except Exception:
             _ref = None
         async with ctx.typing():

@@ -720,10 +720,53 @@ def print_available_genai_models(genai):
     async_print("\n".join("{}".format(k.name[7:]) for k in genai.list_models()))
 
 
-async def get_reference_message(message):
+# Stored as ID: (message, name, content, next id)
+class Reference:
+    def __init__(self, message, name, content, next_id):
+        self.message = message
+        self.author = name
+        self.content = content
+        self.next_id = next_id
+
+
+references = {}
+
+
+def store_reference(message):
+    ref = Reference(
+        message,
+        message.author.name,
+        message.content,
+        message.reference.message_id if message.reference else None,
+    )
+
+    references[message.id] = ref
+
+    return ref
+
+
+async def get_next_reference(message):
+    if message.id not in references:
+        store_reference(message)
+
+    next_id = references[message.id].next_id
+
+    if next_id is None:
+        return None
+
+    if next_id not in references:
+        return store_reference(await message.channel.fetch_message(next_id))
+
+    return references[next_id]
+
+
+async def get_reference_message(message, return_message=True):
     if message.reference is None:
         return None
-    return await message.channel.fetch_message(message.reference.message_id)
+
+    ref_message = await get_next_reference(message)
+
+    return ref_message.message if return_message else ref_message
 
 
 async def get_reference_chain(message, max_length=-1, include_message=False):
@@ -737,13 +780,13 @@ async def get_reference_chain(message, max_length=-1, include_message=False):
     if message is None or message.reference is None:
         return chain if include_message else None
 
-    reference = await get_reference_message(message)
+    reference = await get_reference_message(message, return_message=False)
 
     while reference is not None and max_length != 0:
-        chain.append((reference.author.name, reference.content))
-        if reference.reference is None:
+        chain.append((reference.author, reference.content))
+        if reference.next_id is None:
             break
-        reference = await get_reference_message(reference)
+        reference = await get_reference_message(reference.message, return_message=False)
         max_length -= 1
 
     if len(chain) == 0:
