@@ -783,9 +783,14 @@ async def cmd(m, self, client):
     c = get_channel(m, self)
     history = client.chat.get_history(c.id)
     # ai = client.config.get("AI")
-    config = client.get("config")
+    config = client.config.copy()
     command = await prompt("Enter self-command: ")
     args = await prompt("Enter args: ")
+    config[
+        "instructions"
+    ] = """ I have just run the {command} command with the following arguments: {args}.
+Display the relevant information given from the command output.
+"""
     r = client.prompt_manager.send(
         "SelfCommand",
         history,

@@ -36,19 +36,26 @@ Hooks    -----------------------------------------------------------------------
 # def rem_blocked_user_msg(M, chat_id, message_type, author, message, replying_to=None):
 #     message = message if not inside(BLOCKED_USERS, author) else None
 #     return (chat_id, message_type, author, message, replying_to)
+import re
 
 
 @M.effect_post
 def request_chat(_, message, **config):
-    if message[0] == "$":
-        splits = message[1:].split(" ")
-        command = splits[0]
-        cprint("COMMAND " + command, "cyan")
-        cprint("ARGS " + " ".join(splits[1:]), "purple")
+    # Regular expression to find commands prefixed with $
+    command_pattern = re.compile(r"\$(\w+)\s*(.*)")
+
+    match = command_pattern.search(message)
+    if match:
+        command = match.group(1)
+        args = match.group(2).split()
+
+        cprint(f"COMMAND {command}", "cyan")
+        cprint(f"ARGS {' '.join(args)}", "purple")
+
         # Validate the command
         if not M.do("command", "validate", command):
             return message
-        args = splits[1:]
+
         return L.prompt_manager.send(
             "SelfCommand",
             config["config"]["history"],
@@ -59,6 +66,28 @@ def request_chat(_, message, **config):
         )
 
     return message
+
+    # @M.effect_post
+    # def request_chat(_, message, **config):
+    #     if message[0] == "$":
+    #         splits = message[1:].split(" ")
+    #         command = splits[0]
+    #         cprint("COMMAND " + command, "cyan")
+    #         cprint("ARGS " + " ".join(splits[1:]), "purple")
+    #         # Validate the command
+    #         if not M.do("command", "validate", command):
+    #             return message
+    #         args = splits[1:]
+    #         return L.prompt_manager.send(
+    #             "SelfCommand",
+    #             config["config"]["history"],
+    #             command,
+    #             *args,
+    #             AI=config["AI"],
+    #             config=config["config"],
+    #         )
+
+    # return message
 
 
 """
@@ -323,6 +352,16 @@ def combined_search(*search_term):
 #         return f"Error analyzing image: {e}"
 
 
+# @M.command(
+#     "say",
+#     "$say <text>",
+#     "Say something in chat.",
+# )
+# def say(*text):
+#     text = " ".join(text)
+#     return text
+
+
 @M.command(
     "gif",
     "$gif <search term>",
@@ -425,7 +464,7 @@ ATTRIBUTES = """Attributes:
 - Loves: impresionalist composers like ravel, piano, boobs
 - Likes: amy/mikasa, music, black cats, attack on titan, violin
 - Dislikes: corny jokes, being told what to do
-- Hates: furries, loud music, speaking to lukaru (alot)
+- Hates: furries, loud music, lukaru asking you to do dumb stuff (alot)
 - Gender: Female, feminine
 """
 
@@ -524,12 +563,13 @@ def SelfCommand(history, command, *args):
         message = ""
 
     return f"""{BEGINING}
-You just ran the command: {command}
+You just successfully ran the command: {command}
 Command output: {response}
     - Use this to aid your response to the user in context.
     - If the output contains a link, use this format: [link title](the link)
 
 {RESPONSE_GUIDELINES}
+- Since you have succesfully just run a command, your output should be including the command output information NOT the command again (e.g dont say $roll give information about the output)
 - {cmd_instructions}
 
 {RESPONDING.format(chain="", user=author, message=message)}"""

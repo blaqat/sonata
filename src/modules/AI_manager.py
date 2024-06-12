@@ -81,6 +81,7 @@ def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}
     new_config = {}
     new_config.update(ai_config)
     new_config.update(config)
+
     model = model or new_config.get("model", None)
     if model is None:
         raise AI_Error("No model specified")
@@ -192,6 +193,9 @@ def _config_builder(aiman):
                     if d is not None:
                         return d
             return None
+
+        def copy(kelf):
+            return self.get("config").copy()
 
         def set(kelf, **kwargs):
             self.update("config", **kwargs)
