@@ -762,6 +762,27 @@ async def respond(ctx):
 
 
 @sonata.command()
+async def voice(ctx, *voice):
+    VALID_OPTIONS = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+    voice = " ".join(voice).lower()
+
+    if voice == "":
+        await ctx.send(
+            f"Current voice is `{Sonata.config.get('vc_voice', 'nova')}`. Valid options are: `{', '.join(VALID_OPTIONS)}`"
+        )
+        return
+
+    if voice not in VALID_OPTIONS:
+        await ctx.send(
+            f"Invalid voice option. Valid options are: {', '.join(VALID_OPTIONS)}"
+        )
+        return
+
+    Sonata.config.set(vc_voice=voice)
+    await ctx.send(f"Voice changed to {voice}")
+
+
+@sonata.command()
 async def talk(ctx, *message):
     global CURRENT_VC
 
@@ -790,7 +811,7 @@ async def talk(ctx, *message):
     m = " ".join(message)
 
     if m != "":
-        await say(vc, m)
+        await say(vc, m, {"voice": Sonata.config.get("vc_voice", "nova")})
 
 
 @sonata.command()
