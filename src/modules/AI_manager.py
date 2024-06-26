@@ -143,18 +143,18 @@ class PromptManager:
             self.add(prompt_name, prompt)
         self.instructions = prompt_name
 
-    def get(self, prompt_name: str, *prompt_args):
+    def get(self, prompt_name: str, *prompt_args, call=True):
         if prompt_name not in self.prompts:
             return None
-        if callable(self.prompts[prompt_name]):
+        if callable(self.prompts[prompt_name]) and call:
             return self.prompts[prompt_name](*prompt_args)
         else:
             return self.prompts[prompt_name]
 
-    def get_instructions(self, *prompt_args):
+    def get_instructions(self, *prompt_args, call=True):
         if not self.has_instructions():
             return None
-        return self.get(self.instructions, *prompt_args)
+        return self.get(self.instructions, *prompt_args, call=call)
 
     def has_instructions(self):
         return hasattr(self, "instructions")

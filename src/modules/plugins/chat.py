@@ -6,6 +6,15 @@ In addition, it provides a way to store and retrieve chat logs for summarization
 Also, it provides a way to send messages to a specific channel or user.
 """
 
+# TODO: Make  message class
+# Message class will have attributes such as:
+# Author, Content, Attachments,  Channel, Guild, etc
+# As well as links to previous messages & reply chains
+# Public fields for history and reply chains with methods for getting n number of messages before or after
+# Also will talk to discord api to find more messages
+# ______________________________
+# Message class will also have translators to convert to differe ai api chat history formats
+
 import copy
 from urllib.parse import urljoin
 
@@ -78,6 +87,8 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
         or "<@1187145990931763250>" in message.content.lower()
         or "sona " in message.content.lower()
         or " sona" in message.content.lower()
+        or "ソナ" in message.content.lower()
+        or "ソナタ" in message.content.lower()
     ) and not message.author.bot:
         message.content = message.content.replace("sonata", "")
         message.content = message.content.replace("<@1187145990931763250>", "")
@@ -137,6 +148,7 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
                 attachment.append(x.url)
             else:
                 not_grabbed.append(x.url)
+
         Sonata.config.set(images=attachment)
         if len(not_grabbed) > 0:
             message.content += f"\nAttachment: {not_grabbed}"
@@ -293,7 +305,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     #     message.content = message.content.replace(" sona", "")
     #     message.content = f"${AI} " + message.content
 
-    sonata_names = {"sonata", "sona"}
+    sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
     sonata_exp = re.compile(
         f"<@{kelf.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
         re.IGNORECASE,
@@ -351,7 +363,7 @@ BANNED_WORDS = {
     "jerking off",
     "cunt",
     "cock",
-    "balls",
+    # "balls",
     "aggin",
     "reggin",
     "nigger",
@@ -391,7 +403,7 @@ BANNED_WORDS = {
 # etc
 # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645262
 CHANNEL_BLACKLIST = {
-    743280190452400159,
+    # 743280190452400159,
     1175907292072398858,
     724158738138660894,
     725170957206945859,
@@ -464,7 +476,7 @@ def chat(self: AI_Manager):
                         + prompt_manager.prompts["Message"](
                             user_name, message, replying_to
                         )
-                        + "Just state your message here: ",
+                        + "\nJust state your message here: ",
                         *args,
                         AI=AI,
                         config=new_c,
@@ -476,7 +488,6 @@ def chat(self: AI_Manager):
                         prompt_manager.prompts["Message"],
                         user_name,
                         message,
-                        replying_to,
                         *args,
                         AI=AI,
                         config=new_c,
@@ -582,7 +593,7 @@ Prompts    ---------------------------------------------------------------------
 def SummarizeChat(chat_log):
     return f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:
-- Mention people by name, not nickname. 
+- Mention people by name, not nickname.
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
 - If there is a PreviousChatSummary, include it in the summary.
 Chat Log: {chat_log}

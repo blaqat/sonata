@@ -13,6 +13,9 @@ P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 _____________________________________________________
 """
 
+AUTO_MODEL = "g"
+RESET = True
+
 import asyncio
 import base64
 import os
@@ -43,10 +46,11 @@ from modules.utils import (
     get_full_name,
     settings,
     get_reference_chain as get_chain,
-    # print_available_genai_models,
+    print_available_genai_models,
 )
 
 import nest_asyncio
+
 
 nest_asyncio.apply()
 
@@ -74,6 +78,7 @@ As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":spark
 - Adopt a friendly and normal tone.
 - Keep responses brief, possibly with a touch of humor.
 - Only provide the response message without additional text or quote symbols.
+- Respond in the language of the person you are replying to.
 """
 
 # For context, the chat so far is summarized as: {0}
@@ -91,14 +96,19 @@ def reset_instructions():
         "Message",
         lambda user,
         msg,
-        responding_to: """message chain:\n{2}\nnew message: {0}: {1}""".format(
+        responding_to: "message chain:\n{2}\nnew message: {0}: {1}".format(
             user, msg, responding_to
         ),
     )
     P.add(
+        "MessageAssistant",
+        lambda user, msg: "{0}: {1}".format(user, msg),
+    )
+    P.add(
         "History",
         lambda history: f"""Here is the chat history so far BEGINING :: {
-            history} :: END\n""",
+            history} :: END
+""",
     )
 
     P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
@@ -113,7 +123,7 @@ reset_instructions()
 Sonata, MEMORY = AI_Manager.init(
     P,
     "Gemini",
-    (settings.GOOGLE_AI, "Gemini", 0.4, 2500),
+    (settings.GOOGLE_AI, "Gemini", 0.8, 2500),
     # "OpenAI",
     # (settings.OPEN_AI, "OpenAI", 0.4, 2500),
     summarize_chat=True,
@@ -133,12 +143,12 @@ Sonata.config.setup()
 def extend(Sonata):
     Sonata.extend(
         PLUGINS(openai_assistant=False),
-        # get_plugins(),
+        # PLUGINS(),
         chat={
             "summarize": True,
             "max_chats": 30,
             "view_replies": True,
-            "auto": "o",
+            "auto": AUTO_MODEL,
         },
     )
 
@@ -168,7 +178,7 @@ def DallE(client, prompt, model, config):
     client=openai,
     default=False,
     key=settings.OPEN_AI,
-    setup=lambda _, k: print("AI's Initialized"),
+    setup=lambda _, k: True,
     model="gpt-4o",
     # model = "gpt-4-turbo-preview",
     # model="gpt-3.5-turbo",
@@ -316,7 +326,8 @@ def Perplexity(client, prompt, model, config):
     default=True,
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
-    model="gemini-pro",
+    # model="gemini-1.0-pro",
+    model="gemini-1.5-flash",
     # model="gemini-1.5-pro-latest",
 )
 def Gemini(client, prompt, model, config):
@@ -339,47 +350,45 @@ def Gemini(client, prompt, model, config):
         },
     ]
     content = prompt
-    i = config.get("images", False)
-    if i:
-        if model != "gemini-1.5-pro-latest":
-            model = "gemini-pro-vision"
-        i = [Image.open(BytesIO(requests.get(u).content)) for u in i]
+    images = config.get("images", False)
+    if images:
+        # if model != "gemini-1.5-pro-latest":
+        #     model = "gemini-pro-vision"
+        model = "gemini-1.5-flash"
+        images = [Image.open(BytesIO(requests.get(u).content)) for u in images]
         content = [content]
-        content.extend(i)
+        content.extend(images)
         config["images"] = None
     try:
+        response = None
         if model == "gemini-1.5-pro-latest":
-            return (
-                client(
-                    model_name=model,
-                    generation_config={
-                        "temperature": config.get("temp")
-                        or config.get("temperature", 0.4)
-                    },
-                    safety_settings=block,
-                    system_instruction=config["instructions"],
-                )
-                .generate_content(content)
-                .text
-            )
+            response = client(
+                model_name=model,
+                generation_config={
+                    "temperature": config.get("temp") or config.get("temperature", 0.4)
+                },
+                safety_settings=block,
+                system_instruction=config["instructions"],
+            ).generate_content(content)
+            return response.text
         else:
             if type(content) == list:
                 content = [config["instructions"]] + content
             else:
                 content = config["instructions"] + content
-            return (
-                client(
-                    model_name=model,
-                    generation_config={
-                        "temperature": config.get("temp")
-                        or config.get("temperature", 0.4)
-                    },
-                    safety_settings=block,
-                )
-                .generate_content(content)
-                .text
-            )
+            response = client(
+                model_name=model,
+                generation_config={
+                    "temperature": config.get("temp") or config.get("temperature", 0.4)
+                },
+                safety_settings=block,
+            ).generate_content(content)
+            return response.text
     except Exception as e:
+        if hasattr(response, "prompt_feedback"):
+            cprint(response.prompt_feedback, "red")
+        else:
+            cprint(str(e), "red")
         raise AI_Error(str(e))
 
 
@@ -417,7 +426,10 @@ Here is the prompt_feedback: {r}
 extend(Sonata)
 
 # HACK: This is a hack to DESTROY SONATAS MEMORY
-# reset_instructions()
+if RESET:
+    reset_instructions()
+
+# print_available_genai_models(genai)
 
 
 class SonataClient(commands.Bot):
@@ -428,7 +440,7 @@ class SonataClient(commands.Bot):
         super().__init__(command_prefix=command_prefix, intents=intents)
 
     async def on_ready(self) -> None:
-        print("Logged on as {0}!".format(self.user))
+        cprint("Logged on as {0}!".format(self.user), "purple")
         self.loop.create_task(Sonata.get("termcmd", "hook")(Sonata, self))
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
@@ -996,20 +1008,24 @@ async def open_ai_assistant_question(ctx, *message):
 
 
 async def main():
-    try:
-        # TODO: Make other run modes like "flash", "view", "absorb"
-        # to handle different pre/post memory scenerios
-        Sonata.beacon.branch("chat").flash()
-        Sonata.reload("chat", "value", module=True)
-        await sonata.start(settings.BOT_TOKEN)
-    except Exception as e:
-        print(e)
-        cprint("Exiting...", "red")
-    finally:
-        Sonata.save("chat", "value", module=True)
-        # cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
-        Sonata.do("termcmd", "save")
+    # TODO: Make other run modes like "flash", "view", "absorb"
+    # to handle different pre/post memory scenerios
+    cprint("Initlializing...", "yellow")
+    Sonata.beacon.branch("chat").flash()
+    cprint("Chat memory flashed", "yellow")
+    Sonata.reload("chat", "value", module=True)
+    cprint("Chat memory restored", "yellow")
+    cprint(f"Using Model: {AUTO_MODEL}\nMemory Reset: {RESET}", "purple")
+    await sonata.start(settings.BOT_TOKEN)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+try:
+    if __name__ == "__main__":
+        asyncio.run(main())
+except Exception as e:
+    print(e)
+    cprint("Exiting...", "red")
+finally:
+    Sonata.save("chat", "value", module=True)
+    # cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
+    Sonata.do("termcmd", "save")
