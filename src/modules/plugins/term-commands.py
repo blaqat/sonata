@@ -28,15 +28,46 @@ Hooks    -----------------------------------------------------------------------
 """
 
 
-async def term_handler(A, client):
+async def term_handler(DataManager: AI_Manager, client):
     print("Type 'help' for a list of commands")
+
+    # Load all archived emojis
+    for guild in client.guilds:
+        if guild.name.startswith("Karma"):
+            for emoji in guild.emojis:
+                DataManager.do("emojis", "add", emoji)
+
+    # HACK: Inject EmojiIndex into the System Instructions
+    old_instructions = DataManager.prompt_manager.get_instructions()
+
+    emoji_instructions = (
+        f"You can use the EmojiIndex to send emojis when u feel like it e.g to roll ur eyes or something (Make sure to use its full <x:name:id> as shown in the index):\n"
+        + DataManager.do("emojis", "list")
+    )
+
+    instructions = None
+
+    if type(old_instructions) == str:
+        instructions = old_instructions + emoji_instructions
+    else:
+        instructions = (
+            lambda *args, **kwargs: old_instructions(*args, **kwargs)
+            + emoji_instructions
+        )
+
+    DataManager.prompt_manager.set_instructions(
+        prompt=instructions, prompt_name=DataManager.prompt_manager.instructions
+    )
+
+    # print(M.MANAGER.prompt_manager.get_instructions(call=False))
+
     while True:
-        if A.get("termcmd", "intercepting", default=False):
+        if DataManager.get("termcmd", "intercepting", default=False):
             await asyncio.sleep(1)
             continue
         user_input = await prompt(cstr("❯ ", "purple"))
         try:
-            await A.do("termcmd", "run", user_input, client, A)
+            await DataManager.do("termcmd", "run", user_input, client, DataManager)
         except Exception as e:
             cprint(e, "red")
 
@@ -115,6 +146,13 @@ def search_emoji(A, self, name, find_first=10):
     M["update"](M)
     emojis = [emoji for guild in self.guilds for emoji in guild.emojis] + M["value"]
     return [e for e in emojis if name in e.name][:find_first]
+
+
+def get_all_emojis(A, self):
+    M = A.get("emojis", inner=False)
+    M["update"](M)
+    emojis = [emoji for guild in self.guilds for emoji in guild.emojis] + M["value"]
+    return emojis
 
 
 async def get_user(M, self, id):
@@ -225,6 +263,11 @@ M.remember(
         "thumbsup": "👍",
         "grey_question": "❔",
         "red_circle": "🔴",
+        "raised_eyebrow": "🤨",
+        "thinking": "🤔",
+        "clap": "👏",
+        "smile": "😊",
+        "laugh": "😂",
     },
     set_func=lambda M, name, e: setter(M["value"], name, e)
     if isinstance(M["value"], dict)
@@ -232,6 +275,10 @@ M.remember(
     update_func=lambda M: CustomEmoji.from_dict(M["value"])
     if isinstance(M["value"], dict)
     else M["value"],
+    add=lambda M, emoji: M["value"].append(emoji),
+    list_id=lambda M: f"EmojiIndex: {", ".join([str(e.id if e.id else e.e) for e in M["value"]])}",
+    list_name=lambda M: f"EmojiIndex: {", ".join([e.name for e in M["value"]])}",
+    list=lambda M: f"EmojiIndex: {", ".join(get_emojis(M["value"]))}",
 )
 
 
@@ -267,8 +314,8 @@ def run_termcmd(M, name, client, manager):
 
 
 @M.on_load
-def load_termcmd(M):
-    M.do("termcmd", "load")
+def load_termcmd(Sonata):
+    Sonata.do("termcmd", "load")
 
 
 """
