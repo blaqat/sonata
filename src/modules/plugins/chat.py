@@ -7,6 +7,7 @@ Also, it provides a way to send messages to a specific channel or user.
 """
 
 import copy
+from urllib.parse import urljoin
 
 import discord
 from discord.ext import commands
@@ -24,6 +25,7 @@ from modules.utils import (
     has_inside,
     get_reference_message as get_ref,
     get_reference_chain as get_ref_chain,
+    tenor_get_dl_url,
 )
 import random
 import re
@@ -227,22 +229,41 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
 
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
-    # Add way to convert any image link into same system as attched images
     #
-    image_types = ["png", "jpg", "jpeg", "webp"]
-    if message.attachments and not message.author.bot and len(message.attachments) > 0:
-        # attachment = [x.url for x in message.attachments]
+    if not message.author.bot:
         attachment = []
         not_grabbed = []
-        for x in message.attachments:
-            if has_inside(x.url, image_types):
-                attachment.append(x.url)
+        image_types = ["png", "jpg", "jpeg", "webp"]
+        # HACK: Lets claude read gifs
+        # if M.MANAGER.config.get("AI", "Gemini") == "Claude":
+        #     image_types.append("gif")
+        #     image_types.append("mp4")
+
+        urls = re.findall(r"http\S+", message.content)
+        for url in urls:
+            if has_inside(url, image_types):
+                if "tenor.com" in url:
+                    url = tenor_get_dl_url(
+                        url, settings.TENOR_G, "tinywebppreview_transparent"
+                    )
+                attachment.append(url)
+                message.content = message.content.replace(url, "")
             else:
-                not_grabbed.append(x.url)
-        # FIXME: Images being queued and only loaded when the next @sonata happens
-        # Handle message attachments
-        # FIXME: Images are not locked to the channel they are sent from. (e.g loaded no matter when the next request is made)
-        Sonata.config.set(images=attachment)
+                not_grabbed.append(url)
+
+        if message.attachments and len(message.attachments) > 0:
+            for x in message.attachments:
+                if has_inside(x.url, image_types):
+                    attachment.append(x.url)
+                else:
+                    not_grabbed.append(x.url)
+
+        if len(attachment) > 0:
+            # FIXME: Images being queued and only loaded when the next @sonata happens
+            # Handle message attachments
+            # FIXME: Images are not locked to the channel they are sent from. (e.g loaded no matter when the next request is made)
+            Sonata.config.set(images=attachment)
+
         if len(not_grabbed) > 0:
             message.content += f"\nAttachment: {not_grabbed}"
         # attachment = message.attachments[0].url
@@ -464,6 +485,8 @@ def chat(self: AI_Manager):
                 kelf.send(id, "Bot", self.name, response, replying_to)
                 # HACK: This is a hack to get the images from the config to clear
                 c["images"] = None
+                self.config.set(images=None)
+                self.memory["config"]["value"]["images"] = None
                 return response
             except Exception as e:
                 # if error_prompt is not None:

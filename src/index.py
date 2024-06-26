@@ -235,35 +235,47 @@ def OpenAI(client, prompt, model, config):
 
 @MEMORY.ai(
     None,
-    setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
     key=settings.ANTHROPIC_AI,
+    setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
     # model="claude-3-opus-20240229",
-    model="claude-3-sonnet-20240229",
+    # model="claude-3-sonnet-20240229",
+    model="claude-3-5-sonnet-20240620",
     # model="claude-3-haiku-20240229",
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     i = config.get("images", False)
     if i:
-        i = [
-            {
-                "type": "image",
-                "source": {
-                    "type": "base64",
-                    "media_type": "image/jpeg",
-                    "data": base64.b64encode(requests.get(u).content),
-                },
-            }
-            for u in i
-        ]
-        content.extend(i)
+        images = []
+        for u in i:
+            response = requests.get(u)
+            data = response.content
+            content_type = response.headers["content-type"]
+            if content_type == "text/plain;charset=UTF-8":
+                content_type = "image/gif"
+            cprint(f"Image content type: {content_type}", "green")
+            b64 = base64.b64encode(data).decode("utf-8")
+            images.append(
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": content_type,
+                        "data": b64,
+                    },
+                }
+            )
+
+        content.extend(images)
         config["images"] = None
+        Sonata.memory["config"]["images"] = None
     return (
         client.messages.create(
             model=model,
+            system=config["instructions"],
             max_tokens=config.get("max_tokens", 1250),
             temperature=config.get("temp") or config.get("temperature") or 0,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": content}],
         )
         .content[0]
         .text
@@ -912,7 +924,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                 # )
                 # _ref = (_ref.author.name, _ref.content)
                 _ref = await get_chain(ctx.message)
-                print(_ref)
+                # print(_ref)
         except Exception:
             _ref = None
         async with ctx.typing():
@@ -963,7 +975,13 @@ async def open_ai_question(ctx, *message):
 
 @sonata.command(name="c", description="Ask a question using Claude")
 async def claude_ai_question(ctx, *message):
-    await ai_question(ctx, *message, ai="Claude", short="c")
+    await ai_question(
+        ctx,
+        *message,
+        ai="Claude",
+        short="c",
+        error_prompt=lambda r, name: P.get("ExplainBlockReasoning", r, name),
+    )
 
 
 #

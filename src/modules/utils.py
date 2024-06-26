@@ -11,6 +11,7 @@ from typing import Any, Callable, Union, Iterable
 from os import getenv
 from dotenv import load_dotenv
 import asyncio
+import requests
 
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -797,3 +798,50 @@ async def get_reference_chain(message, max_length=-1, include_message=False):
 
     chain.reverse()
     return chain
+
+
+def tenor_get_dl_url(url, key, size="mediumgif"):
+    gif_id = None
+    try:
+        gif_id = re.search(r"-(\d+)$", url).group(1)
+    except AttributeError:
+        return None
+
+    if not gif_id:
+        return None
+
+    api_url = f"https://tenor.googleapis.com/v2/posts?ids={gif_id}&key={key}"
+    response = requests.get(api_url)
+
+    if response.status_code == 200:
+        data = response.json()
+        if data and "results" in data and len(data["results"]) > 0:
+            formats = data["results"][0]["media_formats"]
+            if size not in formats:
+                cprint(f"Invalid size {size}. Available sizes: {formats.keys()}")
+                # Find first one with tiny
+                for key in formats.keys():
+                    if "nano" in key and ("gif" in key or "webp" in key):
+                        size = key
+                        break
+                else:
+                    for key in formats.keys():
+                        if "tiny" in key and ("gif" in key or "webp" in key):
+                            size = key
+                            break
+                cprint(f"Replaced with {size}")
+            data["results"][0]["media_formats"][size]["url"]
+            medium_gif_url = (
+                data.get("results", [{}])[0]
+                .get("media_formats", [{}])
+                .get("mediumgif", {})
+                .get("url", None)
+            )
+            if medium_gif_url:
+                return medium_gif_url
+            else:
+                return None
+        else:
+            return None
+    else:
+        return None
