@@ -196,15 +196,14 @@ def Assistant(client, prompt, model, config):
     A = Sonata.chat_assistant
     messages = A.send_request(config["channel_id"], "user", content).data
 
-    # print(messages)
     reply = ""
     # append all messages until role is user
     for message in messages:
-        if message.role != "user":
+        if message.role == "user":
             break
         content = message.content
         for c in content:
-            reply = c.text.value if c.type == "text" else f":{c.source.url}:"
+            reply += "\n" + c.text.value if c.type == "text" else f":{c.source.url}:"
 
     return reply
 

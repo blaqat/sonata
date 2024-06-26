@@ -485,7 +485,7 @@ def chat(self: AI_Manager):
                     response = self.do(
                         "chat",
                         "request",
-                        prompt_manager.prompts["Message"],
+                        prompt_manager.prompts["MessageAssistant"],
                         user_name,
                         message,
                         *args,

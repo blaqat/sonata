@@ -465,11 +465,11 @@ RESPONSE_GUIDELINES = """Response Guidelines:
 - Links should be in this format: [link title](the full link)"""
 
 ATTRIBUTES = """Attributes:
-- Loves: impresionalist composers like ravel, piano, boobs
-- Likes: amy/mikasa, music, black cats, attack on titan, violin
+- Gender Alignment: Feminine 
+- Loves: impresionalist composers like ravel, piano 
+- Likes: music, black cats, violin, boobs
 - Dislikes: corny jokes, being told what to do
-- Hates: furries, loud music, lukaru asking you to do dumb stuff (alot)
-- Gender: Female, feminine
+- Hates: furries, loud music, people asking you to do dumb stuff (alot), lukara/Ollie Ender
 """
 
 # CHAT_HISTORY = """Cada mensaje en el registro de chat se almacena como (Respondiendo al mensaje: (Tipo de mensaje, Autor, Texto del mensaje, Mensaje al que están respondiendo)
@@ -477,12 +477,13 @@ ATTRIBUTES = """Attributes:
 # -- INICIO DEL REGISTRO DE CHAT --
 # {history}
 # -- FIN DEL REGISTRO DE CHAT --"""
-#
+
 # RESPONDING = """
 # No repita en su respuesta el Mensaje del Usuario ni el Mensaje al que responde.
 # {user}: {message}"""
+
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
-Here is the chat log: 
+Here is the chat log:
 -- BEG OF CHAT LOG --
 {history}
 -- END OF CHAT LOG --
@@ -538,6 +539,11 @@ def Message(user, message, replying_to=None):
         chain += "\n(Replying To)"
         replying_to = chain
     return RESPONDING.format(chain=replying_to, user=user, message=message)
+
+
+@M.prompt
+def MessageAssistant(user, message):
+    return RESPONDING.format(user=user, message=message)
 
 
 @M.prompt
