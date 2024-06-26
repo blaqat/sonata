@@ -400,7 +400,7 @@ def get_vid(*search_term):
     "music",
     "$music <song title>, <artist name or 'None'>",
     "Search for a music link on soundcloud to post in chat.",
-    "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas).",
+    "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas). Also if the song is stated to be not found but you see it in attempts make sure to post the correct attempt.",
 )
 def get_music(*search_term):
     search_term = " ".join(search_term).split(",")
@@ -415,22 +415,25 @@ def get_music(*search_term):
     search = song_name
     if artist is not None:
         search += f" {artist}"
+    attempts = []
 
     cprint(f"Searching for {search}", "yellow")
 
     for t in sc.search_tracks(search):
         max_runs -= 1
         if max_runs < 0:
-            return "Song not found. Ran out of attempts."
+            attempts = [{"title": r[0], "artist": r[1], "link": r[2]} for r in attempts]
+            return {"result": "Song seemingly not found.", "attempts": attempts}
         if (
             artist is not None
             and artist not in t["artist"].lower().replace(" ", "")
             and artist not in t["title"].lower().replace(" ", "")
         ):
             print(f"Attempt {max_runs} {t['title']} {t['artist']}")
+            attempts.append((t["title"], t["artist"], t["url"]))
             continue
 
-        links.append((t["title"], t["url"]))
+        links.append((t["title"], t["url"], t["artist"]))
         if len(links) >= num_links:
             break
 
@@ -440,7 +443,7 @@ def get_music(*search_term):
     # result = links[0]
     results = [{"title": r[0], "link": r[1]} for r in links]
 
-    return {"results": results}
+    return {"result": results}
 
 
 """
@@ -570,6 +573,7 @@ Command output: {response}
 
 {RESPONSE_GUIDELINES}
 - Since you have succesfully just run a command, your output should be including the command output information NOT the command again (e.g dont say $roll give information about the output)
+- But also, make sure to only include relevant information from the output to what you are responding to
 - {cmd_instructions}
 
 {RESPONDING.format(chain="", user=author, message=message)}"""
