@@ -17,8 +17,14 @@ from modules.utils import (
 import os
 import asyncio
 import aioconsole
+from random import randint
 
-L, M, P = AI_Manager.init(lazy=True, config={})
+L, M, P = AI_Manager.init(
+    lazy=True,
+    config={
+        "inject_emojis": False,
+    },
+)
 __plugin_name__ = "term_commands"
 __dependencies__ = ["beacon", "chat"]
 
@@ -30,36 +36,42 @@ Hooks    -----------------------------------------------------------------------
 
 async def term_handler(DataManager: AI_Manager, client):
     print("Type 'help' for a list of commands")
+    INJECT_EMOJIS = M.MANAGER.config.get("inject_emojis", False)
 
-    # Load all archived emojis
-    for guild in client.guilds:
-        if guild.name.startswith("Karma"):
-            for emoji in guild.emojis:
-                DataManager.do("emojis", "add", emoji)
+    if INJECT_EMOJIS:
+        # Load all archived emojis
+        for guild in client.guilds:
+            if guild.name.startswith("Karma"):
+                for emoji in guild.emojis:
+                    DataManager.do("emojis", "add", emoji)
 
-    # HACK: Inject EmojiIndex into the System Instructions
-    old_instructions = DataManager.prompt_manager.get_instructions()
+        # HACK: Inject EmojiIndex into the System Instructions
+        old_instructions = DataManager.prompt_manager.get_instructions()
+        emojis_list = DataManager.do("emojis", "list")
+        # 1 random number minimum 0, max length of emojis_list - 1000
+        num_chars = 600
+        rand = randint(0, max(1, len(emojis_list) - num_chars))
 
-    emoji_instructions = (
-        f"You can use the EmojiIndex to send emojis when u feel like it e.g to roll ur eyes or something (Make sure to use its full <x:name:id> as shown in the index):\n"
-        + DataManager.do("emojis", "list")
-    )
-
-    instructions = None
-
-    if type(old_instructions) == str:
-        instructions = old_instructions + emoji_instructions
-    else:
-        instructions = (
-            lambda *args, **kwargs: old_instructions(*args, **kwargs)
-            + emoji_instructions
+        emoji_instructions = (
+            f"You can use the EmojiIndex to send emojis when u feel like it (Make sure to use its full <x:name:id> as shown in the index):\n"
+            + DataManager.do("emojis", "list")[rand : rand + num_chars]
         )
 
-    DataManager.prompt_manager.set_instructions(
-        prompt=instructions, prompt_name=DataManager.prompt_manager.instructions
-    )
+        instructions = None
 
-    # print(M.MANAGER.prompt_manager.get_instructions(call=False))
+        if type(old_instructions) == str:
+            instructions = old_instructions + emoji_instructions
+        else:
+            instructions = (
+                lambda *args, **kwargs: old_instructions(*args, **kwargs)
+                + emoji_instructions
+            )
+
+        DataManager.prompt_manager.set_instructions(
+            prompt=instructions, prompt_name=DataManager.prompt_manager.instructions
+        )
+
+        # print(M.MANAGER.prompt_manager.get_instructions(call=False))
 
     while True:
         if DataManager.get("termcmd", "intercepting", default=False):

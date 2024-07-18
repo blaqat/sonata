@@ -640,6 +640,10 @@ def picker(choices: list = [], delay_count=0, reverse_on_end: bool = False):
     return pick
 
 
+def clamp(value, min_value, max_value):
+    return max(min(value, max_value), min_value)
+
+
 def has_inside(str, list):
     for i in list:
         if i in str:

@@ -46,6 +46,8 @@ L, M, P = AI_Manager.init(
         "summarize": False,
         "auto": "o",
         "view_replies": True,
+        "ignore": [],
+        "response_map": {},  # {userName: (response, random chance)}
     },
 )
 __plugin_name__ = "chat"
@@ -164,8 +166,20 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
 async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
+    IGNORE_LIST = Sonata.config.get("ignore", [])
+    RESPONSES = Sonata.config.get("response_map", {})
     if message.author.bot == True and message.author.name != "sonata":
         return
+
+    # Hating Arc
+    if (
+        message.author.name.lower() in IGNORE_LIST
+        or message.author.nick
+        and message.author.nick.lower() in IGNORE_LIST
+    ):
+        cprint(f"Ignoring: {message.author.name}: {message.content}", "red")
+        return
+
     message.content = message.content.replace('"', "'").replace("’", "'")
 
     if message.guild == None:  # Ignore DMS
@@ -288,22 +302,22 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         # message_reference = await message.channel.fetch_message(
         #     message.reference.message_id
         # )
-        if message_reference_id == kelf.user.id:
-            message.content = f"${AI} " + message.content
-            await kelf.process_commands(message)
-            return
-
-    # if (
-    #     "sonata" in message.content.lower()
-    #     or "<@1187145990931763250>" in message.content.lower()
-    #     or "sona " in message.content.lower()
-    #     or " sona" in message.content.lower()
-    # ) and not message.author.bot:
-    #     message.content = message.content.replace("sonata", "")
-    #     message.content = message.content.replace("<@1187145990931763250>", "")
-    #     message.content = message.content.replace("sona ", "")
-    #     message.content = message.content.replace(" sona", "")
-    #     message.content = f"${AI} " + message.content
+        # if (
+        #     message.author.name in RESPONSES
+        #     or message.author.nick
+        #     and message.author.nick in RESPONSES
+        # ):
+        #     chance, response = RESPONSES.get(
+        #         message.author.name, RESPONSES.get(message.author.nick)
+        #     )
+        #     if random.random() < chance:
+        #         await message.reply(response, mention_author=False)
+        #         Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
+        #         message.content += "1"
+        # else:
+        #     message.content += "0"
+        await kelf.process_commands(message)
+        return
 
     sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
     sonata_exp = re.compile(
@@ -313,6 +327,20 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     if not message.author.bot and sonata_exp.search(message.content):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
+        # if (
+        #     message.author.name in RESPONSES
+        #     or message.author.nick
+        #     and message.author.nick in RESPONSES
+        # ):
+        #     chance, response = RESPONSES.get(
+        #         message.author.name, RESPONSES.get(message.author.nick)
+        #     )
+        #     if random.random() < chance:
+        #         await message.reply(response, mention_author=False)
+        #         Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
+        #         message.content += "1"
+        # else:
+        #     message.content += "0"
 
     await kelf.process_commands(message)
 

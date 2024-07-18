@@ -23,7 +23,12 @@ from googleapiclient.discovery import build
 from nuvem_de_som import SoundCloud as sc
 from google_images_search import GoogleImagesSearch
 
-L, M, P = AI_Manager.init(lazy=True)
+L, M, P = AI_Manager.init(
+    lazy=True,
+    config={
+        "gif_search": "tenor",
+    },
+)
 __plugin_name__ = "self_commands"
 __dependencies__ = ["chat"]
 
@@ -371,9 +376,18 @@ def combined_search(*search_term):
 def get_gif(*search_term):
     limit = 15
     # search = random.choice([gif_google_search, gif_giphy_search, gif_tenor_search])
-    # search = gif_google_search
-    search = gif_tenor_search
-    # search = gif_giphy_search
+    search_style = M.MANAGER.config.get("gif_search", "tenor")
+
+    match search_style:
+        case "google":
+            search = gif_google_search
+        case "giphy":
+            search = gif_giphy_search
+        case "tenor":
+            search = gif_tenor_search
+        case _:
+            search = gif_tenor_search
+
     return search(*search_term, limit=limit)
 
 
@@ -450,6 +464,26 @@ def get_music(*search_term):
 Prompts    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
+CLAUDE_BEGINING = """
+
+"""
+
+CLAUDE_RESPONSE_GUIDELINES = """
+
+"""
+
+CLAUDE_ATTRIBUTES = """
+
+"""
+
+CLAUDE_CHAT_HISTORY = """
+
+"""
+
+CLAUDE_RESPONDING = """
+
+"""
+
 # Prompt Segments
 BEGINING = "You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use commands to get info or perform actions."
 
@@ -469,18 +503,8 @@ ATTRIBUTES = """Attributes:
 - Loves: impresionalist composers like ravel, piano 
 - Likes: music, black cats, violin, boobs
 - Dislikes: corny jokes, being told what to do
-- Hates: furries, loud music, people asking you to do dumb stuff (alot), lukara/Ollie Ender
+- Hates: furries, loud music, people asking you to do dumb stuff (alot), lukaru/Ollie Ender
 """
-
-# CHAT_HISTORY = """Cada mensaje en el registro de chat se almacena como (Respondiendo al mensaje: (Tipo de mensaje, Autor, Texto del mensaje, Mensaje al que están respondiendo)
-# Aquí está el registro de chat:
-# -- INICIO DEL REGISTRO DE CHAT --
-# {history}
-# -- FIN DEL REGISTRO DE CHAT --"""
-
-# RESPONDING = """
-# No repita en su respuesta el Mensaje del Usuario ni el Mensaje al que responde.
-# {user}: {message}"""
 
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
 Here is the chat log:
@@ -493,6 +517,16 @@ RESPONDING = """
 Do not repeat the User Message or the Message they are replying to in your response.
 {chain}{user}: {message}
 """
+
+# CHAT_HISTORY = """Cada mensaje en el registro de chat se almacena como (Respondiendo al mensaje: (Tipo de mensaje, Autor, Texto del mensaje, Mensaje al que están respondiendo)
+# Aquí está el registro de chat:
+# -- INICIO DEL REGISTRO DE CHAT --
+# {history}
+# -- FIN DEL REGISTRO DE CHAT --"""
+
+# RESPONDING = """
+# No repita en su respuesta el Mensaje del Usuario ni el Mensaje al que responde.
+# {user}: {message}"""
 
 
 @M.prompt

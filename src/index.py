@@ -13,8 +13,17 @@ P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 _____________________________________________________
 """
 
-AUTO_MODEL = "g"
-RESET = True
+"""
+Configuration
+"""
+RANDOM_CONFIG = False
+AUTO_MODEL = "c"  # g, o, c, a, m
+RESET = False
+VC_RECORDING = False
+VC_SPEAKING = False
+GIF_SEARCH = "tenor"  # tenor, giphy, google, random
+EMOJIS = False
+IGNORE_LIST = ["nobo", "karu", "blaqat"]
 
 import asyncio
 import base64
@@ -50,7 +59,6 @@ from modules.utils import (
 )
 
 import nest_asyncio
-
 
 nest_asyncio.apply()
 
@@ -123,9 +131,11 @@ reset_instructions()
 Sonata, MEMORY = AI_Manager.init(
     P,
     "Gemini",
-    (settings.GOOGLE_AI, "Gemini", 0.8, 2500),
+    (settings.GOOGLE_AI, "Gemini", 0.4, 2500),
     # "OpenAI",
     # (settings.OPEN_AI, "OpenAI", 0.4, 2500),
+    # "Claude",
+    # (settings.ANTHROPIC_AI, "Claude", 0.4, 2500),
     summarize_chat=True,
     name="Sonata",
 )
@@ -141,6 +151,19 @@ Sonata.config.setup()
 # - Like self-command cant have a join vc command since it needs to be async and have access to the client
 # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645203
 def extend(Sonata):
+    funny_responses = {
+        "scarletarmada": (0.01, "u a FAN u a FAN u a FAN u a FURRY ASS NIGGA"),
+        "planet_bluto": (0.01, "aye shutcho ass up go and get your cash up"),
+        "subi": (
+            0.01,
+            "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
+        ),
+        "amy": (0.01, "i love you i'm gonna die"),
+        "log": (0.01, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
+        "blaqat": (0.1, "yes master"),
+        "ans": (0.1, "youre the robot why dont u tell me hmmm?"),
+        "lukaru": (0.01, "oh my god do you ever shut up"),
+    }
     Sonata.extend(
         PLUGINS(openai_assistant=False),
         # PLUGINS(),
@@ -149,6 +172,14 @@ def extend(Sonata):
             "max_chats": 30,
             "view_replies": True,
             "auto": AUTO_MODEL,
+            "ignore": [name.lower() for name in IGNORE_LIST],
+            "response_map": funny_responses,
+        },
+        self_commands={
+            "gif_search": GIF_SEARCH,
+        },
+        term_commands={
+            "inject_emojis": EMOJIS,
         },
     )
 
@@ -388,7 +419,24 @@ def Gemini(client, prompt, model, config):
             cprint(response.prompt_feedback, "red")
         else:
             cprint(str(e), "red")
-        raise AI_Error(str(e))
+        if (
+            str(e) == "429 Resource has been exhausted (e.g. check quota)."
+            and model == "gemini-1.5-pro-latest"
+        ):
+            return (
+                client(
+                    model_name=model,
+                    generation_config={
+                        "temperature": config.get("temp")
+                        or config.get("temperature", 0.4)
+                    },
+                    safety_settings=block,
+                )
+                .generate_content(content)
+                .text
+            )
+        else:
+            raise AI_Error(str(e))
 
 
 @MEMORY.ai(
@@ -658,7 +706,10 @@ async def on_voice_state_update(member, before, after):
             print(f"Sonata has joined the voice channel: {after.channel.name}")
             # Start recording audio
             vc = member.guild.voice_client
-            await start_recording(vc, after.channel)
+            if VC_RECORDING:
+                await start_recording(vc, after.channel)
+            else:
+                cprint("VC Recording is disabled", "red")
         elif before.channel is not None and after.channel is None:
             print(f"Sonata has left the voice channel: {before.channel.name}")
         elif (
@@ -671,7 +722,10 @@ async def on_voice_state_update(member, before, after):
                 f"Sonata has moved from {before.channel.name} to {after.channel.name}"
             )
             vc = member.guild.voice_client
-            await start_recording(vc, after.channel)
+            if VC_RECORDING:
+                await start_recording(vc, after.channel)
+            else:
+                cprint("VC Recording is disabled", "red")
 
 
 CURRENT_VC = None
@@ -762,6 +816,8 @@ async def respond(ctx):
 
 @sonata.command()
 async def voice(ctx, *voice):
+    if not VC_SPEAKING:
+        return await ctx.send("soz voice speaking is disabled")
     VALID_OPTIONS = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
     voice = " ".join(voice).lower()
 
@@ -784,6 +840,8 @@ async def voice(ctx, *voice):
 @sonata.command()
 async def talk(ctx, *message):
     global CURRENT_VC
+    if not VC_SPEAKING:
+        return await ctx.send("soz voice speaking is disabled")
 
     if ctx.guild.voice_client is not None:
         CURRENT_VC = ctx.guild.voice_client
@@ -833,10 +891,13 @@ async def leave(ctx):
     await ctx.message.guild.voice_client.disconnect()
 
 
-async def ctx_reply(ctx, r):
+async def ctx_reply(ctx, r, reply=True):
     try:
         _ = ctx.author
-        await ctx.reply(r[:2000], mention_author=False)
+        if reply:
+            await ctx.reply(r[:2000], mention_author=False)
+        else:
+            await ctx.send(r[:2000])
     except AttributeError as _:
         await ctx.send(r[:2000])
 
@@ -943,6 +1004,9 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
     INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
     try:
         message = " ".join(message)
+        respond_or_chat = message[-1] == "1"
+        message = message[:-1]
+
         name = get_full_name(ctx)
         _ref = None
         try:
@@ -976,9 +1040,9 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                 else:
                     Sonata.set("termcmd", False, inner="intercepting")
                 # Sonata.memory["termcmd"]["intercepting"] = False
-                await ctx_reply(ctx, r)
+                await ctx_reply(ctx, r, not respond_or_chat)
             else:
-                await ctx_reply(ctx, r)
+                await ctx_reply(ctx, r, not respond_or_chat)
     except Exception as e:
         cprint(e, "red")
         await ctx_reply(
@@ -1027,15 +1091,35 @@ async def open_ai_assistant_question(ctx, *message):
     await ai_question(ctx, *message, ai="Assistant", short="a")
 
 
+from random import randint
+
+
+def rand_config():
+    global AUTO_MODEL, RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS
+    models = ["g", "o", "c", "a", "m"]
+    gif_searches = ["tenor", "giphy", "google", "random"]
+    AUTO_MODEL = models[randint(0, len(models) - 1)]
+    RESET = bool(randint(0, 1))
+    VC_RECORDING = bool(randint(0, 1))
+    VC_SPEAKING = bool(randint(0, 1))
+    GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
+    EMOJIS = bool(randint(0, 1))
+
+
 async def main():
     # TODO: Make other run modes like "flash", "view", "absorb"
     # to handle different pre/post memory scenerios
+    if RANDOM_CONFIG:
+        rand_config()
     cprint("Initlializing...", "yellow")
     Sonata.beacon.branch("chat").flash()
     cprint("Chat memory flashed", "yellow")
     Sonata.reload("chat", "value", module=True)
     cprint("Chat memory restored", "yellow")
-    cprint(f"Using Model: {AUTO_MODEL}\nMemory Reset: {RESET}", "purple")
+    cprint(
+        f"Using Model: {AUTO_MODEL}\nMemory Reset: {RESET}\nGIF Search: {GIF_SEARCH}\nInjecting Emojis: {EMOJIS}",
+        "purple",
+    )
     await sonata.start(settings.BOT_TOKEN)
 
 
