@@ -17,13 +17,13 @@ _____________________________________________________
 Configuration
 """
 RANDOM_CONFIG = False
-AUTO_MODEL = "c"  # g, o, c, a, m
+AUTO_MODEL = "g"  # g, o, c, a, m
 RESET = False
 VC_RECORDING = False
-VC_SPEAKING = False
+VC_SPEAKING = True
 GIF_SEARCH = "tenor"  # tenor, giphy, google, random
 EMOJIS = False
-IGNORE_LIST = ["nobo", "karu", "blaqat"]
+IGNORE_LIST = ["nobo", "karu"]
 
 import asyncio
 import base64
@@ -152,17 +152,17 @@ Sonata.config.setup()
 # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645203
 def extend(Sonata):
     funny_responses = {
-        "scarletarmada": (0.01, "u a FAN u a FAN u a FAN u a FURRY ASS NIGGA"),
-        "planet_bluto": (0.01, "aye shutcho ass up go and get your cash up"),
+        "scarletarmada": (0.005, "u a FAN u a FAN u a FAN u a FURRY ASS NIGGA"),
+        "planet_bluto": (0.005, "aye shutcho ass up go and get your cash up"),
         "subi": (
-            0.01,
+            0.005,
             "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
         ),
-        "amy": (0.01, "i love you i'm gonna die"),
-        "log": (0.01, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
+        "amy": (0.005, "i love you i'm gonna die"),
+        "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
         "blaqat": (0.1, "yes master"),
-        "ans": (0.1, "youre the robot why dont u tell me hmmm?"),
-        "lukaru": (0.01, "oh my god do you ever shut up"),
+        "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
+        "lukaru": (0.05, "oh my god do you ever shut up"),
     }
     Sonata.extend(
         PLUGINS(openai_assistant=False),
@@ -246,6 +246,7 @@ def Assistant(client, prompt, model, config):
     # model="gpt-3.5-turbo",
     # model="gpt-4-turbo-preview",
     model="gpt-4o",
+    # model="gpt-4o-mini",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -334,7 +335,8 @@ def Claude(client, prompt, model, config):
         ).chat.completions,
     ),
     # model="pplx-7b-online",
-    model="sonar-small-online",
+    # model="sonar-small-online",
+    model="llama-3-sonar-small-32k-online",
     # model="sonar-medium-online",
 )
 def Perplexity(client, prompt, model, config):
@@ -1004,8 +1006,11 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
     INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
     try:
         message = " ".join(message)
+        if message is None or message == "":
+            message = "0"
         respond_or_chat = message[-1] == "1"
         message = message[:-1]
+        # respond_or_chat = False
 
         name = get_full_name(ctx)
         _ref = None

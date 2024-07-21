@@ -172,10 +172,8 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         return
 
     # Hating Arc
-    if (
-        message.author.name.lower() in IGNORE_LIST
-        or message.author.nick
-        and message.author.nick.lower() in IGNORE_LIST
+    if message.author.name.lower() in IGNORE_LIST or (
+        message.author.nick and message.author.nick.lower() in IGNORE_LIST
     ):
         cprint(f"Ignoring: {message.author.name}: {message.content}", "red")
         return
@@ -250,6 +248,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         message.content = Sonata.chat.send(
             message.channel.id, "User", get_full_name(message), m
         )
+
         if message.content is None:
             return
 
@@ -302,22 +301,27 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         # message_reference = await message.channel.fetch_message(
         #     message.reference.message_id
         # )
-        # if (
-        #     message.author.name in RESPONSES
-        #     or message.author.nick
-        #     and message.author.nick in RESPONSES
-        # ):
-        #     chance, response = RESPONSES.get(
-        #         message.author.name, RESPONSES.get(message.author.nick)
-        #     )
-        #     if random.random() < chance:
-        #         await message.reply(response, mention_author=False)
-        #         Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
-        #         message.content += "1"
-        # else:
-        #     message.content += "0"
-        await kelf.process_commands(message)
-        return
+        if message_reference_id == kelf.user.id:
+            if (
+                message.author.name in RESPONSES
+                or message.author.nick
+                and message.author.nick in RESPONSES
+            ):
+                chance, response = RESPONSES.get(
+                    message.author.name, RESPONSES.get(message.author.nick)
+                )
+                if random.random() < chance:
+                    await message.reply(response, mention_author=False)
+                    Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
+                    message.content += "1"
+            else:
+                message.content += "0"
+            message.content = f"${AI} " + message.content
+            await kelf.process_commands(message)
+            return
+        #
+        # await kelf.process_commands(message)
+        # return
 
     sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
     sonata_exp = re.compile(
@@ -327,20 +331,20 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     if not message.author.bot and sonata_exp.search(message.content):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
-        # if (
-        #     message.author.name in RESPONSES
-        #     or message.author.nick
-        #     and message.author.nick in RESPONSES
-        # ):
-        #     chance, response = RESPONSES.get(
-        #         message.author.name, RESPONSES.get(message.author.nick)
-        #     )
-        #     if random.random() < chance:
-        #         await message.reply(response, mention_author=False)
-        #         Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
-        #         message.content += "1"
-        # else:
-        #     message.content += "0"
+        if (
+            message.author.name in RESPONSES
+            or message.author.nick
+            and message.author.nick in RESPONSES
+        ):
+            chance, response = RESPONSES.get(
+                message.author.name, RESPONSES.get(message.author.nick)
+            )
+            if random.random() < chance:
+                await message.reply(response, mention_author=False)
+                Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
+                message.content += "1"
+        else:
+            message.content += "0"
 
     await kelf.process_commands(message)
 
