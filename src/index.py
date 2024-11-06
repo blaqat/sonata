@@ -17,13 +17,14 @@ _____________________________________________________
 Configuration
 """
 RANDOM_CONFIG = False
-AUTO_MODEL = "g"  # g, o, c, a, m
+AUTO_MODEL = "c"  # g, o, c, a, m
 RESET = False
-VC_RECORDING = False
+VC_RECORDING = True
 VC_SPEAKING = True
 GIF_SEARCH = "tenor"  # tenor, giphy, google, random
 EMOJIS = False
-IGNORE_LIST = ["nobo", "karu"]
+# IGNORE_LIST = ["nobo", "karu", "lukaru"]
+IGNORE_LIST = ["nobo"]
 
 import asyncio
 import base64
@@ -41,8 +42,8 @@ import openai
 import requests
 from discord.ext import commands
 
-from mistralai.client import MistralClient
-from mistralai.models.chat_completion import ChatMessage
+# from mistralai.client import MistralClient
+# from mistralai.models.chat_completion import ChatMessage
 from PIL import Image
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
@@ -131,7 +132,7 @@ reset_instructions()
 Sonata, MEMORY = AI_Manager.init(
     P,
     "Gemini",
-    (settings.GOOGLE_AI, "Gemini", 0.4, 2500),
+    (settings.GOOGLE_AI, "Gemini", 1, 2500),
     # "OpenAI",
     # (settings.OPEN_AI, "OpenAI", 0.4, 2500),
     # "Claude",
@@ -140,7 +141,7 @@ Sonata, MEMORY = AI_Manager.init(
     name="Sonata",
 )
 
-Sonata.config.set(temp=0.8)
+Sonata.config.set(temp=1)
 Sonata.config.setup()
 
 
@@ -174,6 +175,7 @@ def extend(Sonata):
             "auto": AUTO_MODEL,
             "ignore": [name.lower() for name in IGNORE_LIST],
             "response_map": funny_responses,
+            "bot_whitelist": ["BluBot"],
         },
         self_commands={
             "gif_search": GIF_SEARCH,
@@ -240,6 +242,41 @@ def Assistant(client, prompt, model, config):
 
 
 @MEMORY.ai(
+    None,
+    key=settings.X_AI,
+    setup=lambda S, key: setattr(
+        S, "client", openai.OpenAI(api_key=key, base_url="https://api.x.ai/v1")
+    ),
+    model="grok-beta",
+)
+def Grok(client, prompt, model, config):
+    content = [{"content": prompt, "role": "user"}]
+
+    if config["instructions"]:
+        content.insert(
+            0,
+            {
+                "role": "system",
+                "content": config["instructions"],
+            },
+        )
+
+    return (
+        client.chat.completions.create(
+            # client.beta.prompt_caching.messages.create(
+            model=model,
+            # system=config["instructions"],
+            # system=instructions,
+            max_tokens=config.get("max_tokens", 1250),
+            temperature=config.get("temp") or config.get("temperature") or 0,
+            messages=content,
+        )
+        .choices[0]
+        .message.content
+    )
+
+
+@MEMORY.ai(
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
@@ -281,11 +318,24 @@ def OpenAI(client, prompt, model, config):
     # model="claude-3-opus-20240229",
     # model="claude-3-sonnet-20240229",
     model="claude-3-5-sonnet-20240620",
+    # model="claude-3-5-sonnet-20241022",
     # model="claude-3-haiku-20240229",
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     i = config.get("images", False)
+    instructions = (
+        [
+            {
+                "type": "text",
+                "text": config["instructions"],
+                # "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        if config["instructions"]
+        else None
+    )
+
     if i:
         images = []
         for u in i:
@@ -312,8 +362,10 @@ def Claude(client, prompt, model, config):
         Sonata.memory["config"]["images"] = None
     return (
         client.messages.create(
+            # client.beta.prompt_caching.messages.create(
             model=model,
-            system=config["instructions"],
+            # system=config["instructions"],
+            system=instructions,
             max_tokens=config.get("max_tokens", 1250),
             temperature=config.get("temp") or config.get("temperature") or 0,
             messages=[{"role": "user", "content": content}],
@@ -336,8 +388,9 @@ def Claude(client, prompt, model, config):
     ),
     # model="pplx-7b-online",
     # model="sonar-small-online",
-    model="llama-3-sonar-small-32k-online",
+    # model="llama-3-sonar-small-32k-online",
     # model="sonar-medium-online",
+    model="llama-3.1-sonar-small-128k-online",
 )
 def Perplexity(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -359,7 +412,9 @@ def Perplexity(client, prompt, model, config):
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
     # model="gemini-1.0-pro",
-    model="gemini-1.5-flash",
+    # model="gemini-1.5-flash",
+    model="gemini-1.5-flash-8b-exp-0827",
+    # model="gemini-1.5-pro-exp-0827",
     # model="gemini-1.5-pro-latest",
 )
 def Gemini(client, prompt, model, config):
@@ -441,27 +496,27 @@ def Gemini(client, prompt, model, config):
             raise AI_Error(str(e))
 
 
-@MEMORY.ai(
-    None,
-    key=settings.MISTRAL_AI,
-    setup=lambda S, key: setattr(S, "client", MistralClient(key)),
-    # model="mistral-medium",
-    model="mistral-large-latest",
-)
-def Mistral(client, prompt, model, _):
-    return (
-        client.chat(
-            model=model,
-            messages=[
-                ChatMessage(
-                    role="user",
-                    content=prompt,
-                )
-            ],
-        )
-        .choices[0]
-        .message.content
-    )
+# @MEMORY.ai(
+#     None,
+#     key=settings.MISTRAL_AI,
+#     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
+#     # model="mistral-medium",
+#     model="mistral-large-latest",
+# )
+# def Mistral(client, prompt, model, _):
+#     return (
+#         client.chat(
+#             model=model,
+#             messages=[
+#                 ChatMessage(
+#                     role="user",
+#                     content=prompt,
+#                 )
+#             ],
+#         )
+#         .choices[0]
+#         .message.content
+#     )
 
 
 @MEMORY.prompt
@@ -1085,10 +1140,21 @@ async def claude_ai_question(ctx, *message):
     )
 
 
+@sonata.command(name="x", description="Ask a question using Grok")
+async def grok_ai_question(ctx, *message):
+    await ai_question(
+        ctx,
+        *message,
+        ai="Grok",
+        short="x",
+        error_prompt=lambda r, name: P.get("ExplainBlockReasoning", r, name),
+    )
+
+
 #
-@sonata.command(name="mi", description="Ask a question using MistralAI.")
-async def mistral_ai_question(ctx, *message):
-    await ai_question(ctx, *message, ai="Mistral", short="mi")
+# @sonata.command(name="m", description="Ask a question using MistralAI.")
+# async def mistral_ai_question(ctx, *message):
+#     await ai_question(ctx, *message, ai="Mistral", short="m")
 
 
 @sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
