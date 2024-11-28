@@ -175,7 +175,7 @@ def extend(Sonata):
             "auto": AUTO_MODEL,
             "ignore": [name.lower() for name in IGNORE_LIST],
             "response_map": funny_responses,
-            "bot_whitelist": ["BluBot"],
+            "bot_whitelist": ["BluBot", 1311742291521835048],
         },
         self_commands={
             "gif_search": GIF_SEARCH,
@@ -317,8 +317,8 @@ def OpenAI(client, prompt, model, config):
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
     # model="claude-3-opus-20240229",
     # model="claude-3-sonnet-20240229",
-    model="claude-3-5-sonnet-20240620",
-    # model="claude-3-5-sonnet-20241022",
+    # model="claude-3-5-sonnet-20240620",
+    model="claude-3-5-sonnet-20241022",
     # model="claude-3-haiku-20240229",
 )
 def Claude(client, prompt, model, config):
@@ -1057,6 +1057,7 @@ async def ping(ctx):
 
 
 async def ai_question(ctx, *message, ai, short, error_prompt=None):
+    print("")
     Sonata.config.set(AI=ai)
     INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
     try:
