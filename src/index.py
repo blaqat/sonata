@@ -357,22 +357,41 @@ def Claude(client, prompt, model, config):
                 }
             )
 
+        old_content = content
+        content = []
+        content.extend(old_content)
         content.extend(images)
         config["images"] = None
         Sonata.memory["config"]["images"] = None
-    return (
-        client.messages.create(
-            # client.beta.prompt_caching.messages.create(
-            model=model,
-            # system=config["instructions"],
-            system=instructions,
-            max_tokens=config.get("max_tokens", 1250),
-            temperature=config.get("temp") or config.get("temperature") or 0,
-            messages=[{"role": "user", "content": content}],
+    try:
+        return (
+            client.messages.create(
+                # client.beta.prompt_caching.messages.create(
+                model=model,
+                # system=config["instructions"],
+                system=instructions,
+                max_tokens=config.get("max_tokens", 1250),
+                temperature=config.get("temp") or config.get("temperature") or 0,
+                messages=[{"role": "user", "content": content}],
+            )
+            .content[0]
+            .text
         )
-        .content[0]
-        .text
-    )
+    except:
+        return (
+            client.messages.create(
+                # client.beta.prompt_caching.messages.create(
+                model=model,
+                # system=config["instructions"],
+                system=instructions,
+                max_tokens=config.get("max_tokens", 1250),
+                temperature=config.get("temp") or config.get("temperature") or 0,
+                messages=[{"role": "user", "content": old_content}],
+            )
+            .content[0]
+            .text
+        )
+    
 
 
 @MEMORY.ai(
