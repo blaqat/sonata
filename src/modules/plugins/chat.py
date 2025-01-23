@@ -20,6 +20,7 @@ from urllib.parse import urljoin
 
 import discord
 from discord.ext import commands
+from google.generativeai.types import Model
 
 from modules.AI_manager import AI_Manager
 from modules.utils import (
@@ -48,6 +49,7 @@ L, M, P = AI_Manager.init(
         "view_replies": True,
         "ignore": [],
         "response_map": {},  # {userName: (response, random chance)}
+        "bot_whitelist": [],
     },
 )
 __plugin_name__ = "chat"
@@ -168,13 +170,31 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
     RESPONSES = Sonata.config.get("response_map", {})
-    if message.author.bot == True and message.author.name != "sonata":
+    WHITELIST = Sonata.config.get("bot_whitelist", [])
+    VALID_USER = (
+        message.author.bot
+        and (message.author.name in WHITELIST or message.author.id in WHITELIST)
+        or not message.author.bot
+    )
+
+    if (
+        message.author.bot
+        and message.author.name != "sonata"
+        and (
+            message.author.name not in WHITELIST and message.author.id not in WHITELIST
+        )
+    ):
+        # cprint(f"Ignoring: {message.author.id}: {message.content}", "red")
         return
 
+    _name = (
+        message.author.nick if "nick" in dir(message.author) else message.author.name
+    )
+    if _name and _name == "None" or not _name:
+        _name = message.author.name
+
     # Hating Arc
-    if message.author.name.lower() in IGNORE_LIST or (
-        message.author.nick and message.author.nick.lower() in IGNORE_LIST
-    ):
+    if _name.lower() in IGNORE_LIST:
         cprint(f"Ignoring: {message.author.name}: {message.content}", "red")
         return
 
@@ -185,12 +205,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
 
     _guild_name = message.guild.name
     _channel_name = message.channel.name
-    _name = (
-        message.author.nick if "nick" in dir(message.author) else message.author.name
-    )
     message_reference = None
-    if _name and _name == "None" or not _name:
-        _name = message.author.name
 
     if Sonata.do("chat", "validate", message.channel.id):
         return
@@ -237,7 +252,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         message_reference = None
 
     memory_text = memory_text.strip()
-    if message.author.bot == False and len(message.content) > 0:
+    if VALID_USER and len(message.content) > 0:
         m = message.content
         # Remove command from message
         if message.content[0] == "$":
@@ -255,7 +270,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
     #
-    if not message.author.bot:
+    if VALID_USER:
         attachment = []
         not_grabbed = []
         image_types = ["png", "jpg", "jpeg", "webp"]
@@ -296,7 +311,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         #     message.content += f"\nAttachment: {attachment}"
 
     # Pass referenced messages to AI
-    if message_reference_id is not None and not message.author.bot:
+    if message_reference_id is not None and VALID_USER:
         # Check if reference is pointing to a message sent by the bot
         # message_reference = await message.channel.fetch_message(
         #     message.reference.message_id
@@ -328,14 +343,10 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         f"<@{kelf.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
         re.IGNORECASE,
     )
-    if not message.author.bot and sonata_exp.search(message.content):
+    if VALID_USER and sonata_exp.search(message.content):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
-        if (
-            message.author.name in RESPONSES
-            or message.author.nick
-            and message.author.nick in RESPONSES
-        ):
+        if _name in RESPONSES:
             chance, response = RESPONSES.get(
                 message.author.name, RESPONSES.get(message.author.nick)
             )
@@ -458,7 +469,8 @@ def chat(self: AI_Manager):
 
         def summarize(kelf, id):
             config = self.get("config")
-            config["instructions"] = " "
+            config["instructions"] = ""
+
             summary = self.do("chat", "summarize", id, config)
 
             def deleter():
@@ -593,6 +605,21 @@ def chat(self: AI_Manager):
     return Chat
 
 
+def Summarize(M, id, config):
+    config["instructions"] = f"""Summarize the chat log in as little tokens as possible.
+Use the following guidelines:
+- Mention people by name, not nickname.
+- Don't just copy and paste the chat log. Summarize/paraphrase it.
+- If there is a PreviousChatSummary, include it in the summary.
+"""
+    return P.send(
+        lambda chat: f"""Chat Log: {chat}""",
+        M["value"][id],
+        AI=config["AI"],
+        config=config,
+    )
+
+
 @M.mem(
     {},
     default_value=[],
@@ -600,9 +627,10 @@ def chat(self: AI_Manager):
     black_list=CHANNEL_BLACKLIST,
     r=lambda M, chat_id: setter(M["value"], chat_id, copy.deepcopy(M["default_value"])),
     request=lambda _, *args, **kwargs: P.send(*args, **kwargs),
-    summarize=lambda M, id, config: P.send(
-        "SummarizeChat", M["value"][id], AI=config["AI"], config=config
-    ),
+    # summarize=lambda M, id, config: P.send(
+    #     "SummarizeChat", M["value"][id], AI=config["AI"], config=config
+    # ),
+    summarize=Summarize,
     validate=lambda M, id: id in M["black_list"],
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
@@ -622,7 +650,7 @@ Prompts    ---------------------------------------------------------------------
 
 
 @M.prompt
-def SummarizeChat(chat_log):
+def OldSummarizeChat(chat_log):
     return f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:
 - Mention people by name, not nickname.
