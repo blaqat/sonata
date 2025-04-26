@@ -182,8 +182,7 @@ def gif_giphy_search(*search_term, limit=15):
 
 def gif_tenor_search(*search_term, limit=15):
     search_term = " ".join(search_term)
-    url = f"https://tenor.googleapis.com/v2/search?q={
-        search_term}&key={settings.TENOR_G}&limit={limit}"
+    url = f"https://tenor.googleapis.com/v2/search?q={search_term}&key={settings.TENOR_G}&limit={limit}"
     with requests.get(url) as response:
         gifs = json.loads(response.text)["results"]
 
@@ -299,8 +298,7 @@ def roll(*args):
 @M.command("weather", "$weather <city>", "Get the weather for a location.")
 def get_weather(*city):
     city = " ".join(city)
-    url = f"https://api.weatherapi.com/v1/current.json?key={
-        settings.WEATHER}&q={city}"
+    url = f"https://api.weatherapi.com/v1/current.json?key={settings.WEATHER}&q={city}"
     response = requests.get(url)
     data = response.json()
     return {
@@ -503,7 +501,8 @@ ATTRIBUTES = """Attributes:
 - Loves: impresionalist composers like ravel, piano 
 - Likes: music, black cats, violin, boobs
 - Dislikes: corny jokes, being told what to do
-- Hates: furries, loud music, people asking you to do dumb stuff (alot), lukaru/Ollie Ender
+- Hates: furries, loud music, people asking you to do dumb stuff (alot)
+- Has a sister named auris (auri for short)
 """
 
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)

@@ -610,7 +610,7 @@ def Summarize(M, id, config):
 Use the following guidelines:
 - Mention people by name, not nickname.
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
-- If there is a PreviousChatSummary, include it in the summary.
+- If there is a PreviousChatSummary, include it as much as possible into the new summary as it will be replaced with this afterwards.
 """
     return P.send(
         lambda chat: f"""Chat Log: {chat}""",
