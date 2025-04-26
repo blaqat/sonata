@@ -17,12 +17,12 @@ _____________________________________________________
 Configuration
 """
 RANDOM_CONFIG = False
-AUTO_MODEL = "c"  # g, o, c, a, m
+AUTO_MODEL = "g"  # g, o, c, a, m
 RESET = False
 VC_RECORDING = True
 VC_SPEAKING = True
 GIF_SEARCH = "tenor"  # tenor, giphy, google, random
-EMOJIS = False
+EMOJIS = True
 # IGNORE_LIST = ["nobo", "karu", "lukaru"]
 IGNORE_LIST = ["nobo"]
 
@@ -65,7 +65,9 @@ nest_asyncio.apply()
 
 if not discord.opus.is_loaded():
     # The 'libopus.so' path might need to be adjusted based on your installation
-    discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
+    discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so")
+    # discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
+
 
 # PROMPT = """
 # As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
@@ -161,7 +163,7 @@ def extend(Sonata):
         ),
         "amy": (0.005, "i love you i'm gonna die"),
         "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
-        "blaqat": (0.1, "yes master"),
+        "blaqat": (0.005, "yes master"),
         "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
         "lukaru": (0.05, "oh my god do you ever shut up"),
     }
@@ -175,7 +177,7 @@ def extend(Sonata):
             "auto": AUTO_MODEL,
             "ignore": [name.lower() for name in IGNORE_LIST],
             "response_map": funny_responses,
-            "bot_whitelist": ["BluBot", 1311742291521835048],
+            "bot_whitelist": ["BluBot", 1311742291521835048, 746799398994051162, "auris"],
         },
         self_commands={
             "gif_search": GIF_SEARCH,
@@ -318,7 +320,8 @@ def OpenAI(client, prompt, model, config):
     # model="claude-3-opus-20240229",
     # model="claude-3-sonnet-20240229",
     # model="claude-3-5-sonnet-20240620",
-    model="claude-3-5-sonnet-20241022",
+    # model="claude-3-5-sonnet-latest",
+    model="claude-3-7-sonnet-latest",
     # model="claude-3-haiku-20240229",
 )
 def Claude(client, prompt, model, config):
@@ -432,9 +435,10 @@ def Perplexity(client, prompt, model, config):
     setup=lambda _, key: genai.configure(api_key=key),
     # model="gemini-1.0-pro",
     # model="gemini-1.5-flash",
-    model="gemini-1.5-flash-8b-exp-0827",
+    # model="gemini-1.5-flash-8b-exp-0827",
     # model="gemini-1.5-pro-exp-0827",
     # model="gemini-1.5-pro-latest",
+    model="gemini-2.5-pro-exp-03-25",
 )
 def Gemini(client, prompt, model, config):
     block = [
