@@ -5,7 +5,7 @@ local function set_env()
 end
 
 return {
-	theme = "catppuccin46",
+	theme = "catppuccin-frappe",
 	highlight = {
 		misc = { ["Constant"] = "bold" },
 	},

@@ -6,7 +6,7 @@
        "editor.codeActionsOnSave": {
               "source.organizeImports.biome": "explicit"
        },
-       "workbench.colorTheme": "Default Dark Modern",
+       "workbench.colorTheme": "One Hunter Theme Material",
        "editor.fontFamily": "Monaspace Krypton, Monolisa Nerd Font Mono, Jetbrains Mono, Comic Code, Comic Mono",
        "editor.fontLigatures": "'calt', 'liga', 'dlig', 'ss01', 'ss02', 'ss03', 'ss04', 'ss05', 'ss06', 'ss07', 'ss08'",
        "editor.fontSize": 14,
@@ -41,5 +41,6 @@
                             }
                      }
               ]
-       }
+       },
+       "todo-tree.tree.scanMode": "current file"
 }

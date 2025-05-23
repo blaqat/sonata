@@ -483,9 +483,7 @@ class AI_Manager:
             and not prompt_manager.exists("SystemInstructions")
         ):
             prompt_manager.add_instructions(
-                lambda _,
-                message,
-                nick: f"I am a User you are an AI Assisant, Respond to my messages to aid me. My message: {message}",
+                lambda _, message, nick: f"I am a User you are an AI Assisant, Respond to my messages to aid me. My message: {message}",
             )
 
         self.prompt_manager: PromptManager = prompt_manager

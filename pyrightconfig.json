@@ -9,5 +9,8 @@
       "root": "./",
       "venv": "./"
     }
-  ]
+  ],
+
+  "typeCheckingMode": "off",
+  "pythonVersion": "3.12",
 }

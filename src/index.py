@@ -17,12 +17,12 @@ _____________________________________________________
 Configuration
 """
 RANDOM_CONFIG = False
-AUTO_MODEL = "g"  # g, o, c, a, m
-RESET = False
-VC_RECORDING = True
+AUTO_MODEL = "c"  # g, o, c, a, m
+PROMPT_RESET = False
+VC_RECORDING = False
 VC_SPEAKING = True
-GIF_SEARCH = "tenor"  # tenor, giphy, google, random
-EMOJIS = True
+GIF_SEARCH = "random"  # tenor, giphy, google, random
+EMOJIS = False
 # IGNORE_LIST = ["nobo", "karu", "lukaru"]
 IGNORE_LIST = ["nobo"]
 
@@ -65,8 +65,8 @@ nest_asyncio.apply()
 
 if not discord.opus.is_loaded():
     # The 'libopus.so' path might need to be adjusted based on your installation
-    discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so")
-    # discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
+    # discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so")
+    discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
 
 
 # PROMPT = """
@@ -85,7 +85,7 @@ Keep the responses short and don't use overcomplicated language. You can be funn
 
 PROMPT = """
 As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
-- You are a general expert on most subjects including math, coding, doctor, etc. 
+- You are a general expert on most subjects including math, coding, doctor, etc.
 - Adopt a friendly and normal tone.
 - Keep responses brief, possibly with a touch of humor.
 - Only provide the response message without additional text or quote symbols.
@@ -394,7 +394,7 @@ def Claude(client, prompt, model, config):
             .content[0]
             .text
         )
-    
+
 
 
 @MEMORY.ai(
@@ -436,9 +436,11 @@ def Perplexity(client, prompt, model, config):
     # model="gemini-1.0-pro",
     # model="gemini-1.5-flash",
     # model="gemini-1.5-flash-8b-exp-0827",
+    # model="gemini-1.5-flash-8b-exp-0924",
+    model="gemini-2.0-flash-exp",
     # model="gemini-1.5-pro-exp-0827",
     # model="gemini-1.5-pro-latest",
-    model="gemini-2.5-pro-exp-03-25",
+    # model="gemini-2.5-pro-exp-03-25",
 )
 def Gemini(client, prompt, model, config):
     block = [
@@ -553,7 +555,7 @@ Here is the prompt_feedback: {r}
 extend(Sonata)
 
 # HACK: This is a hack to DESTROY SONATAS MEMORY
-if RESET:
+if PROMPT_RESET:
     reset_instructions()
 
 # print_available_genai_models(genai)
@@ -665,7 +667,7 @@ async def say(vc: discord.VoiceClient, message, opts={}):
             model="tts-1",
             # alloy, echo, fable, onyx, nova, shimmer
             # voice=opts.get("voice", "nova"),
-            voice=opts.get("voice", "nova"),
+            voice=opts.get("voice", "sage"),
             input=message,
             response_format="opus",
         ).read()
@@ -898,7 +900,7 @@ async def respond(ctx):
 async def voice(ctx, *voice):
     if not VC_SPEAKING:
         return await ctx.send("soz voice speaking is disabled")
-    VALID_OPTIONS = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
+    VALID_OPTIONS = ["alloy", "ash", "coral", "echo", "fable", "onyx", "sage", "nova", "shimmer"]
     voice = " ".join(voice).lower()
 
     if voice == "":
@@ -1190,11 +1192,11 @@ from random import randint
 
 
 def rand_config():
-    global AUTO_MODEL, RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS
+    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS
     models = ["g", "o", "c", "a", "m"]
     gif_searches = ["tenor", "giphy", "google", "random"]
     AUTO_MODEL = models[randint(0, len(models) - 1)]
-    RESET = bool(randint(0, 1))
+    PROMPT_RESET = bool(randint(0, 1))
     VC_RECORDING = bool(randint(0, 1))
     VC_SPEAKING = bool(randint(0, 1))
     GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
@@ -1212,7 +1214,7 @@ async def main():
     Sonata.reload("chat", "value", module=True)
     cprint("Chat memory restored", "yellow")
     cprint(
-        f"Using Model: {AUTO_MODEL}\nMemory Reset: {RESET}\nGIF Search: {GIF_SEARCH}\nInjecting Emojis: {EMOJIS}",
+        f"Using Model: {AUTO_MODEL}\nMemory Reset: {PROMPT_RESET}\nGIF Search: {GIF_SEARCH}\nInjecting Emojis: {EMOJIS}",
         "purple",
     )
     await sonata.start(settings.BOT_TOKEN)
