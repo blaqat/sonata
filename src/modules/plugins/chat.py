@@ -62,7 +62,7 @@ Hooks    -----------------------------------------------------------------------
 
 # TODO: Make new hook system for general hooks that can b iterated on in the main loop
 # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
-async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
+async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     AI = Sonata.config.get("auto")
     # AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
@@ -117,7 +117,7 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
     if not message.author.bot and message.content:
         m = message.content
         if message.content[0] == "$":
-            return await kelf.process_commands(message)
+            return await self.process_commands(message)
 
         # Check for message references (replies)
         _ref = (
@@ -162,10 +162,10 @@ async def dm_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
 
     message.content = f"${AI} " + message.content
     # Process the message
-    await kelf.process_commands(message)
+    await self.process_commands(message)
 
 
-async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> None:
+async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
@@ -210,14 +210,14 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     if Sonata.do("chat", "validate", message.channel.id):
         return
 
-    if _guild_name != kelf.current_guild:
+    if _guild_name != self.current_guild:
         cprint("\n" + _guild_name.lower(), "purple", "_")
-        kelf.current_guild = _guild_name
+        self.current_guild = _guild_name
 
-    if _channel_name != kelf.current_channel:
+    if _channel_name != self.current_channel:
         cprint("#" + _channel_name, "green", end=" ")
         print(f"({message.channel.id})")
-        kelf.current_channel = _channel_name
+        self.current_channel = _channel_name
 
     print(
         "  {0}: {1}".format(
@@ -271,7 +271,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
     # Add way to convert stickers into images
     #
     if VALID_USER:
-        attachment = []
+        attachments = []
         not_grabbed = []
         image_types = ["png", "jpg", "jpeg", "webp"]
         # HACK: Lets claude read gifs
@@ -286,7 +286,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
                     url = tenor_get_dl_url(
                         url, settings.TENOR_G, "tinywebppreview_transparent"
                     )
-                attachment.append(url)
+                attachments.append(url)
                 message.content = message.content.replace(url, "")
             else:
                 not_grabbed.append(url)
@@ -294,15 +294,16 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         if message.attachments and len(message.attachments) > 0:
             for x in message.attachments:
                 if has_inside(x.url, image_types):
-                    attachment.append(x.url)
+                    attachments.append(x.url)
                 else:
                     not_grabbed.append(x.url)
 
-        if len(attachment) > 0:
+        if len(attachments) > 0:
             # FIXME: Images being queued and only loaded when the next @sonata happens
             # Handle message attachments
-            # FIXME: Images are not locked to the channel they are sent from. (e.g loaded no matter when the next request is made)
-            Sonata.config.set(images=attachment)
+            images = Sonata.config.get("images", {})
+            images[message.channel.id] = attachments
+            Sonata.config.set(images=images)
 
         if len(not_grabbed) > 0:
             message.content += f"\nAttachment: {not_grabbed}"
@@ -316,7 +317,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         # message_reference = await message.channel.fetch_message(
         #     message.reference.message_id
         # )
-        if message_reference_id == kelf.user.id:
+        if message_reference_id == self.user.id:
             if (
                 message.author.name in RESPONSES
                 or message.author.nick
@@ -332,15 +333,15 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
             else:
                 message.content += "0"
             message.content = f"${AI} " + message.content
-            await kelf.process_commands(message)
+            await self.process_commands(message)
             return
         #
-        # await kelf.process_commands(message)
+        # await self.process_commands(message)
         # return
 
     sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
     sonata_exp = re.compile(
-        f"<@{kelf.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
+        f"<@{self.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
         re.IGNORECASE,
     )
     if VALID_USER and sonata_exp.search(message.content):
@@ -357,7 +358,7 @@ async def chat_hook(Sonata, kelf: commands.Bot, message: discord.Message) -> Non
         else:
             message.content += "0"
 
-    await kelf.process_commands(message)
+    await self.process_commands(message)
 
 
 @M.effect("chat", "set", prepend=True)
@@ -454,48 +455,48 @@ CHANNEL_BLACKLIST = {
 
 
 @M.builder
-def chat(self: AI_Manager):
-    prompt_manager = self.prompt_manager
+def chat(sona: AI_Manager):
+    prompt_manager = sona.prompt_manager
 
     # TODO: Make way to translate history into proper chat log format for each AI
     # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645361
     #
     class Chat:
-        def get_chat(kelf, id):
-            chat = self.get("chat")
+        def get_chat(self, id):
+            chat = sona.get("chat")
             if chat.get(id) is None:
                 chat[id] = []
             return chat[id]
 
-        def summarize(kelf, id):
-            config = self.get("config")
+        def summarize(self, id):
+            config = sona.get("config")
             config["instructions"] = ""
 
-            summary = self.do("chat", "summarize", id, config)
+            summary = sona.do("chat", "summarize", id, config)
 
             def deleter():
-                kelf.delete(id)
-                kelf.send(id, "System", "PreviousChatSummary", summary, None)
+                self.delete(id)
+                self.send(id, "System", "PreviousChatSummary", summary, None)
 
             return summary, deleter
 
-        def send(kelf, id, message_type, author, message, replying_to=None):
-            chat = kelf.get_chat(id)
-            a = self.set("chat", id, message_type, author, message, replying_to)
-            if len(chat) > self.config.get("max_chats") + 1 and self.config.get(
+        def send(self, id, message_type, author, message, replying_to=None):
+            chat = self.get_chat(id)
+            a = sona.set("chat", id, message_type, author, message, replying_to)
+            if len(chat) > sona.config.get("max_chats") + 1 and sona.config.get(
                 "summarize"
             ):
-                kelf.summarize(id)[1]()  # Summarizes and deletes chat
+                self.summarize(id)[1]()  # Summarizes and deletes chat
             return a[3]
 
         def request(
-            kelf,
+            self,
             id,
             message: str,
             user_name: str,
             replying_to=None,
             *args,
-            AI=self.config.get("AI"),
+            AI=sona.config.get("AI"),
             error_prompt=None,
             **config,
         ):
@@ -503,17 +504,19 @@ def chat(self: AI_Manager):
             # They are accessed in config['images']
             # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645315
             response = None
-            chat_history = kelf.get_history(id)
+            chat_history = self.get_history(id)
             new_c = {}
-            c = self.get("config")
+            c = sona.get("config")
             new_c.update(c)
             new_c["history"] = chat_history
             new_c["instructions"] = prompt_manager.get_instructions()
             new_c["channel_id"] = id
+            # Get Images for this channel
+            new_c["images"] = sona.config.get("images").get(id, None)
             new_c.update(config)
             try:
                 if "using_assistant" not in new_c and prompt_manager.exists("History"):
-                    response = self.do(
+                    response = sona.do(
                         "chat",
                         "request",
                         prompt_manager.prompts["History"](chat_history)
@@ -526,7 +529,7 @@ def chat(self: AI_Manager):
                         config=new_c,
                     )
                 else:
-                    response = self.do(
+                    response = sona.do(
                         "chat",
                         "request",
                         prompt_manager.prompts["MessageAssistant"],
@@ -537,11 +540,11 @@ def chat(self: AI_Manager):
                         config=new_c,
                     )
 
-                kelf.send(id, "Bot", self.name, response, replying_to)
+                self.send(id, "Bot", sona.name, response, replying_to)
                 # HACK: This is a hack to get the images from the config to clear
-                c["images"] = None
-                self.config.set(images=None)
-                self.memory["config"]["value"]["images"] = None
+                c.get("images", {})[id] = None
+                sona.config.get().get("images", {})[id] = None
+                sona.memory["config"]["value"].get("images", {})[id] = None
                 return response
             except Exception as e:
                 # if error_prompt is not None:
@@ -554,11 +557,11 @@ def chat(self: AI_Manager):
                 #         )
                 # else:
                 response = f"{e}"
-                kelf.send(id, "Bot", self.name, response, replying_to)
+                self.send(id, "Bot", sona.name, response, replying_to)
                 return response
 
         def get_history(
-            kelf,
+            self,
             chat_id,
             human_messages=None,
             ai_messages=None,
@@ -569,12 +572,12 @@ def chat(self: AI_Manager):
                 and ai_messages is None
                 and system_messages is None
             ):
-                return kelf.get_chat(chat_id)
+                return self.get_chat(chat_id)
             else:
                 # human_messages: User, ai_messages: Bot, system_messages: System
                 return [
                     m
-                    for m in kelf.get_chat(chat_id)
+                    for m in self.get_chat(chat_id)
                     if m[0]
                     in [
                         human_messages and "User",
@@ -584,7 +587,7 @@ def chat(self: AI_Manager):
                 ]
 
         def delete(
-            kelf,
+            self,
             chat_id,
             human_messages=True,
             ai_messages=True,
@@ -595,10 +598,10 @@ def chat(self: AI_Manager):
                 and ai_messages is True
                 and system_messages is True
             ):
-                self.reset("chat", chat_id)
+                sona.reset("chat", chat_id)
             else:
                 # human_messages: User, ai_messages: Bot, system_messages: System
-                self.get("chat")[chat_id] = kelf.get_history(
+                sona.get("chat")[chat_id] = self.get_history(
                     chat_id, human_messages, ai_messages, system_messages
                 )
 
@@ -606,7 +609,9 @@ def chat(self: AI_Manager):
 
 
 def Summarize(M, id, config):
-    config["instructions"] = f"""Summarize the chat log in as little tokens as possible.
+    config[
+        "instructions"
+    ] = f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:
 - Mention people by name, not nickname.
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
