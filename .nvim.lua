@@ -5,11 +5,11 @@ local function set_env()
 end
 
 return {
-	theme = "catppuccin46",
+	theme = "vs-panda-moe",
+	-- theme = "aylin",
 	highlight = {
 		misc = { ["Constant"] = "bold" },
 	},
-	-- theme = "aylin",
 	ui = "dark",
 	run = "sonata",
 	font = {

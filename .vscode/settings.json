@@ -1,45 +1,29 @@
 {
-       "[javascript]": {
-              "editor.defaultFormatter": "vscode.typescript-language-features",
-              "editor.formatOnSave": true,
-       },
-       "editor.codeActionsOnSave": {
-              "source.organizeImports.biome": "explicit"
-       },
-       "workbench.colorTheme": "Default Dark Modern",
-       "editor.fontFamily": "Monaspace Krypton, Monolisa Nerd Font Mono, Jetbrains Mono, Comic Code, Comic Mono",
-       "editor.fontLigatures": "'calt', 'liga', 'dlig', 'ss01', 'ss02', 'ss03', 'ss04', 'ss05', 'ss06', 'ss07', 'ss08'",
-       "editor.fontSize": 14,
-       "shifty.shiftInterval.shiftFontFamilyIntervalMin": 0,
-       "shifty.shiftInterval.shiftColorThemeIntervalMin": 0,
-       // "editor.fontFamily": "'Monaspace  Xenon', monospace",
-       "editor.tokenColorCustomizations": {
-              "textMateRules": [
-                     {
-                            "scope": [
-                                   "keyword.other",
-                                   "entity.name.type",
-                                   "keyword.function",
-                                   "storage.type",
-                                   "support.type",
-                                   "support.constant",
-                                   "constant.language",
-                            ],
-                            "settings": {
-                                   "fontStyle": "bold"
-                            }
-                     },
-                     {
-                            "scope": [
-                                   "meta.function",
-                                   "support.type.property-name",
-                                   "keyword.operator.logical.js",
-                                   "keyword.control.conditional.js",
-                            ],
-                            "settings": {
-                                   "fontStyle": ""
-                            }
-                     }
-              ]
-       }
+  "deno.lint": true,
+  "deno.unstable": [
+    "bare-node-builtins",
+    "byonm",
+    "sloppy-imports",
+    "unsafe-proto",
+    "webgpu",
+    "broadcast-channel",
+    "worker-options",
+    "cron",
+    "kv",
+    "ffi",
+    "fs",
+    "http",
+    "net"
+  ],
+  "typescript.format.enable": true,
+  "json.format.enable": true,
+  "[typescript]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "denoland.vscode-deno"
+  },
+  "editor.formatOnSave": true,
+  "editor.formatOnPaste": true,
+  "deno.enable": true,
 }
