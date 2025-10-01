@@ -24,8 +24,10 @@ for plugin in os.listdir(os.path.dirname(__file__)):
                 PLUGINS_DICT[module.__plugin_name__] = module
 
 
-# Sort the plugins by their dependencies using topological sort
 def sort_plugins():
+    """
+    Sort the plugins by their dependencies using topological sort
+    """
     in_degree = defaultdict(int)
     graph = defaultdict(list)
     sorted_plugins = []
@@ -57,6 +59,9 @@ def sort_plugins():
 
 
 def PLUGINS(extend: list = None, mode: str = "allow", **kwags):
+    """
+    Get the list of enabled plugins based on extend and kwags
+    """
     plugins = PLUGINS_LIST.copy()
     included_plugins = set(plugin.__plugin_name__ for plugin in plugins)
 
@@ -86,9 +91,11 @@ def PLUGINS(extend: list = None, mode: str = "allow", **kwags):
     # Ensure dependencies are respected and added only if their dependents are included
     resolved_plugins = []
     dependencies_map = {
-        plugin.__plugin_name__: set(plugin.__dependencies__)
-        if "__dependencies__" in plugin.__dict__
-        else set()
+        plugin.__plugin_name__: (
+            set(plugin.__dependencies__)
+            if "__dependencies__" in plugin.__dict__
+            else set()
+        )
         for plugin in PLUGINS_DICT.values()
     }
 

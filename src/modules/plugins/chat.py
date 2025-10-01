@@ -16,11 +16,9 @@ Also, it provides a way to send messages to a specific channel or user.
 # Message class will also have translators to convert to differe ai api chat history formats
 
 import copy
-from urllib.parse import urljoin
 
 import discord
 from discord.ext import commands
-from google.generativeai.types import Model
 
 from modules.AI_manager import AI_Manager
 from modules.utils import (
@@ -29,7 +27,6 @@ from modules.utils import (
     async_cprint as cprint,
     cstr,
     get_full_name,
-    runner,
     setter,
     settings,
     has_inside,
@@ -40,7 +37,7 @@ from modules.utils import (
 import random
 import re
 
-L, M, P = AI_Manager.init(
+_, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
         "max_chats": 50,
@@ -61,8 +58,9 @@ Hooks    -----------------------------------------------------------------------
 
 
 # TODO: Make new hook system for general hooks that can b iterated on in the main loop
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645122
 async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
+    """Handle direct messages (DMs) sent to the bot"""
     AI = Sonata.config.get("auto")
     # AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
@@ -139,21 +137,60 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
     # Add way to convert any image link into same system as attched images
-    # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645315
+    # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645315
+    #
     #
     # Handle message attachments
-    image_types = ["png", "jpg", "jpeg", "webp"]
-    if message.attachments and not message.author.bot and len(message.attachments) > 0:
-        # attachment = [x.url for x in message.attachments]
-        attachment = []
-        not_grabbed = []
-        for x in message.attachments:
-            if has_inside(x.url, image_types):
-                attachment.append(x.url)
-            else:
-                not_grabbed.append(x.url)
+    #
+    # image_types = ["png", "jpg", "jpeg", "webp"]
+    # if message.attachments and not message.author.bot and len(message.attachments) > 0:
+    #     # attachment = [x.url for x in message.attachments]
+    #     attachment = []
+    #     not_grabbed = []
+    #     for x in message.attachments:
+    #         if has_inside(x.url, image_types):
+    #             attachment.append(x.url)
+    #         else:
+    #             not_grabbed.append(x.url)
+    #
+    #     Sonata.config.set(images=attachment)
+    #     if len(not_grabbed) > 0:
+    #         message.content += f"\nAttachment: {not_grabbed}"
+    # attachment = message.attachments[0].url
+    # if attachment:
+    #     message.content += f"\nAttachment: {attachment}"
 
-        Sonata.config.set(images=attachment)
+    if not message.author.bot:
+        attachments = []
+        not_grabbed = []
+        image_types = ["png", "jpg", "jpeg", "webp"]
+
+        urls = re.findall(r"http\S+", message.content)
+        for url in urls:
+            if has_inside(url, image_types):
+                if "tenor.com" in url:
+                    url = tenor_get_dl_url(
+                        url, settings.TENOR_G, "tinywebppreview_transparent"
+                    )
+                attachments.append(url)
+                message.content = message.content.replace(url, "")
+            else:
+                not_grabbed.append(url)
+
+        if message.attachments and len(message.attachments) > 0:
+            for x in message.attachments:
+                if has_inside(x.url, image_types):
+                    attachments.append(x.url)
+                else:
+                    not_grabbed.append(x.url)
+
+        if len(attachments) > 0:
+            # FIXME: Images being queued and only loaded when the next @sonata happens
+            # Handle message attachments
+            images = Sonata.config.get("images", {})
+            images[message.channel.id] = attachments
+            Sonata.config.set(images=images)
+
         if len(not_grabbed) > 0:
             message.content += f"\nAttachment: {not_grabbed}"
         # attachment = message.attachments[0].url
@@ -166,6 +203,7 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
 
 
 async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
+    """Handle messages sent in guild channels"""
     AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
@@ -177,13 +215,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         or not message.author.bot
     )
 
-    if (
-        message.author.bot
-        and message.author.name != "sonata"
-        and (
-            message.author.name not in WHITELIST and message.author.id not in WHITELIST
-        )
-    ):
+    if message.author.bot and message.author.name != "sonata" and not VALID_USER:
         # cprint(f"Ignoring: {message.author.id}: {message.content}", "red")
         return
 
@@ -333,7 +365,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             else:
                 message.content += "0"
             message.content = f"${AI} " + message.content
-            await self.process_commands(message)
+            await self.process_commands(message, bot_whitelist=WHITELIST)
             return
         #
         # await self.process_commands(message)
@@ -358,11 +390,12 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         else:
             message.content += "0"
 
-    await self.process_commands(message)
+    await self.process_commands(message, bot_whitelist=WHITELIST)
 
 
-@M.effect("chat", "set", prepend=True)
+@MANAGER.effect("chat", "set", prepend=True)
 def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
+    """Effect to censor messages before storing them in chat history"""
     return (
         chat_id,
         message_type,
@@ -380,6 +413,9 @@ Helper Functions ---------------------------------------------------------------
 async def __chat(
     M, bot, channel_id, message, dm=False, replying_to=None, ping=False, save=True
 ):
+    """
+    Send a message to a specific channel or user, with options for DM, replying, and saving
+    """
     if replying_to is not None:
         await replying_to.reply(message, mention_author=ping)
     elif dm:
@@ -438,14 +474,15 @@ BANNED_WORDS = {
     "suck my",
     "suck me",
     "bitch",
+    "ME OFF",
 }
 
-# TODO: Convert channel blacklist into more ergonomic thing
+# TODO: Convert channel blacklist into more ergonomic thingy
 # 1. Should control if bot can speak in
 # 2. Should control if bot speaks to all messages or just invokations
 # 3. Should control what commands bot can do
 # etc
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645262
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645262
 CHANNEL_BLACKLIST = {
     # 743280190452400159,
     1175907292072398858,
@@ -454,21 +491,26 @@ CHANNEL_BLACKLIST = {
 }
 
 
-@M.builder
+@MANAGER.builder
 def chat(sona: AI_Manager):
+    """
+    Chat plugin for handling messages and interactions
+    """
     prompt_manager = sona.prompt_manager
 
     # TODO: Make way to translate history into proper chat log format for each AI
-    # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645361
+    # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645361
     #
     class Chat:
         def get_chat(self, id):
+            """Retrieve the chat history for a given chat ID."""
             chat = sona.get("chat")
             if chat.get(id) is None:
                 chat[id] = []
             return chat[id]
 
         def summarize(self, id):
+            """Summarize the chat history for a given chat ID and provide a deleter function."""
             config = sona.get("config")
             config["instructions"] = ""
 
@@ -481,13 +523,21 @@ def chat(sona: AI_Manager):
             return summary, deleter
 
         def send(self, id, message_type, author, message, replying_to=None):
+            """Send a message to a specific chat ID and store it in the chat history."""
             chat = self.get_chat(id)
+            # Adds message to chat history + mutates by any effects e.g censoring
             a = sona.set("chat", id, message_type, author, message, replying_to)
-            if len(chat) > sona.config.get("max_chats") + 1 and sona.config.get(
-                "summarize"
-            ):
-                self.summarize(id)[1]()  # Summarizes and deletes chat
-            return a[3]
+
+            try:
+                if len(chat) > sona.config.get("max_chats") + 1 and sona.config.get(
+                    "summarize"
+                ):
+                    self.summarize(id)[1]()  # Summarizes and deletes chat
+            except Exception as e:
+                print(f"Error in chat send: {e}")
+                return a[3]
+
+            return a[3]  # Return the message sent
 
         def request(
             self,
@@ -500,9 +550,10 @@ def chat(sona: AI_Manager):
             error_prompt=None,
             **config,
         ):
+            """Request a response from the AI for a given message and chat ID."""
             # TODO: Add way to store attachments since can send them in message now
             # They are accessed in config['images']
-            # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645315
+            # https://github.com/users/blaqat/projects/1/views/1?pane=issue&itemId=65645315
             response = None
             chat_history = self.get_history(id)
             new_c = {}
@@ -512,7 +563,7 @@ def chat(sona: AI_Manager):
             new_c["instructions"] = prompt_manager.get_instructions()
             new_c["channel_id"] = id
             # Get Images for this channel
-            new_c["images"] = sona.config.get("images").get(id, None)
+            new_c["images"] = sona.config.get("images", {}).get(id, None)
             new_c.update(config)
             try:
                 if "using_assistant" not in new_c and prompt_manager.exists("History"):
@@ -547,15 +598,6 @@ def chat(sona: AI_Manager):
                 sona.memory["config"]["value"].get("images", {})[id] = None
                 return response
             except Exception as e:
-                # if error_prompt is not None:
-                #     response = prompt_manager.send(
-                #         str(error_prompt(e, message)), AI=AI, config=new_c
-                #     )
-                #     if response is None:
-                #         response = (
-                #             f"Response failed in using the error prompt silly :3: {e}"
-                #         )
-                # else:
                 response = f"{e}"
                 self.send(id, "Bot", sona.name, response, replying_to)
                 return response
@@ -617,7 +659,7 @@ Use the following guidelines:
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
 - If there is a PreviousChatSummary, include it as much as possible into the new summary as it will be replaced with this afterwards.
 """
-    return P.send(
+    return PROMPT_MANAGER.send(
         lambda chat: f"""Chat Log: {chat}""",
         M["value"][id],
         AI=config["AI"],
@@ -625,16 +667,14 @@ Use the following guidelines:
     )
 
 
-@M.mem(
+# Chat Plugin Instantiation
+@MANAGER.mem(
     {},
     default_value=[],
     banned_words=BANNED_WORDS,
     black_list=CHANNEL_BLACKLIST,
     r=lambda M, chat_id: setter(M["value"], chat_id, copy.deepcopy(M["default_value"])),
-    request=lambda _, *args, **kwargs: P.send(*args, **kwargs),
-    # summarize=lambda M, id, config: P.send(
-    #     "SummarizeChat", M["value"][id], AI=config["AI"], config=config
-    # ),
+    request=lambda _, *args, **kwargs: PROMPT_MANAGER.send(*args, **kwargs),
     summarize=Summarize,
     validate=lambda M, id: id in M["black_list"],
     blacklist=lambda M, id: M["black_list"].add(id),
@@ -654,7 +694,7 @@ Prompts    ---------------------------------------------------------------------
 """
 
 
-@M.prompt
+@MANAGER.prompt
 def OldSummarizeChat(chat_log):
     return f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:

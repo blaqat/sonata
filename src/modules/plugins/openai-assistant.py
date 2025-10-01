@@ -1,4 +1,5 @@
 """
+[DEPRECATED]
 OpenAI-Assistant
 ----------------
 This plugin is basically a wrapper for the assistant API.
@@ -17,7 +18,7 @@ from modules.AI_manager import AI_Manager
 import json
 import re
 
-L, M, P = AI_Manager.init(
+CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={"using_assistant": True},
 )
@@ -87,7 +88,7 @@ Setup    -----------------------------------------------------------------------
 """
 
 
-@M.mem(
+@MANAGER.mem(
     {},
     s=lambda M, channel_id, thread_id: setter(M["value"], channel_id, thread_id),
 )
@@ -102,9 +103,9 @@ def validate_thread(STORE, channel_id):
     return STORE["value"][channel_id]
 
 
-@M.builder
+@MANAGER.builder
 def chat_assistant(self: AI_Manager):
-    openai = L.config.get("ai_types")["Assistant"].client
+    openai = CONTEXT.config.get("ai_types")["Assistant"].client
     local_beacon = self.beacon.branch("assistant")
 
     class Assistant:
@@ -116,7 +117,7 @@ def chat_assistant(self: AI_Manager):
             kelf.using = True
             kelf.init(
                 openai,
-                instructions=P.get_instructions(),
+                instructions=PROMPT_MANAGER.get_instructions(),
                 model="gpt-4o",
             )
 
@@ -203,7 +204,7 @@ Prompts    ---------------------------------------------------------------------
 """
 
 
-@M.prompt
+@MANAGER.prompt
 def Instructions():
     return f"""You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use the provided functions to get info or perform actions.
 
@@ -231,10 +232,10 @@ Attributes:
 """
 
 
-P.set_instructions(prompt_name="Instructions")
+PROMPT_MANAGER.set_instructions(prompt_name="Instructions")
 
 
-@M.on_load
+@MANAGER.on_load
 def on_load(self: AI_Manager):
     global BEACON
     BEACON = self.beacon.branch("assistant")

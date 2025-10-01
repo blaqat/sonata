@@ -19,7 +19,6 @@ Can also create island folders to save data in.
 
 from modules.utils import (
     async_cprint as cprint,
-    async_print as print,
 )
 from modules.AI_manager import AI_Manager
 from typing import Literal
@@ -28,7 +27,7 @@ import pickle
 import os
 import shutil
 
-L, M, P = AI_Manager.init(lazy=True)
+_, MANAGER, PROMPT_MANAGER = AI_Manager.init(lazy=True)
 __plugin_name__ = "beacon"
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
@@ -36,6 +35,7 @@ SaveType = Literal["m", "c", None]
 
 
 def can_delete_folder(folder_path):
+    """Check if a folder is empty or contains only .p files"""
     # Check if the folder is empty or contains .p files
     for _, dirs, files in os.walk(folder_path):
         if not files and not dirs:
@@ -46,9 +46,12 @@ def can_delete_folder(folder_path):
     return False
 
 
-@M.builder
+@MANAGER.builder
 def beacon(sonata: AI_Manager):
+    """Beacon plugin for saving and loading data to/from files"""
+
     def parse_save_type(name, d, t):
+        """Parse the save type and return the appropriate data"""
         if t == "m":
             if type(d) == dict:
                 return sonata.get(name, **d)
@@ -66,11 +69,12 @@ def beacon(sonata: AI_Manager):
     # Can also make an ecrypted branch that always encrypts
     # branch(path: str, encrypted: bool = False)
     # guide(..., encrypted: bool = False)
-    # https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645000
+    # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645000
     class Beacon:
         home: str  # The home folder where things are saved
 
         def __init__(self, path: str = "beacon-mainland"):
+            """Initialize the Beacon with a home folder"""
             self.light_house(path, True)
 
         def island(self, path: str, home=False):

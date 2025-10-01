@@ -26,7 +26,7 @@ AI_TYPES = {"default": None, "recent": None}
 
 
 # TODO: Add tags to the AI_Type class e.g "audio", "text", "vision", "search", etc.
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645057
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645057
 class AI_Type:
     can_start = False
 
@@ -72,7 +72,7 @@ class AI_Error(Exception):
 # TODO: Using recent is not exactly what I want, I want to have model types.
 # If reuesting something with an image should default to the most recent model with vision
 # Types can be: Audio, Text, Vision, Search, etc.
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645057
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645057
 def generic_ai_prompt(ai_type: AI_Type | str, prompt_text, model=None, config={}):
     if isinstance(ai_type, str):
         ai_type = AI_TYPES.get(ai_type, None)
@@ -280,7 +280,9 @@ class AI_Manager:
             cls.MEMORY = aim.memory
 
         @classmethod
-        def ai(cls, client=None, setup=Callable, default=False, key=None, **kwargs):
+        def register_ai(
+            cls, client=None, setup=Callable, default=False, key=None, **kwargs
+        ):
             def decorator(func):
                 name = func.__name__
                 # print(client, func, kwargs)

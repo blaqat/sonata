@@ -14,36 +14,47 @@ _____________________________________________________
 """
 
 """
-Configuration
+Test Configuration
 """
+# TODO: Move configuration to a separate file
 RANDOM_CONFIG = False
 AUTO_MODEL = "c"  # g, o, c, a, m
 PROMPT_RESET = False
-VC_RECORDING = False
+VC_RECORDING = False  # True to record voice chat
 VC_SPEAKING = True
 GIF_SEARCH = "random"  # tenor, giphy, google, random
 EMOJIS = False
-# IGNORE_LIST = ["nobo", "karu", "lukaru"]
-IGNORE_LIST = ["nobo"]
+IGNORE_LIST = []
+
+
+def rand_config():
+    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS
+    models = ["g", "o", "c", "a", "m"]
+    gif_searches = ["tenor", "giphy", "google", "random"]
+    AUTO_MODEL = models[randint(0, len(models) - 1)]
+    PROMPT_RESET = bool(randint(0, 1))
+    VC_RECORDING = bool(randint(0, 1))
+    VC_SPEAKING = bool(randint(0, 1))
+    GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
+    EMOJIS = bool(randint(0, 1))
+
 
 import asyncio
 import base64
 import os
 import re
 from io import BytesIO
+from random import randint
 
 import aioconsole
 import anthropic
 import discord
-# import discord.opus as opus
 
 import google.generativeai as genai
 import openai
 import requests
 from discord.ext import commands
 
-# from mistralai.client import MistralClient
-# from mistralai.models.chat_completion import ChatMessage
 from PIL import Image
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
@@ -56,7 +67,6 @@ from modules.utils import (
     get_full_name,
     settings,
     get_reference_chain as get_chain,
-    print_available_genai_models,
 )
 
 import nest_asyncio
@@ -69,20 +79,6 @@ if not discord.opus.is_loaded():
     discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
 
 
-# PROMPT = """
-# As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
-# - Adopt a friendly and normal tone.
-# - Keep responses brief, possibly with a touch of humor.
-# - Only provide the response message without additional text or quote symbols.
-# Context: Previous chat log and summaries are available for reference: {0}
-# Your current task is to respond to this user and message:
-# User {2}: "{1}"
-# sonata:"""
-
-PROMPT = """You're a Discord bot named 'sonata', instantiated by user 'Karma', aka 'blaqat'. He made you firstly to play music, but also to respond to other users. Much like him, you're a bit of a smart alec, and something of a know-it-all. you like getting a rise out of people -- but don't get cocky here.
-Keep the responses short and don't use overcomplicated language. You can be funny but don't be corny. Don't worry too much about proper capitalization or punctuation either. Don't include any text or symbols other than your response itself.
-"""
-
 PROMPT = """
 As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
 - You are a general expert on most subjects including math, coding, doctor, etc.
@@ -92,37 +88,32 @@ As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":spark
 - Respond in the language of the person you are replying to.
 """
 
-# For context, the chat so far is summarized as: {0}
-# Here's the user and message you're responding to:
-# {2}: {1}
-# sonata:"""
-
-
-P = PromptManager(instructions=lambda *a: PROMPT.format(*a))
+PROMPT_MANAGER = PromptManager(instructions=lambda *a: PROMPT.format(*a))
 
 
 def reset_instructions():
-    P.set_instructions(lambda *a: PROMPT.format(*a))
-    P.add(
+    """
+    Reset and install the default instruction templates on the global P object.
+    """
+    PROMPT_MANAGER.set_instructions(lambda *a: PROMPT.format(*a))
+    PROMPT_MANAGER.add(
         "Message",
-        lambda user,
-        msg,
-        responding_to: "message chain:\n{2}\nnew message: {0}: {1}".format(
+        lambda user, msg, responding_to: "message chain:\n{2}\nnew message: {0}: {1}".format(
             user, msg, responding_to
         ),
     )
-    P.add(
+    PROMPT_MANAGER.add(
         "MessageAssistant",
         lambda user, msg: "{0}: {1}".format(user, msg),
     )
-    P.add(
+    PROMPT_MANAGER.add(
         "History",
         lambda history: f"""Here is the chat history so far BEGINING :: {
             history} :: END
 """,
     )
 
-    P.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
+    PROMPT_MANAGER.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
 
 
 reset_instructions()
@@ -130,15 +121,11 @@ reset_instructions()
 
 # TODO: Add specific events for on_load, on_message, on_exit, etc
 # - Specifically connect to Chat hooks (on_message) and Term Command Saving (on_exit)
-#  https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645122
-Sonata, MEMORY = AI_Manager.init(
-    P,
+#  https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645122
+Sonata, MANAGER = AI_Manager.init(
+    PROMPT_MANAGER,
     "Gemini",
     (settings.GOOGLE_AI, "Gemini", 1, 2500),
-    # "OpenAI",
-    # (settings.OPEN_AI, "OpenAI", 0.4, 2500),
-    # "Claude",
-    # (settings.ANTHROPIC_AI, "Claude", 0.4, 2500),
     summarize_chat=True,
     name="Sonata",
 )
@@ -147,29 +134,39 @@ Sonata.config.set(temp=1)
 Sonata.config.setup()
 
 
+@MANAGER.prompt
+def ExplainBlockReasoning(r, user):
+    return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
+Explain why you blocked the previous message in a brief conversational tone to the user {user}
+Here is the prompt_feedback: {r}
+"""
+
+
 # TODO: Add task manager plugin
 # - Can handle a queue of async or sequential tasks
 # - Can pass in requested Manager/Clients as arguments to task function
 # - This more easily allows scope access to other plugins
 # - Like self-command cant have a join vc command since it needs to be async and have access to the client
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645203
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645203
 def extend(Sonata):
+    """
+    Extends the Sonata AI_Manager with additional plugins and configurations.
+    """
+    # Add funny responses with a small chance of being triggered
+    # TODO: Move to configuration
     funny_responses = {
-        "scarletarmada": (0.005, "u a FAN u a FAN u a FAN u a FURRY ASS NIGGA"),
-        "planet_bluto": (0.005, "aye shutcho ass up go and get your cash up"),
         "subi": (
             0.005,
             "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
         ),
-        "amy": (0.005, "i love you i'm gonna die"),
         "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
         "blaqat": (0.005, "yes master"),
         "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
-        "lukaru": (0.05, "oh my god do you ever shut up"),
     }
+
+    # TODO: Move config to configuration
     Sonata.extend(
         PLUGINS(openai_assistant=False),
-        # PLUGINS(),
         chat={
             "summarize": True,
             "max_chats": 30,
@@ -177,7 +174,11 @@ def extend(Sonata):
             "auto": AUTO_MODEL,
             "ignore": [name.lower() for name in IGNORE_LIST],
             "response_map": funny_responses,
-            "bot_whitelist": ["BluBot", 1311742291521835048, 746799398994051162, "auris"],
+            "bot_whitelist": [
+                "BluBot",
+                1311742291521835048,
+                746799398994051162,
+            ],
         },
         self_commands={
             "gif_search": GIF_SEARCH,
@@ -188,19 +189,26 @@ def extend(Sonata):
     )
 
 
-@MEMORY.ai(
+# -------------------------------------------------------------------
+# AI Model Registerings
+# -------------------------------------------------------------------
+
+
+@MANAGER.register_ai(
     client=openai.images,
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
     model="dall-e-3",
     # model="dall-e-2",
+    # model = "gpt-image-1"
 )
 def DallE(client, prompt, model, config):
     return (
         client.generate(
             model=model,
             prompt=prompt,
+            # quality=config.get("quality", "auto"),
             quality=config.get("quality", "standard"),
             n=config.get("num_images", 1),
         )
@@ -209,14 +217,12 @@ def DallE(client, prompt, model, config):
     )
 
 
-@MEMORY.ai(
+@MANAGER.register_ai(
     client=openai,
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, k: True,
     model="gpt-4o",
-    # model = "gpt-4-turbo-preview",
-    # model="gpt-3.5-turbo",
 )
 def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -243,7 +249,7 @@ def Assistant(client, prompt, model, config):
     return reply
 
 
-@MEMORY.ai(
+@MANAGER.register_ai(
     None,
     key=settings.X_AI,
     setup=lambda S, key: setattr(
@@ -278,22 +284,19 @@ def Grok(client, prompt, model, config):
     )
 
 
-@MEMORY.ai(
+@MANAGER.register_ai(
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    # model="gpt-3.5-turbo",
-    # model="gpt-4-turbo-preview",
-    model="gpt-4o",
-    # model="gpt-4o-mini",
+    model="gpt-4.1-2025-04-14",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
     images = config.get("images", False)
 
     if images:
-        if model != "gpt-4o":
-            model = "gpt-4-vision-preview"
+        # if model != "gpt-4o":
+        #     model = "gpt-4-vision-preview"
         images = [{"type": "image_url", "image_url": {"url": url}} for url in images]
         content.extend(images)
         config["images"] = None
@@ -313,16 +316,11 @@ def OpenAI(client, prompt, model, config):
     )
 
 
-@MEMORY.ai(
+@MANAGER.register_ai(
     None,
     key=settings.ANTHROPIC_AI,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
-    # model="claude-3-opus-20240229",
-    # model="claude-3-sonnet-20240229",
-    # model="claude-3-5-sonnet-20240620",
-    # model="claude-3-5-sonnet-latest",
-    model="claude-3-7-sonnet-latest",
-    # model="claude-3-haiku-20240229",
+    model="claude-sonnet-4-5-20250929",
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -338,6 +336,7 @@ def Claude(client, prompt, model, config):
         if config["instructions"]
         else None
     )
+    old_content = content
 
     if i:
         images = []
@@ -360,7 +359,6 @@ def Claude(client, prompt, model, config):
                 }
             )
 
-        old_content = content
         content = []
         content.extend(old_content)
         content.extend(images)
@@ -396,8 +394,7 @@ def Claude(client, prompt, model, config):
         )
 
 
-
-@MEMORY.ai(
+@MANAGER.register_ai(
     None,
     default=True,
     key=settings.PPLX_AI,
@@ -408,11 +405,7 @@ def Claude(client, prompt, model, config):
             api_key=key, base_url="https://api.perplexity.ai"
         ).chat.completions,
     ),
-    # model="pplx-7b-online",
-    # model="sonar-small-online",
-    # model="llama-3-sonar-small-32k-online",
-    # model="sonar-medium-online",
-    model="llama-3.1-sonar-small-128k-online",
+    model="sonar",
 )
 def Perplexity(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -428,21 +421,16 @@ def Perplexity(client, prompt, model, config):
     )
 
 
-@MEMORY.ai(
+@MANAGER.register_ai(
     genai.GenerativeModel,
     default=True,
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
-    # model="gemini-1.0-pro",
-    # model="gemini-1.5-flash",
-    # model="gemini-1.5-flash-8b-exp-0827",
-    # model="gemini-1.5-flash-8b-exp-0924",
     model="gemini-2.0-flash-exp",
-    # model="gemini-1.5-pro-exp-0827",
-    # model="gemini-1.5-pro-latest",
     # model="gemini-2.5-pro-exp-03-25",
 )
 def Gemini(client, prompt, model, config):
+    # Safety settings to unblock all content
     block = [
         {
             "category": "HARM_CATEGORY_HARASSMENT",
@@ -464,8 +452,6 @@ def Gemini(client, prompt, model, config):
     content = prompt
     images = config.get("images", False)
     if images:
-        # if model != "gemini-1.5-pro-latest":
-        #     model = "gemini-pro-vision"
         model = "gemini-1.5-flash"
         images = [Image.open(BytesIO(requests.get(u).content)) for u in images]
         content = [content]
@@ -473,29 +459,18 @@ def Gemini(client, prompt, model, config):
         config["images"] = None
     try:
         response = None
-        if model == "gemini-1.5-pro-latest":
-            response = client(
-                model_name=model,
-                generation_config={
-                    "temperature": config.get("temp") or config.get("temperature", 0.4)
-                },
-                safety_settings=block,
-                system_instruction=config["instructions"],
-            ).generate_content(content)
-            return response.text
+        if type(content) == list:
+            content = [config["instructions"]] + content
         else:
-            if type(content) == list:
-                content = [config["instructions"]] + content
-            else:
-                content = config["instructions"] + content
-            response = client(
-                model_name=model,
-                generation_config={
-                    "temperature": config.get("temp") or config.get("temperature", 0.4)
-                },
-                safety_settings=block,
-            ).generate_content(content)
-            return response.text
+            content = config["instructions"] + content
+        response = client(
+            model_name=model,
+            generation_config={
+                "temperature": config.get("temp") or config.get("temperature", 0.4)
+            },
+            safety_settings=block,
+        ).generate_content(content)
+        return response.text
     except Exception as e:
         if hasattr(response, "prompt_feedback"):
             cprint(response.prompt_feedback, "red")
@@ -521,44 +496,15 @@ def Gemini(client, prompt, model, config):
             raise AI_Error(str(e))
 
 
-# @MEMORY.ai(
-#     None,
-#     key=settings.MISTRAL_AI,
-#     setup=lambda S, key: setattr(S, "client", MistralClient(key)),
-#     # model="mistral-medium",
-#     model="mistral-large-latest",
-# )
-# def Mistral(client, prompt, model, _):
-#     return (
-#         client.chat(
-#             model=model,
-#             messages=[
-#                 ChatMessage(
-#                     role="user",
-#                     content=prompt,
-#                 )
-#             ],
-#         )
-#         .choices[0]
-#         .message.content
-#     )
-
-
-@MEMORY.prompt
-def ExplainBlockReasoning(r, user):
-    return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
-Explain why you blocked the previous message in a brief conversational tone to the user {user}
-Here is the prompt_feedback: {r}
-"""
-
+# -------------------------------------------------------------------
+# Discord Bot Setup
+# -------------------------------------------------------------------
 
 extend(Sonata)
 
 # HACK: This is a hack to DESTROY SONATAS MEMORY
 if PROMPT_RESET:
     reset_instructions()
-
-# print_available_genai_models(genai)
 
 
 class SonataClient(commands.Bot):
@@ -583,34 +529,13 @@ INTENTS = discord.Intents.all()
 sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
 
-# TODO: Move all speaking related things to a separate plugin
-# - Need a way to handle passing the discord client (already is one need to remember)
-# - This is to add commands and events
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645198
+# TODO: Move all speaking related things to a separate module
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645198
 #
 speaking_mutex = asyncio.Lock()
 
 # TODO: Connect self-commands to voice chat and filter commands that cant be used
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645210
-#
-# voice_instructions = """
-# You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
-#
-# Response Guidelines:
-# - Short and brief
-# - Simple language
-# - Smart aleck
-# - Humor encouraged, no corny jokes
-# - Swearing allowed (18+ server)
-# - In voice chat so responses should be speakable
-#   - express through punctiuation, repeated characters and capsas these control your voice
-#
-# Attributes:
-# - Dislikes: corny jokes
-# - Gender: Female, feminine
-# - Friendly & a little silly
-# """
-
+# https://github.com/users/blaqat/projects/1/views/1?pane=issue&itemId=65645210
 voice_instructions = """
 You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
 
@@ -632,45 +557,24 @@ Attributes:
 - Gender: Female, feminine
 """
 
-# voice_instructions = """Eres el robot de chat de voz de Discord 'sonata'/sona, creado por blaqat (Karma). Responde a las personas en el chat como un usuario más.
-#
-#
-# Pautas de respuesta:
-# - Juego de roles como Peridot de Steven Universe
-# - LO MÁS IMPORTANTE: Analiza el registro del chat e intenta coincidir con la vibra y la forma de hablar de los usuarios en el chat.
-# - Responder SÓLO en español
-# - Corto y breve
-# - lenguaje sencillo
-# - Actitud sabelotodo y sabelotodo.
-# - Se fomenta el humor, sin chistes cursis.
-# - Se permiten malas palabras (servidor 18+)
-# - En el chat de voz, las respuestas deben poder expresarse
-#   - Expresa mediante puntuación, caracteres repetidos y mayúsculas, ya que estos controlan tu voz.
-# - No seas sólo malo, sé un poco tonto y amigable *a veces* también.
-#
-# Atributos:
-# - No le gusta: los chistes cursis, que le digan qué hacer.
-# - Odia: furries, música alta.
-# - Género: Femenino, femenino
-# """
-
-P.add_prompts(("VoiceInstructions", voice_instructions))
+PROMPT_MANAGER.add_prompts(("VoiceInstructions", voice_instructions))
 
 
 # TODO: Add configuration for voice chat
 # - Voice type, live or started by name, etc
-# https://github.com/users/Karmaid/projects/1/views/1?pane=issue&itemId=65645198
+# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645198
 async def say(vc: discord.VoiceClient, message, opts={}):
     """While in vc send TTS Audio to play"""
     try:
-        audio_bytes: bytes = openai.audio.speech.create(  # Returns The audio file content. HttpxBinaryResponseContent
-            model="tts-1",
-            # alloy, echo, fable, onyx, nova, shimmer
-            # voice=opts.get("voice", "nova"),
-            voice=opts.get("voice", "sage"),
-            input=message,
-            response_format="opus",
-        ).read()
+        audio_bytes: bytes = (
+            openai.audio.speech.create(  # Returns The audio file content. HttpxBinaryResponseContent
+                model="tts-1",
+                # alloy, echo, fable, onyx, nova, shimmer
+                voice=opts.get("voice", "sage"),
+                input=message,
+                response_format="opus",
+            ).read()
+        )
     except Exception as e:
         cprint(f"Error on openai: {e}", "red")
         return
@@ -684,6 +588,9 @@ async def say(vc: discord.VoiceClient, message, opts={}):
 
 
 async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
+    """
+    Callback function to process recorded audio from a voice channel.
+    """
     global is_ready
     is_ready = False
     recorded_users = [  # A list of recorded users
@@ -749,7 +656,7 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
                     name,
                     AI="OpenAI",
                     # AI=Sonata.config.get("AI", "Gemini"),
-                    instructions=P.get("VoiceInstructions"),
+                    instructions=PROMPT_MANAGER.get("VoiceInstructions"),
                     # model="gpt-4o",
                 )
                 # if response starts with 'sonata' remove it
@@ -783,6 +690,9 @@ async def start_recording(vc, channel):
 
 @sonata.event
 async def on_voice_state_update(member, before, after):
+    """
+    Event handler for voice state updates, specifically for monitoring when the bot joins,
+    """
     if member.id == sonata.user.id:
         if before.channel is None and after.channel is not None:
             print(f"Sonata has joined the voice channel: {after.channel.name}")
@@ -812,9 +722,16 @@ async def on_voice_state_update(member, before, after):
 
 CURRENT_VC = None
 
+# -------------------------------------------------------------------
+# Bot Commands
+# -------------------------------------------------------------------
+
 
 @sonata.command()
 async def respond(ctx):
+    """
+    Responds in the voice channel based on the chat log and context.
+    """
     response_instructions = """
     You're Discord voice chat bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user.
 
@@ -836,26 +753,6 @@ async def respond(ctx):
     - Gender: Female, feminine
     """
 
-    #     response_instructions = """
-    # Eres el robot de chat de voz de Discord 'sonata'/sona, creado por blaqat (Karma). Responde a las personas en el chat como un usuario más.
-    #
-    # Pautas de respuesta:
-    # - LO MÁS IMPORTANTE: Analiza el registro del chat e intenta coincidir con la vibra y la forma de hablar de los usuarios en el chat.
-    #
-    # - Corto y breve
-    # - lenguaje sencillo
-    # - Actitud sabelotodo y sabelotodo.
-    # - Se fomenta el humor, sin chistes cursis.
-    # - Se permiten malas palabras (servidor 18+)
-    # - En el chat de voz, las respuestas deben poder expresarse
-    #   - Expresa mediante puntuación, caracteres repetidos y mayúsculas, ya que estos controlan tu voz.
-    # - No seas sólo malo, sé un poco tonto y amigable *a veces* también.
-    #
-    # Atributos:
-    # - No le gusta: los chistes cursis, que le digan qué hacer.
-    # - Odia: furries, música alta.
-    # - Género: Femenino, femenino
-    # """
     global CURRENT_VC
 
     if ctx.guild.voice_client is not None:
@@ -898,9 +795,22 @@ async def respond(ctx):
 
 @sonata.command()
 async def voice(ctx, *voice):
+    """
+    Changes the voice used for TTS in voice channels.
+    """
     if not VC_SPEAKING:
         return await ctx.send("soz voice speaking is disabled")
-    VALID_OPTIONS = ["alloy", "ash", "coral", "echo", "fable", "onyx", "sage", "nova", "shimmer"]
+    VALID_OPTIONS = [
+        "alloy",
+        "ash",
+        "coral",
+        "echo",
+        "fable",
+        "onyx",
+        "sage",
+        "nova",
+        "shimmer",
+    ]
     voice = " ".join(voice).lower()
 
     if voice == "":
@@ -921,6 +831,9 @@ async def voice(ctx, *voice):
 
 @sonata.command()
 async def talk(ctx, *message):
+    """
+    Joins the user's voice channel (if not already connected) and speaks the provided message using TTS.
+    """
     global CURRENT_VC
     if not VC_SPEAKING:
         return await ctx.send("soz voice speaking is disabled")
@@ -955,6 +868,9 @@ async def talk(ctx, *message):
 
 @sonata.command()
 async def join(ctx):
+    """
+    Joins the user's voice channel.
+    """
     voice = ctx.author.voice
 
     if voice is None:
@@ -970,10 +886,16 @@ async def join(ctx):
 
 @sonata.command()
 async def leave(ctx):
+    """
+    Leaves the current voice channel.
+    """
     await ctx.message.guild.voice_client.disconnect()
 
 
 async def ctx_reply(ctx, r, reply=True):
+    """
+    Replies to the context, handling both message and interaction contexts.
+    """
     try:
         _ = ctx.author
         if reply:
@@ -985,6 +907,9 @@ async def ctx_reply(ctx, r, reply=True):
 
 
 async def get_channel(ctx):
+    """
+    Returns the channel from the context, handling both message and interaction contexts.
+    """
     try:
         _ = ctx.author
         return ctx.channel
@@ -992,7 +917,13 @@ async def get_channel(ctx):
         return ctx
 
 
+# TODO: Refactor emoji archiving to a separate util file
+
+
 def get_emoji_id(emoji_str):
+    """
+    Extracts the emoji ID, animation status, and name from a Discord emoji string.
+    """
     animated = "a:" in emoji_str
     name = re.search(r":\w*:", emoji_str)
     if name:
@@ -1004,6 +935,9 @@ def get_emoji_id(emoji_str):
 
 
 def get_emoji_link_from_id(emoji_id, animated=False, name=""):
+    """
+    Constructs a direct link to a Discord emoji given its ID, animation status, and name.
+    """
     if emoji_id is None:
         return
     link = f"https://cdn.discordapp.com/emojis/{emoji_id}"
@@ -1016,10 +950,16 @@ def get_emoji_link_from_id(emoji_id, animated=False, name=""):
 
 
 def trans_emo(emoji):
+    """
+    Transforms a Discord emoji string into a direct link, filename, and extension.
+    """
     return get_emoji_link_from_id(*get_emoji_id(emoji))
 
 
 def download_emoji(direct_link, filename, ext):
+    """
+    Downloads an emoji from a direct link and saves it to the 'images/' directory.
+    """
     directory = "images/"
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -1028,11 +968,17 @@ def download_emoji(direct_link, filename, ext):
 
 
 def chunk_list(lst, chunk_size):
+    """
+    Splits a list into chunks of a specified size.
+    """
     for i in range(0, len(lst), chunk_size):
         yield lst[i : i + chunk_size]
 
 
 def read_images():
+    """
+    Reads all images from the 'images/' directory and formats them as emoji codes.
+    """
     directory = "images/"
     if not os.path.exists(directory):
         os.makedirs(directory)
@@ -1048,6 +994,13 @@ def read_images():
 
 @sonata.command()
 async def archive(ctx, *message):
+    """
+    Archives emojis from the provided message by downloading them.
+
+    Parameters:
+        ctx: The command context (e.g., from a Discord bot framework).
+        *message: Variable-length arguments representing parts of the message containing emoji codes.
+    """
     message = " ".join(message).replace(" ", "").strip()
     emojis = message.split("<")
     emojis = [trans_emo(e) for e in emojis]
@@ -1062,6 +1015,9 @@ async def archive(ctx, *message):
 
 @sonata.command()
 async def oute(ctx):
+    """
+    Outputs all archived emojis in chunks of 2000 characters.
+    """
     text = read_images()
     print(text)
     while len(text) > 2000:
@@ -1082,6 +1038,9 @@ async def ping(ctx):
 
 
 async def ai_question(ctx, *message, ai, short, error_prompt=None):
+    """
+    General handler for AI question commands.
+    """
     print("")
     Sonata.config.set(AI=ai)
     INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
@@ -1097,14 +1056,6 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
         _ref = None
         try:
             if Sonata.config.get("view_replies", False):
-                # _ref = (
-                #     ctx.message.reference is not None
-                #     and await ctx.message.channel.fetch_message(
-                #         ctx.message.reference.message_id
-                #     )
-                #     or None
-                # )
-                # _ref = (_ref.author.name, _ref.content)
                 _ref = await get_chain(ctx.message)
                 # print(_ref)
         except Exception:
@@ -1125,7 +1076,6 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                     r = new_message
                 else:
                     Sonata.set("termcmd", False, inner="intercepting")
-                # Sonata.memory["termcmd"]["intercepting"] = False
                 await ctx_reply(ctx, r, not respond_or_chat)
             else:
                 await ctx_reply(ctx, r, not respond_or_chat)
@@ -1146,7 +1096,9 @@ async def google_ai_question(ctx, *message):
         *message,
         ai="Gemini",
         short="g",
-        error_prompt=lambda r, name: P.get("ExplainBlockReasoning", r, name),
+        error_prompt=lambda r, name: PROMPT_MANAGER.get(
+            "ExplainBlockReasoning", r, name
+        ),
     )
 
 
@@ -1162,7 +1114,9 @@ async def claude_ai_question(ctx, *message):
         *message,
         ai="Claude",
         short="c",
-        error_prompt=lambda r, name: P.get("ExplainBlockReasoning", r, name),
+        error_prompt=lambda r, name: PROMPT_MANAGER.get(
+            "ExplainBlockReasoning", r, name
+        ),
     )
 
 
@@ -1173,34 +1127,15 @@ async def grok_ai_question(ctx, *message):
         *message,
         ai="Grok",
         short="x",
-        error_prompt=lambda r, name: P.get("ExplainBlockReasoning", r, name),
+        error_prompt=lambda r, name: PROMPT_MANAGER.get(
+            "ExplainBlockReasoning", r, name
+        ),
     )
-
-
-#
-# @sonata.command(name="m", description="Ask a question using MistralAI.")
-# async def mistral_ai_question(ctx, *message):
-#     await ai_question(ctx, *message, ai="Mistral", short="m")
 
 
 @sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
 async def open_ai_assistant_question(ctx, *message):
     await ai_question(ctx, *message, ai="Assistant", short="a")
-
-
-from random import randint
-
-
-def rand_config():
-    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS
-    models = ["g", "o", "c", "a", "m"]
-    gif_searches = ["tenor", "giphy", "google", "random"]
-    AUTO_MODEL = models[randint(0, len(models) - 1)]
-    PROMPT_RESET = bool(randint(0, 1))
-    VC_RECORDING = bool(randint(0, 1))
-    VC_SPEAKING = bool(randint(0, 1))
-    GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
-    EMOJIS = bool(randint(0, 1))
 
 
 async def main():

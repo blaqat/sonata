@@ -6,7 +6,6 @@ Inspired by the assistants functions from Openai Assistants endpoint.
 Also provides web access to the bot.
 """
 
-from asyncio import threads
 from modules.utils import (
     async_cprint as cprint,
     async_print as print,
@@ -22,8 +21,9 @@ from youtubesearchpython import VideosSearch
 from googleapiclient.discovery import build
 from nuvem_de_som import SoundCloud as sc
 from google_images_search import GoogleImagesSearch
+import re
 
-L, M, P = AI_Manager.init(
+CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
         "gif_search": "tenor",
@@ -37,15 +37,10 @@ __dependencies__ = ["chat"]
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
-# @M.effect("chat", "set", prepend=False)
-# def rem_blocked_user_msg(M, chat_id, message_type, author, message, replying_to=None):
-#     message = message if not inside(BLOCKED_USERS, author) else None
-#     return (chat_id, message_type, author, message, replying_to)
-import re
 
-
-@M.effect_post
+@MANAGER.effect_post
 def request_chat(_, message, **config):
+    """Check if the message contains a command and execute it"""
     # Regular expression to find commands prefixed with $
     command_pattern = re.compile(r"\$(\w+)\s*(.*)")
 
@@ -58,10 +53,10 @@ def request_chat(_, message, **config):
         cprint(f"ARGS {' '.join(args)}", "purple")
 
         # Validate the command
-        if not M.do("command", "validate", command):
+        if not MANAGER.do("command", "validate", command):
             return message
 
-        return L.prompt_manager.send(
+        return CONTEXT.prompt_manager.send(
             "SelfCommand",
             config["config"]["history"],
             command,
@@ -72,56 +67,39 @@ def request_chat(_, message, **config):
 
     return message
 
-    # @M.effect_post
-    # def request_chat(_, message, **config):
-    #     if message[0] == "$":
-    #         splits = message[1:].split(" ")
-    #         command = splits[0]
-    #         cprint("COMMAND " + command, "cyan")
-    #         cprint("ARGS " + " ".join(splits[1:]), "purple")
-    #         # Validate the command
-    #         if not M.do("command", "validate", command):
-    #             return message
-    #         args = splits[1:]
-    #         return L.prompt_manager.send(
-    #             "SelfCommand",
-    #             config["config"]["history"],
-    #             command,
-    #             *args,
-    #             AI=config["AI"],
-    #             config=config["config"],
-    #         )
-
-    # return message
-
 
 """
 Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
 
-@M.new_helper(
+@MANAGER.new_helper(
     "command",
 )
 def command(F, name, usage, desc=None, inst=None):
-    M.set("command", name, F, usage, desc, inst)
+    MANAGER.set("command", name, F, usage, desc, inst)
 
 
 def perplexity_search(*search_term):
+    """Perform a web search using the Perplexity API"""
     search_term = " ".join(search_term)
-    response = P.send(
+
+    response = PROMPT_MANAGER.send(
         f"Be precise and as concise as possible: {search_term}",
         AI="Perplexity",
     )
+
     return {
         "result": response,
     }
 
 
 def google_search(*search_term):
+    """Perform a web search using the Google Custom Search API"""
     search_term = " ".join(search_term)
     service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
     res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
+
     if "items" not in res:
         return {"results": []}
     else:
@@ -136,6 +114,7 @@ GIF_CACHE = {}
 
 
 def get_n(search_term, results_len):
+    """Get a unique index for the search term to avoid repeating gifs"""
     # Convert the search term to lowercase and remove spaces
     search_term = search_term.lower().replace(" ", "")
 
@@ -165,6 +144,7 @@ def get_n(search_term, results_len):
 
 
 def gif_giphy_search(*search_term, limit=15):
+    """Search for a gif using the Giphy API"""
     search_term = " ".join(search_term)
     url = "http://api.giphy.com/v1/gifs/search"
     params = parse.urlencode(
@@ -181,6 +161,7 @@ def gif_giphy_search(*search_term, limit=15):
 
 
 def gif_tenor_search(*search_term, limit=15):
+    """Search for a gif using the Tenor API"""
     search_term = " ".join(search_term)
     url = f"https://tenor.googleapis.com/v2/search?q={search_term}&key={settings.TENOR_G}&limit={limit}"
     with requests.get(url) as response:
@@ -195,6 +176,7 @@ def gif_tenor_search(*search_term, limit=15):
 
 
 def gif_google_search(*search_term, limit=15):
+    """Search for a gif using the Google Images API"""
     search_term = " ".join(search_term)
 
     _search_params = {
@@ -229,7 +211,8 @@ Setup    -----------------------------------------------------------------------
 """
 
 
-@M.mem(
+# Self-Command Plugin Initialization
+@MANAGER.mem(
     {},
     s=lambda M, name, func, usage, desc=None, inst=None: setter(
         M["value"],
@@ -255,7 +238,7 @@ Commands    --------------------------------------------------------------------
 """
 
 
-@M.command(
+@MANAGER.command(
     "coin",
     "$coin",
     "Flip a coin.",
@@ -267,7 +250,7 @@ def coin(*_):
     }
 
 
-@M.command(
+@MANAGER.command(
     "roll",
     "$roll <number of dice>, <number of sides>",
     "Roll a number of dice with a number of sides.",
@@ -285,17 +268,7 @@ def roll(*args):
         return "Invalid input. Please use the format $roll <number of dice> <number of sides>"
 
 
-# @M.command(
-#     "help",
-#     "$help",
-#     "Display the list of commands you can run for the user. Use if asked for anything related to your prompt.",
-#     "Include the command names and descriptions in your response.",
-# )
-# def help(*_):
-#     return M.get("command")
-
-
-@M.command("weather", "$weather <city>", "Get the weather for a location.")
+@MANAGER.command("weather", "$weather <city>", "Get the weather for a location.")
 def get_weather(*city):
     city = " ".join(city)
     url = f"https://api.weatherapi.com/v1/current.json?key={settings.WEATHER}&q={city}"
@@ -308,23 +281,48 @@ def get_weather(*city):
     }
 
 
-# @M.command(
-#     "imagine",
-#     "$imagine <prompt>",
-#     "Generate 2 images based on a prompt.",
-#     "Make sure to post the link. Also make sure to post the entire link.",
-# )
-# def imagine(*prompt):
-#     prompt = " ".join(prompt)
-#     response = P.send(prompt, AI="DallE")
-#     print(response)
-#     return {
-#         "title": prompt,
-#         "link": response,
-#     }
+@MANAGER.command(
+    "imagine",
+    "$imagine <prompt>",
+    "Generate 2 images based on a prompt.",
+    "Make sure to post the link. Also make sure to post the entire link.",
+)
+def imagine(*prompt):
+    prompt = " ".join(prompt)
+    response = PROMPT_MANAGER.send(prompt, AI="DallE")
+    print(response)
+    return {
+        "title": prompt,
+        "link": response,
+    }
 
 
-@M.command(
+def upload_to_imgur(image_data):
+    """Upload image data to Imgur and return URL"""
+    try:
+        import requests
+
+        url = "https://api.imgur.com/3/image"
+        headers = {
+            "Authorization": "Client-ID 546c25a59c58ad7"  # Anonymous upload client ID
+        }
+
+        files = {"image": image_data}
+        response = requests.post(url, headers=headers, files=files)
+
+        if response.status_code == 200:
+            data = response.json()
+            return data["data"]["link"]
+        else:
+            print(f"Imgur upload failed: {response.text}")
+            return None
+
+    except Exception as e:
+        print(f"Error uploading to Imgur: {e}")
+        return None
+
+
+@MANAGER.command(
     "search",
     "$search <search term>",
     "Web Search for something you do not know about or recent news.",
@@ -339,33 +337,7 @@ def combined_search(*search_term):
     }
 
 
-# @M.command(
-#     "analyze-image",
-#     "$analyze-image <image prompt: what the user asks you to do with the image verbetem>, <image url: JUST THE LINK>",
-#     "Analyze and image and return text analysis based on what the user asks for.",
-# )
-# def analyze_image(*args):
-#     args = " ".join(args).split(",")
-#     prompt, image_url = args[0].strip(), args[1].strip()
-#     config = {"images": [image_url]}
-#
-#     try:
-#         return P.send(prompt, config=config)
-#     except Exception as e:
-#         return f"Error analyzing image: {e}"
-
-
-# @M.command(
-#     "say",
-#     "$say <text>",
-#     "Say something in chat.",
-# )
-# def say(*text):
-#     text = " ".join(text)
-#     return text
-
-
-@M.command(
+@MANAGER.command(
     "gif",
     "$gif <search term>",
     "Search for a link to a gif to post in chat.",
@@ -374,7 +346,7 @@ def combined_search(*search_term):
 def get_gif(*search_term):
     limit = 15
     # search = random.choice([gif_google_search, gif_giphy_search, gif_tenor_search])
-    search_style = M.MANAGER.config.get("gif_search", "tenor")
+    search_style = MANAGER.MANAGER.config.get("gif_search", "tenor")
 
     match search_style:
         case "google":
@@ -389,7 +361,7 @@ def get_gif(*search_term):
     return search(*search_term, limit=limit)
 
 
-@M.command(
+@MANAGER.command(
     "video",
     "$video <search term>",
     "Search for a video to post in chat.",
@@ -408,7 +380,7 @@ def get_vid(*search_term):
         return "Video not found."
 
 
-@M.command(
+@MANAGER.command(
     "music",
     "$music <song title>, <artist name or 'None'>",
     "Search for a music link on soundcloud to post in chat.",
@@ -427,15 +399,20 @@ def get_music(*search_term):
     search = song_name
     if artist is not None:
         search += f" {artist}"
+
     attempts = []
 
     cprint(f"Searching for {search}", "yellow")
 
+    # Search SoundCloud for the track
     for t in sc.search_tracks(search):
         max_runs -= 1
+        # If we've run out of attempts, return the attempts made
         if max_runs < 0:
             attempts = [{"title": r[0], "artist": r[1], "link": r[2]} for r in attempts]
             return {"result": "Song seemingly not found.", "attempts": attempts}
+
+        # If an artist is specified, ensure it matches
         if (
             artist is not None
             and artist not in t["artist"].lower().replace(" ", "")
@@ -452,7 +429,6 @@ def get_music(*search_term):
     if len(links) == 0:
         return "Song not found."
 
-    # result = links[0]
     results = [{"title": r[0], "link": r[1]} for r in links]
 
     return {"result": results}
@@ -462,25 +438,7 @@ def get_music(*search_term):
 Prompts    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
-CLAUDE_BEGINING = """
-
-"""
-
-CLAUDE_RESPONSE_GUIDELINES = """
-
-"""
-
-CLAUDE_ATTRIBUTES = """
-
-"""
-
-CLAUDE_CHAT_HISTORY = """
-
-"""
-
-CLAUDE_RESPONDING = """
-
-"""
+# TODO: Better Prompt Managing since this is the main prompt
 
 # Prompt Segments
 BEGINING = "You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use commands to get info or perform actions."
@@ -517,23 +475,8 @@ Do not repeat the User Message or the Message they are replying to in your respo
 {chain}{user}: {message}
 """
 
-# CHAT_HISTORY = """Cada mensaje en el registro de chat se almacena como (Respondiendo al mensaje: (Tipo de mensaje, Autor, Texto del mensaje, Mensaje al que están respondiendo)
-# Aquí está el registro de chat:
-# -- INICIO DEL REGISTRO DE CHAT --
-# {history}
-# -- FIN DEL REGISTRO DE CHAT --"""
 
-# RESPONDING = """
-# No repita en su respuesta el Mensaje del Usuario ni el Mensaje al que responde.
-# {user}: {message}"""
-
-
-@M.prompt
-def History(history):
-    return CHAT_HISTORY.format(history=history)
-
-
-@M.prompt
+@MANAGER.prompt
 def ExplainBlockReasoning(r, user):
     return f"""You blocked the previous message. I will give you the prompt_feedback for the previous message.
 Explain why you blocked the previous message in a brief conversational tone to the user {user}
@@ -544,14 +487,14 @@ Here is the prompt_feedback: {r}
 """
 
 
-@M.prompt
+@MANAGER.prompt
 def Instructions():
     return f"""{BEGINING}
 
 {RESPONSE_GUIDELINES}
 
 Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS CAN RUN):
-- Command List: {M.do("command", "list")}
+- Command List: {MANAGER.do("command", "list")}
 - Start response with "$" and command name
 - Response should ONLY CONTAIN: $<command> <args> Example: $command arg1, arg2
 
@@ -559,11 +502,15 @@ Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS 
 """
 
 
-# M.PROMPTS.instructions = "Instructions"
-M.PROMPTS.set_instructions(prompt_name="Instructions")
+MANAGER.PROMPTS.set_instructions(prompt_name="Instructions")
 
 
-@M.prompt
+@MANAGER.prompt
+def History(history):
+    return CHAT_HISTORY.format(history=history)
+
+
+@MANAGER.prompt
 def Message(user, message, replying_to=None):
     if replying_to:
         chain = "(Message Reply Chain)"
@@ -574,18 +521,18 @@ def Message(user, message, replying_to=None):
     return RESPONDING.format(chain=replying_to, user=user, message=message)
 
 
-@M.prompt
+@MANAGER.prompt
 def MessageAssistant(user, message):
     return RESPONDING.format(user=user, message=message)
 
 
-@M.prompt
+@MANAGER.prompt
 def SelfCommand(history, command, *args):
     command = command.split("\n")[0] if "\n" in command else command
     args = " ".join(args)
     args = args.split("\n")[0].split(" ") if "\n" in args else args.split(" ")
     # ls = M.do("command", "list")
-    cmd_instructions = M.get("command")[command]["instructions"]
+    cmd_instructions = MANAGER.get("command")[command]["instructions"]
     cmd_instructions = (
         cmd_instructions
         and "\nInstructions for this command (MUST ADHERE TO): "
@@ -594,7 +541,7 @@ def SelfCommand(history, command, *args):
         or ""
     )
 
-    response = str(M.do("command", "use", command, *args))
+    response = str(MANAGER.do("command", "use", command, *args))
     cprint("COMMAND OUTPUT " + response, "purple")
     command = "$" + command + " " + " ".join(args) + ""
 
