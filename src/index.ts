@@ -14,7 +14,6 @@ import {
   getReferenceChain,
 } from "./ref.ts";
 import { claudeRequest } from "./claude.ts";
-import { exit } from "node:process";
 import { randomInt } from "node:crypto";
 
 const BOT_TOKEN = Deno.env.get("DC_BOT_AURIS_TOKEN");
