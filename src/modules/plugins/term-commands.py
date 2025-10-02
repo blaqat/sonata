@@ -18,7 +18,7 @@ import asyncio
 import aioconsole
 from random import randint
 
-_, MANAGER, PROMPT_MANAGER = AI_Manager.init(
+CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
         "inject_emojis": False,

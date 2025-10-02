@@ -510,7 +510,7 @@ class AI_Manager:
         for LM in Plugins:
             L = None
             try:
-                L = LM.L
+                L = LM.CONTEXT
             except AttributeError:
                 print(f"Could not extend {A.name} with {LM}")
                 continue

@@ -37,7 +37,7 @@ from modules.utils import (
 import random
 import re
 
-_, MANAGER, PROMPT_MANAGER = AI_Manager.init(
+CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
         "max_chats": 50,

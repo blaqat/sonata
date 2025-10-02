@@ -27,7 +27,7 @@ import pickle
 import os
 import shutil
 
-_, MANAGER, PROMPT_MANAGER = AI_Manager.init(lazy=True)
+CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(lazy=True)
 __plugin_name__ = "beacon"
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
