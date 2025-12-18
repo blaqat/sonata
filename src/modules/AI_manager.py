@@ -548,6 +548,7 @@ class AI_Manager:
             plugin_config.update(configs.get(LM.__plugin_name__, {}))
             # print(plugin_config)
             A.config.merge(plugin_config)
+            L.plugin_config = plugin_config
             A.prompt_manager.add_prompts_from(L.prompt_manager)
             if (
                 L.prompt_manager.instructions
