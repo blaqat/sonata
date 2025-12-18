@@ -41,7 +41,7 @@ async def term_handler(DataManager: AI_Manager, client):
     if INJECT_EMOJIS:
         # Load all archived emojis
         for guild in client.guilds:
-            if guild.name.startswith("Karma"):
+            if guild.name.startswith("blaqat"):
                 for emoji in guild.emojis:
                     DataManager.do("emojis", "add", emoji)
 
@@ -50,28 +50,32 @@ async def term_handler(DataManager: AI_Manager, client):
         emojis_list = DataManager.do("emojis", "list")
         # 1 random number minimum 0, max length of emojis_list - 1000
         num_chars = 600
-        rand = randint(0, max(1, len(emojis_list) - num_chars))
+        def reload_emojis():
+            cprint("reloading emojis", "red")  
+            rand = randint(0, max(1, len(emojis_list) - num_chars))
 
-        emoji_instructions = (
-            f"You can use the EmojiIndex to send emojis when u feel like it (Make sure to use its full <x:name:id> as shown in the index):\n"
-            + DataManager.do("emojis", "list")[rand : rand + num_chars]
-        )
-
-        instructions = None
-
-        if type(old_instructions) == str:
-            instructions = old_instructions + emoji_instructions
-        else:
-            instructions = (
-                lambda *args, **kwargs: old_instructions(*args, **kwargs)
-                + emoji_instructions
+            emoji_instructions = (
+                f"You can use the EmojiIndex to send emojis when u feel like it (only when its contextually significant/DONT ABUSE) (Make sure to use its full <x:name:id> as shown in the index):\n"
+                + DataManager.do("emojis", "list")[rand : rand + num_chars]
             )
 
-        DataManager.prompt_manager.set_instructions(
-            prompt=instructions, prompt_name=DataManager.prompt_manager.instructions
-        )
+            instructions = None
+
+            if type(old_instructions) == str:
+                instructions = old_instructions + emoji_instructions
+            else:
+                instructions = (
+                    lambda *args, **kwargs: old_instructions(*args, **kwargs)
+                    + emoji_instructions
+                )
+
+            DataManager.prompt_manager.set_instructions(
+                prompt=instructions, prompt_name=DataManager.prompt_manager.instructions
+            )
+        reload_emojis() 
 
     while True:
+        if INJECT_EMOJIS and randint(1, 100) > 90: reload_emojis()
         # If intercepting, wait
         if DataManager.get("termcmd", "intercepting", default=False):
             await asyncio.sleep(1)
