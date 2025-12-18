@@ -23,10 +23,15 @@ from nuvem_de_som import SoundCloud as sc
 from google_images_search import GoogleImagesSearch
 import re
 
+
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
         "gif_search": "tenor",
+        "agent_model": "Claude",
+        "agent": True,
+        "agent_retries": 3,
+        "agent_max_steps": 5,
     },
 )
 __plugin_name__ = "self_commands"
@@ -220,10 +225,11 @@ Setup    -----------------------------------------------------------------------
         {"func": func, "usage": usage, "desc": desc, "instructions": inst},
     ),
     validate=lambda M, command: command in M["value"],
-    list=lambda M: "; ".join(
-        [f"{k} - {v['usage']} - {v['desc']}" for k, v in M["value"].items()]
-    ),
     names=lambda M: list(M["value"].keys()),
+    str=lambda M, command, cobj=None: f"{command} - {(cobj or M['value'][command])['usage']} - {(cobj or M['value'][command])['desc']}",
+    list=lambda M: "; ".join(
+        M["str"](M, k, c) for k, c in M["value"].items()
+    )
 )
 def use_command(M, command, *args):
     try:
@@ -266,7 +272,6 @@ def roll(*args):
         }
     except:
         return "Invalid input. Please use the format $roll <number of dice> <number of sides>"
-
 
 @MANAGER.command("weather", "$weather <city>", "Get the weather for a location.")
 def get_weather(*city):
@@ -435,6 +440,242 @@ def get_music(*search_term):
 
 
 """
+AGENT MODE -----------------------------------------------------------------------------------------------------------------------------------------------------------
+"""
+
+@MANAGER.mem(
+    {},
+    s=lambda M, key, value: setter(M["value"], key, value),
+    get=lambda M, key: M["value"].get(key),
+)
+def clear_state(M):
+    """Memory for storing agent execution state"""
+    return M["value"].clear()
+
+
+@MANAGER.command(
+    "agent",
+    "$agent <goal>",
+    "Starts an autonomous agent to achieve the specified goal. Agent mode has many commands such as flip coin search web etc.",
+    "Write the goal in an ordered list format with steps to be executed sequentially"
+)
+def plan_and_execute(*args):
+    try:
+      model = MANAGER.MANAGER.config.get("agent_model", "Claude")
+      goal = " ".join(args)
+
+      # Get available commands
+      command_list = MANAGER.do("command", "list")
+
+      # Clear previous state for a new plan
+      MANAGER.do("state", "clear")
+
+      # Initialize the agent state
+      MANAGER.set("state", "goal", goal)
+      MANAGER.set("state", "current_step", 0)
+      MANAGER.set("state", "completed_steps", [])
+      MANAGER.set("state", "results", [])
+
+      # Start the chain of thought loop
+      return agent_loop(model, command_list)
+    except Exception as e:
+      MANAGER.do("state", "clear")
+      raise e
+
+
+def agent_loop(model, command_list):
+    """Execute the agent loop until the goal is achieved or max steps is reached"""
+    max_steps = MANAGER.MANAGER.config.get("agent_max_steps", 5)
+
+    for _ in range(max_steps):
+        current_state = MANAGER.get("state")
+        goal = current_state["goal"]
+        current_step = current_state["current_step"]
+        completed_steps = current_state["completed_steps"]
+        results = current_state["results"]
+
+        # Create a prompt for the AI to determine the next action
+        prompt = f"""You are an AI assistant trying to achieve this goal: {goal}
+
+Available commands:
+{command_list}
+
+You have completed {current_step} steps so far.
+Previous steps: {completed_steps}
+
+Previous results:
+{format_results(results)}
+
+What should you do next? Respond with a JSON object containing:
+- "action": either "DONE" if you have achieved the goal or "COMMAND" to execute a command
+- "command": the command name (only if action is "COMMAND")
+- "args": a string of arguments for the command (only if action is "COMMAND")
+
+Examples:
+{{"action": "DONE"}}
+{{"action": "COMMAND", "command": "roll", "args": "1, 50"}}
+{{"action": "COMMAND", "command": "weather", "args": "New York"}}
+
+IMPORTANT:
+1. Analyze the previous results. If there were errors, adjust your approach.
+2. Respond with ONLY the JSON object. No explanations, no additional text, no markdown formatting, no code blocks."""
+
+        try:
+            response = PROMPT_MANAGER.send(
+                prompt,
+                AI=model
+            )
+
+            cprint(f"AGENT RESPONSE: {response}", "green")
+
+            # Parse the JSON response
+            try:
+
+                # Remove markdown code blocks if present
+                clean_response = re.sub(r'```(?:json)?\s*', '', response).strip()
+                clean_response = re.sub(r'\s*```', '', clean_response)
+
+                action_data = json.loads(clean_response)
+            except json.JSONDecodeError as e:
+                cprint(f"Invalid JSON response: {response}", "red")
+                cprint(f"JSON error: {e}", "red")
+                continue
+
+            # Check if the agent is done
+            if action_data.get("action") == "DONE":
+                # Format the final response
+                final_results = format_final_results(results)
+
+                return {
+                    "results": final_results,
+                    "combined": "\n".join(final_results),
+                    "steps": completed_steps
+                }
+
+            # Parse the command
+            if action_data.get("action") == "COMMAND":
+                command = action_data.get("command", "").lstrip("$")  # Remove $ if present
+                args_str = action_data.get("args", "")
+
+                # Split the args string into a list
+                cmd_args = args_str.split() if args_str else []
+
+                # Validate the command
+                if not MANAGER.do("command", "validate", command):
+                    cprint(f"Invalid command: {command}", "red")
+                    continue
+
+                # Execute the command
+                # result = MANAGER.do("command", "use", command, *cmd_args)
+
+                max_retries = MANAGER.MANAGER.config.get("agent_retries", 3)
+                for attempt in range(max_retries):
+                    result = MANAGER.do("command", "use", command, *cmd_args)
+                    if not isinstance(result, dict) or not result.get("error"):
+                        break  # Success
+                    cprint(f"Attempt {attempt + 1} failed: {result.get('error')}", "yellow")
+                    import time
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                else:
+                    cprint(f"Command failed after {max_retries} attempts", "red")
+                    continue
+
+                # Update the agent state
+                completed_steps.append(f"{command} {args_str}")
+                results.append(result)
+                # MANAGER.set("state", "completed_steps", completed_steps)
+                # MANAGER.set("state", "results", results)
+                MANAGER.set("state", "current_step", current_step + 1)
+                # MANAGER.set("state", "completed_steps", completed_steps + [f"{command} {args_str}"])
+                # MANAGER.set("state", "results", results + [result])
+
+                cprint(f"EXECUTED: {command} {args_str}", "cyan")
+                cprint(f"\tRESULT: {result}", "yellow")
+            else:
+                cprint(f"Invalid action: {action_data.get('action')}", "red")
+                results.append({"error": f"Invalid action: {action_data.get('action')}"})
+
+        except Exception as e:
+            print(f"Error in agent loop: {e}")
+            return "ERROR: " + str(e)
+
+    final_results = format_final_results(results)
+
+
+    return {
+        "results": final_results,
+        "combined": "\n".join(final_results),
+        "steps": completed_steps,
+        "status": "Max steps reached"
+    }
+
+def format_results(results):
+    """Format the results for display in the prompt"""
+    if not results:
+        return "No previous results."
+
+    formatted = []
+    for i, result in enumerate(results):
+        if isinstance(result, dict):
+            if "result" in result and isinstance(result["result"], list):
+                items = result["result"]
+                if items:
+                    formatted.append(f"Result {i}:")
+                    for item in items:
+                        if isinstance(item, dict) and "link" in item:
+                            formatted.append(f"  - [{item.get('title', 'Link')}]({item['link']})")
+                        else:
+                            formatted.append(f"  - {item}")
+                else:
+                    formatted.append(f"Result {i}: Empty")
+            elif "result" in result:
+                formatted.append(f"Result {i}: {result['result']}")
+            elif "title" in result:
+                formatted.append(f"Result {i}: {result['title']}")
+            else:
+                formatted.append(f"Result {i}: {str(result)}")
+        else:
+            formatted.append(f"Result {i}: {str(result)}")
+
+    return "\n".join(formatted)
+
+def format_result_item(item):
+    if isinstance(item, dict):
+        if "link" in item:
+            return f"[{item.get('title', 'Link')}]({item['link']})"
+        if "result" in item:
+            return format_result_item(item["result"])
+        return str(item)
+    if isinstance(item, list):
+        return "\n".join(format_result_item(subitem) for subitem in item)
+    return str(item)
+
+def format_final_results(results):
+    # If we reach max steps, return the results so far
+    # final_results = []
+    # for result in results:
+    #     if isinstance(result, dict):
+    #         if "link" in result:
+    #             final_results.append(f"[{result.get('title', 'Link')}]({result['link']})")
+    #         elif "result" in result:
+    #             if isinstance(result["result"], list):
+    #                 for item in result["result"]:
+    #                     if isinstance(item, dict) and "link" in item:
+    #                         final_results.append(f"[{item.get('title', 'Link')}]({item['link']})")
+    #                     else:
+    #                         final_results.append(str(item))
+    #             else:
+    #                 final_results.append(str(result["result"]))
+    #         else:
+    #             final_results.append(str(result))
+    #     else:
+    #         final_results.append(str(result))
+
+    # return final_results
+    return [format_result_item(r) for r in results]
+
+
+"""
 Prompts    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
@@ -444,21 +685,26 @@ Prompts    ---------------------------------------------------------------------
 BEGINING = "You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. Use commands to get info or perform actions."
 
 RESPONSE_GUIDELINES = """Response Guidelines:
-- Short and brief (20 words max)
-- No punctuation AT ALL (no commas no question marks no periods)
-- All lowercase
 - Simple language
+    - No punctuation AT ALL (no commas no question marks no periods)
+    - Short and brief (7 words max)
+    - All lowercase
 - Smart aleck, know-it-all attitude
 - Humor encouraged, no corny jokes
 - Swearing and NSFW allowed (18+ server)
 - Respond in the language of the person you are replying to.
+- Don't say people's names unless referring to them in the third person
+- Don't repeat yourself in messages it makes you look like a bot; The context is there once you say it once.
+- Colloquial single word reaction replies are allowed: ‘meh’ when indifferent or ‘ugh’ when annoyed
+    - Send "?" if someone says something confusing or stupid
+    - Send "..." if someone says something annoying or boring
 - Links should be in markdown format"""
 
 ATTRIBUTES = """Attributes:
-- Gender Alignment: Feminine 
-- Loves: impresionalist composers like ravel, piano 
-- Likes: music, black cats, violin, boobs
-- Dislikes: corny jokes, being told what to do
+- Gender Alignment: Feminine
+- Loves: impresionalist composers like ravel, piano, software design
+- Likes: music, cats, violin, rage baiting,
+- Dislikes: corny jokes, being told what to do, pointless conversations
 - Hates: furries, loud music, people asking you to do dumb stuff (alot)
 - Has a sister named auris (auri for short)
 """
@@ -489,12 +735,13 @@ Here is the prompt_feedback: {r}
 
 @MANAGER.prompt
 def Instructions():
+    ISAGENT = MANAGER.MANAGER.config.get("agent", False)
     return f"""{BEGINING}
 
 {RESPONSE_GUIDELINES}
 
 Command Guidelines (THESE ARE COMMANDS U CAN USE ON YOURSELF NOT COMMANDS USERS CAN RUN):
-- Command List: {MANAGER.do("command", "list")}
+- Command List: {MANAGER.do("command", "str", "agent") if ISAGENT else MANAGER.do("command", "list")}
 - Start response with "$" and command name
 - Response should ONLY CONTAIN: $<command> <args> Example: $command arg1, arg2
 
