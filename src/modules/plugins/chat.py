@@ -36,7 +36,9 @@ from modules.utils import (
 )
 import random
 import re
+from zoneinfo import ZoneInfo
 
+EASTERN = ZoneInfo("America/New_York")
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
@@ -47,6 +49,7 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
         "ignore": [],
         "response_map": {},  # {userName: (response, random chance)}
         "bot_whitelist": [],
+        "censor": True,
     },
 )
 __plugin_name__ = "chat"
@@ -62,6 +65,7 @@ Hooks    -----------------------------------------------------------------------
 async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     """Handle direct messages (DMs) sent to the bot"""
     AI = Sonata.config.get("auto")
+    CENSOR = Sonata.config.get("censor", True)
     # AI = Sonata.config.get("auto")
     USE_REPLY_REF = Sonata.config.get("view_replies")
     # Ignore messages from bots except 'sonata'
@@ -101,10 +105,10 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     print(
         "  {0}: {1}".format(
             cstr(str=get_full_name(message), style="cyan"),
-            censor_message(
+            CENSOR and censor_message(
                 message.content.replace("\n", "\n\t"),
                 BANNED_WORDS,
-            ),
+            ) or message.content.replace("\n", "\n\t"),
         )
     )
 
@@ -205,6 +209,7 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
 async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     """Handle messages sent in guild channels"""
     AI = Sonata.config.get("auto")
+    CENSOR = Sonata.config.get("censor", True)
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
     RESPONSES = Sonata.config.get("response_map", {})
@@ -254,10 +259,10 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     print(
         "  {0}: {1}".format(
             cstr(str=get_full_name(message), style="cyan"),
-            censor_message(
+            CENSOR and censor_message(
                 message.content.replace("\n", "\n\t"),
                 BANNED_WORDS,
-            ),
+            ) or message.content.replace("\n", "\n\t"),
         )
     )
 
@@ -396,11 +401,25 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
 @MANAGER.effect("chat", "set", prepend=True)
 def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
     """Effect to censor messages before storing them in chat history"""
+    CENSOR = CONTEXT.plugin_config.get("censor", True)
     return (
         chat_id,
         message_type,
         author,
-        censor_message(message, BANNED_WORDS),
+        CENSOR and censor_message(message, BANNED_WORDS) or message,
+        replying_to,
+    )
+
+
+@MANAGER.effect("chat", "set", prepend=True)
+def timestamp_chat(_, chat_id, message_type, author, message, replying_to=None):
+    time = discord.utils.utcnow().astimezone(EASTERN)
+    timestamped_message = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+    return ( 
+        chat_id,
+        message_type,
+        author,
+        timestamped_message,
         replying_to,
     )
 
@@ -517,8 +536,12 @@ def chat(sona: AI_Manager):
             summary = sona.do("chat", "summarize", id, config)
 
             def deleter():
-                self.delete(id)
-                self.send(id, "System", "PreviousChatSummary", summary, None)
+                try:
+                    self.delete(id)
+                    self.send(id, "System", "PreviousChatSummary", summary, None)
+                except:
+                    cprint("Error deleting chat after summarization", "red")
+
 
             return summary, deleter
 
@@ -563,7 +586,7 @@ def chat(sona: AI_Manager):
             new_c["instructions"] = prompt_manager.get_instructions()
             new_c["channel_id"] = id
             # Get Images for this channel
-            new_c["images"] = sona.config.get("images", {}).get(id, None)
+            new_c["images"] = (c if c else {}).get("images", {}).get(id, None)
             new_c.update(config)
             try:
                 if "using_assistant" not in new_c and prompt_manager.exists("History"):
@@ -659,12 +682,19 @@ Use the following guidelines:
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
 - If there is a PreviousChatSummary, include it as much as possible into the new summary as it will be replaced with this afterwards.
 """
-    return PROMPT_MANAGER.send(
-        lambda chat: f"""Chat Log: {chat}""",
-        M["value"][id],
-        AI=config["AI"],
-        config=config,
-    )
+    try:
+        ti = config.get("images")
+        config["images"] = None
+        sum = PROMPT_MANAGER.send(
+            lambda chat: f"""Chat Log: {chat}""",
+            M["value"][id],
+            AI=config["AI"],
+            config=config,
+        )
+        config["images"] = ti
+        return sum
+    except Exception as e:
+        cprint(f"Error in chat summarize: {e}", "red")
 
 
 # Chat Plugin Instantiation
