@@ -179,9 +179,11 @@ def extend(Sonata):
                 1311742291521835048,
                 746799398994051162,
             ],
+            "censor": False,
         },
         self_commands={
             "gif_search": GIF_SEARCH,
+            "agent": True
         },
         term_commands={
             "inject_emojis": EMOJIS,
@@ -320,7 +322,8 @@ def OpenAI(client, prompt, model, config):
     None,
     key=settings.ANTHROPIC_AI,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
-    model="claude-sonnet-4-5-20250929",
+    # model="claude-sonnet-4-5-20250929",
+    model="claude-haiku-4-5"
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -333,8 +336,8 @@ def Claude(client, prompt, model, config):
                 # "cache_control": {"type": "ephemeral"},
             }
         ]
-        if config["instructions"]
-        else None
+        if config.get("instructions", None)
+        else [{"type": "text", "text": "Follow all instructions."}]
     )
     old_content = content
 
@@ -364,6 +367,7 @@ def Claude(client, prompt, model, config):
         content.extend(images)
         config["images"] = None
         Sonata.memory["config"]["images"] = None
+
     try:
         return (
             client.messages.create(
@@ -426,8 +430,10 @@ def Perplexity(client, prompt, model, config):
     default=True,
     key=settings.GOOGLE_AI,
     setup=lambda _, key: genai.configure(api_key=key),
-    model="gemini-2.0-flash-exp",
+    # model="gemini-2.0-flash-exp",
     # model="gemini-2.5-pro-exp-03-25",
+    model = "gemini-2.5-flash"
+    # model = "gemini-2.5-pro"
 )
 def Gemini(client, prompt, model, config):
     # Safety settings to unblock all content
@@ -452,7 +458,7 @@ def Gemini(client, prompt, model, config):
     content = prompt
     images = config.get("images", False)
     if images:
-        model = "gemini-1.5-flash"
+        # model = "gemini-1.5-flash"
         images = [Image.open(BytesIO(requests.get(u).content)) for u in images]
         content = [content]
         content.extend(images)
@@ -1080,7 +1086,9 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             else:
                 await ctx_reply(ctx, r, not respond_or_chat)
     except Exception as e:
+        import traceback
         cprint(e, "red")
+        traceback.print_stack()
         await ctx_reply(
             ctx,
             "Sorry, an error occured while processing your message.",
