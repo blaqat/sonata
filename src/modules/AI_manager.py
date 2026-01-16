@@ -19,6 +19,7 @@ The PromptManager class provides the following methods:
 - stream(prompt: str, *prompt_args, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Generates a stream of AI-generated text based on the given prompt.
 """
 
+from modules.utils import Map
 from typing import Any, Callable, Tuple, Union
 import copy
 
@@ -227,54 +228,108 @@ class AI_Manager:
         return super().__getattribute__(__name)
 
     class M:  # Higher order function alternatives
-        MANAGER = None
+        """
+        Utility facade class that provides convenient class-level accessors and
+        decorators for interacting with an AI_Manager instance.
+
+        Attributes:
+            MANAGER: The AI_Manager instance this facade delegates to.
+            PROMPTS: Shortcut reference to MANAGER.prompt_manager.
+            MEMORY: Shortcut reference to MANAGER.memory.
+        """
+
+        MANAGER: 'AI_Manager'  = None
         PROMPTS = None
         MEMORY = None
 
         @classmethod
         def cls(cls, class_name, class_body):
+            """
+            Register a sub-class (or callable) into the MANAGER.sub_classes map.
+
+            Args:
+                class_name: The name/key to register.
+                class_body: The class object or callable to store.
+            """
             cls.MANAGER.sub_classes[class_name] = class_body
 
         @classmethod
         def builder(cls, func):
+            """
+            Decorator that registers a function under MANAGER.sub_classes using
+            the function's __name__ and returns the function unchanged.
+
+            Usage:
+                @M.builder
+                def SomeBuilder(...): ...
+            """
             cls.cls(func.__name__, func)
 
             return func
 
         @classmethod
         def do(cls, *args, **kwargs):
+            """
+            Delegate .do(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.do(*args, **kwargs)
 
         @classmethod
         def get(cls, *args, **kwargs):
+            """
+            Delegate .get(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.get(*args, **kwargs)
 
         @classmethod
         def set(cls, *args, **kwargs):
+            """
+            Delegate .set(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.set(*args, **kwargs)
 
         @classmethod
         def update(cls, *args, **kwargs):
+            """
+            Delegate .update(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.update(*args, **kwargs)
 
         @classmethod
         def reset(cls, *args, **kwargs):
+            """
+            Delegate .reset(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.reset(*args, **kwargs)
 
         @classmethod
         def add(cls, *args, **kwargs):
+            """
+            Delegate .add(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.add(*args, **kwargs)
 
         @classmethod
         def forget(cls, *args, **kwargs):
+            """
+            Delegate .forget(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.forget(*args, **kwargs)
 
         @classmethod
         def remember(cls, *args, **kwargs):
+            """
+            Delegate .remember(...) calls to the underlying MANAGER.
+            """
             return cls.MANAGER.remember(*args, **kwargs)
 
         @classmethod
         def init(cls, aim):
+            """
+            Initialize this facade with an AI_Manager instance.
+
+            Sets MANAGER, PROMPTS and MEMORY shortcuts for quick access.
+            """
             cls.MANAGER = aim
             cls.PROMPTS = aim.prompt_manager
             cls.MEMORY = aim.memory
@@ -283,7 +338,23 @@ class AI_Manager:
         def register_ai(
             cls, client=None, setup=Callable, default=False, key=None, **kwargs
         ):
+            """
+            Decorator factory to register an AI implementation.
+
+            Args:
+                client: Client instance or identifier passed into AI_Type.
+                setup: Optional initialization function for the AI_Type (default Callable token).
+                default: If True, set the created AI_Type as AI_TYPES['default'].
+                key: Optional key to immediately initialize the AI_Type via AI_Type.initalize.
+
+            Returns:
+                A decorator that converts a function into an AI_Type entry.
+            """
+
             def decorator(func):
+                """
+                Decorator that wraps func and registers it as an AI_Type.
+                """
                 name = func.__name__
                 # print(client, func, kwargs)
                 new_ai = AI_Type(client, func, **kwargs)
@@ -304,8 +375,28 @@ class AI_Manager:
 
         @classmethod
         def new_helper(cls, name):
+            """
+            Create a new helper decorator that registers a helper-building pattern
+            on this facade under the provided name.
+
+            The returned decorator takes a hook function and exposes a helper on M
+            that can be used both as a decorator or as a direct call.
+            """
+
             def decorator(hook_func):
+                """
+                Takes a hook function and creates a flexible helper that applies
+                the hook to a target function either immediately (if used directly)
+                or via decorator syntax.
+                """
+
                 def helper(*args, **kwargs):
+                    """
+                    Flexible helper function:
+                    - If called as @helper with no extra args, `calling` will be True and
+                      args[0] is the function to decorate.
+                    - Otherwise returns a decorator that applies hook_func when decorating.
+                    """
                     calling = len(args) == 1 and callable(args[0])
 
                     def decorator_func(func):
@@ -326,6 +417,11 @@ class AI_Manager:
 
         @classmethod
         def prompt(cls, func, prompt_name=None):
+            """
+            Register a prompt function into the PROMPTS manager.
+
+            If prompt_name is not provided, func.__name__ is used.
+            """
             if prompt_name is None:
                 prompt_name = func.__name__
             cls.PROMPTS.add(prompt_name, func)
@@ -333,6 +429,12 @@ class AI_Manager:
 
         @classmethod
         def on_load(cls, func):
+            """
+            Register a function to be called on load.
+
+            If MANAGER.lazy is True, queue the function to MANAGER.on_load for later
+            execution. Otherwise, call the function immediately with MANAGER as arg.
+            """
             if cls.MANAGER.lazy:
                 cls.MANAGER.on_load.append(func)
                 return func
@@ -340,6 +442,16 @@ class AI_Manager:
 
         @classmethod
         def effect(cls, key, event_name=None, prepend=True):
+            """
+            Decorator or helper to attach an effect/hook to a memory key's event.
+
+            Can be used either as:
+                @M.effect(some_key, "eventname")
+                def hook(...): ...
+
+            Or, when event_name is omitted, by supplying a function whose name
+            follows the convention "event_keyname".
+            """
             def decorator(hook_func):
                 nonlocal key, event_name, prepend
                 if cls.MANAGER.lazy:
@@ -372,6 +484,11 @@ class AI_Manager:
 
         @classmethod
         def effect_post(cls, key, event_name=None, prepend=False):
+            """
+            Similar to effect(), but defaults to post-hook behavior (prepend=False).
+
+            This registers an effect that will run after the original event handler.
+            """
             def decorator(hook_func):
                 nonlocal key, event_name, prepend
                 if cls.MANAGER.lazy:
@@ -404,6 +521,15 @@ class AI_Manager:
 
         @classmethod
         def event(cls, key, event_name=None):
+            """
+            Decorator to attach a function as an event handler into MANAGER.memory.
+
+            Usage:
+                @M.event(key, "eventname")
+                def handler(...): ...
+
+            Or when event_name omitted, key should be a function with name "event_key".
+            """
             def decorator(func):
                 nonlocal key, event_name
                 cls.MANAGER.add(key, event_name, func)
@@ -420,6 +546,20 @@ class AI_Manager:
 
         @classmethod
         def mem(cls, v, key=None, inner=False, u=None, s=None, r=None, **kwargs):
+            """
+            Decorator factory to register memory handlers and shortcuts.
+
+            Args:
+                v: The default value or structure to remember for the memory key.
+                key: Optional explicit memory key. If omitted, inferred from function name.
+                inner: If True, operate on an inner key within an existing memory entry.
+                u, s, r: Optional function overrides for update, set, reset behaviors.
+                **kwargs: Additional event_name=function mappings to add to the memory key.
+
+            The returned decorator inspects the decorated function's name to determine
+            whether it is an 'update', 'set', 'reset', 'add' or other event and wires
+            the function accordingly.
+            """
             def decorator(func):
                 nonlocal key, v, inner, u, s, r
                 event_name = func.__name__
@@ -467,6 +607,16 @@ class AI_Manager:
         name="AI",
         **config,
     ):
+        """Initialize the AI_Manager instance.
+
+        Args:
+            prompt_manager: PromptManager instance used to manage prompts.
+            default_AI: Default AI client identifier or object.
+            default_args: Default setup arguments for the AI (string or tuple).
+            memoi: Initial memory dictionary to populate manager memory.
+            name: Name identifier for this manager instance.
+            **config: Additional configuration passed to the manager's config.
+        """
         if name == "LAZY":
             self.on_load = []
             self.lazy = True
@@ -507,6 +657,13 @@ class AI_Manager:
         self.config.set(AI=default_AI, setup=default_args, ai_types=AI_TYPES, **config)
 
     def extend(A, Plugins, **configs):
+        """Extend this AI_Manager with plugin contexts.
+
+        Args:
+            A: The AI_Manager instance (commonly 'self' as 'A').
+            Plugins: Iterable of plugin modules/objects to extend from.
+            **configs: Optional per-plugin configuration overrides.
+        """
         for LM in Plugins:
             L = None
             try:
@@ -566,6 +723,10 @@ class AI_Manager:
             del L
 
     def __init_memoi(self, memoi):
+        """Initialize the manager's memory structure with a base memory dictionary.
+
+        Ensures a 'config' key exists and registers provided memoi entries into memory.
+        """
         # memoi["chat"] = dict()
         memoi["config"] = dict()
         self.memory = dict()
@@ -573,12 +734,15 @@ class AI_Manager:
             self.remember(key, value, ignore_lazy=True)
 
     def __default_update(self, _, new_value):
+        """Default update handler: replace old value with new_value."""
         return new_value
 
     def __default_set(self, M, new_value):
+        """Default set handler: set M['value'] to new_value."""
         M["value"] = new_value
 
     def __default_reset(self, M):
+        """Default reset handler: restore M['value'] from stored default_value."""
         M["value"] = copy.deepcopy(M["default_value"])
 
     def remember(
@@ -593,6 +757,19 @@ class AI_Manager:
         ignore_lazy=False,
         **kwargs,
     ):
+        """Register a memory entry or an inner key within existing memory.
+
+        Args:
+            key: Memory key to register or update.
+            value: The default/current value to store.
+            default_value: Optional explicit default value.
+            update_func: Custom update function for this memory entry.
+            set_func: Custom set function for this memory entry.
+            reset_func: Custom reset function for this memory entry.
+            inner: If True, treat 'value' as an inner key assignment within an existing memory entry.
+            ignore_lazy: If True, skip marking lazy initialization entries.
+            **kwargs: Additional event functions to attach to the memory key.
+        """
         if inner:
             m = self.memory.get(key)
             if not m:
@@ -608,7 +785,7 @@ class AI_Manager:
 
         self.memory[key] = {
             "default_value": value if default_value is None else default_value,
-            "value": copy.deepcopy(value),
+            "value": Map(copy.deepcopy(value)) if isinstance(value, dict) else copy.deepcopy(value),
             "update": update_func or self.__default_update,
             "set": set_func or self.__default_set,
             "reset": reset_func or self.__default_reset,
@@ -620,6 +797,11 @@ class AI_Manager:
             self.add(key, e, f)
 
     def add(self, key, event_name, event_func, ignore_lazy=False, **kwargs):
+        """Attach an event handler to a memory key.
+
+        If the key exists, registers event_name -> event_func. Supports lazy marking.
+        Additional kwargs can be used to register multiple events at once.
+        """
         if key in self.memory:
             if self.lazy and not ignore_lazy:
                 if "lazy" not in self.memory[key]:
@@ -631,6 +813,10 @@ class AI_Manager:
             self.add(key, e, f)
 
     def do(self, key, event_name, *args, **kwargs):
+        """Invoke the event handler(s) bound to a memory key.
+
+        Returns the result of the callable or the transformed passed_args for chained handlers.
+        """
         if key in self.memory:
             if callable(self.memory[key][event_name]):
                 return self.memory[key][event_name](self.memory[key], *args, **kwargs)
@@ -641,16 +827,19 @@ class AI_Manager:
                 return passed_args
 
     def forget(self, key, inner=False):
+        """Remove a memory key or an inner key within a memory entry."""
         if inner:
             del self.memory[key][inner]
             return
         del self.memory[key]
 
     def update(self, key, *args, **kwargs):
+        """Update the stored 'value' for a memory key by running its 'update' handler."""
         if key in self.memory:
             self.memory[key]["value"] = self.do(key, "update", *args, **kwargs)
 
     def set(self, key, *args, inner=False, **kwargs):
+        """Set the value for a memory key using its 'set' handler, or set an inner key directly."""
         if key in self.memory:
             if inner:
                 self.memory[key][inner] = args[0]
@@ -658,6 +847,14 @@ class AI_Manager:
             return self.do(key, "set", *args, **kwargs)
 
     def get(self, key, val="value", default=None, inner=True):
+        """Retrieve memory contents.
+
+        Args:
+            key: Memory key to access.
+            val: Which attribute of the memory entry to return (e.g., 'value').
+            default: Default to return if key or val not present.
+            inner: If False, return the whole memory dict for the key; otherwise, operate on inner fields.
+        """
         if not inner:
             return self.memory.get(key, default)
         if not key in self.memory:
@@ -671,6 +868,7 @@ class AI_Manager:
         return self.memory[key].get(val, default)
 
     def reset(self, key, *args, **kwargs):
+        """Reset the memory key's value to its default using its 'reset' handler."""
         if key in self.memory:
             self.memory[key]["value"] = self.do(key, "reset", *args, **kwargs)
 
@@ -690,6 +888,12 @@ class AI_Manager:
     #     self.add(key, event_name, current)
 
     def effect(self, key, event_name, hook_func, prepend=True):
+        """Attach a hook to run before or after an existing event handler.
+
+        If prepend is True, the hook runs first and its result is passed to the original handler.
+        If prepend is False, the original handler runs first and its result is then passed to the hook.
+        The hook_func may be provided as a string naming another memory function; in that case it will be resolved.
+        """
         if key not in self.memory:
             return
 
