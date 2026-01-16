@@ -22,6 +22,8 @@ from googleapiclient.discovery import build
 from nuvem_de_som import SoundCloud as sc
 from google_images_search import GoogleImagesSearch
 import re
+from typing import Dict, Any, List, Optional
+import json
 
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
@@ -99,21 +101,123 @@ def perplexity_search(*search_term):
     }
 
 
-def google_search(*search_term):
-    """Perform a web search using the Google Custom Search API"""
-    search_term = " ".join(search_term)
-    service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
-    res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
+# def google_search(*search_term):
+#     """Perform a web search using the Google Custom Search API"""
+#     search_term = " ".join(search_term)
+#     service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
+#     res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
 
-    if "items" not in res:
-        return {"results": []}
-    else:
-        res = res["items"]
+#     if "items" not in res:
+#         return {"results": []}
+#     else:
+#         res = res["items"]
 
-    results = [{"title": r["title"], "link": r["link"]} for r in res]
+#     results = [{"title": r["title"], "link": r["link"]} for r in res]
 
-    return {"results": results}
+#     return {"results": results}
+#
 
+def perplexity_search(*search_term: str) -> Dict[str, Any]:
+    """
+    Perform a web search using Perplexity AI.
+    Returns structured data for agent consumption.
+    """
+    query = " ".join(search_term).strip()
+
+    if not query:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Search query cannot be empty"
+        }
+
+    system_prompt = f"""You are a precise research assistant.
+    Provide factual, concise answers. If you find relevant sources,
+    include them as markdown links [title](url).
+    Research this query and provide a concise answer with sources if available: {query}
+    """
+
+    try:
+        response = PROMPT_MANAGER.send(
+            system_prompt,
+            AI="Perplexity",
+        )
+
+        # Fallback to raw response
+        return {
+            "result": response,
+            "sources": [],
+            "status": "found",
+            "message": "✅ Perplexity search completed"
+        }
+
+    except Exception as e:
+        cprint(f"❌ Perplexity API error: {e}", "red")
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Perplexity failed: {str(e)}"
+        }
+
+def google_search(*search_term: str) -> Dict[str, Any]:
+    """
+    Perform a web search using Google Custom Search API.
+    Returns consistent structure with status.
+    """
+    query = " ".join(search_term).strip()
+
+    if not query:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Search query cannot be empty"
+        }
+
+    config = MANAGER.MANAGER.config.get("search", {})
+    num_results = config.get("num_results", 2)
+
+    try:
+        service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
+        res = service.cse().list(
+            q=query,
+            cx=settings.SEARCH_ID,
+            num=num_results
+        ).execute()
+
+        if "items" not in res or not res["items"]:
+            return {
+                "result": [],
+                "attempts": [],
+                "status": "not_found",
+                "message": "❌ No results from Google"
+            }
+
+        results = [
+            {
+                "title": item.get("title", "No title").strip(),
+                "link": item.get("link", "").strip()
+            }
+            for item in res["items"]
+        ]
+
+        return {
+            "result": results,
+            "attempts": [],
+            "status": "found",
+            "message": f"✅ Found {len(results)} result(s)"
+        }
+
+    except Exception as e:
+        cprint(f"❌ Google API error: {e}", "red")
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Google search failed: {str(e)}"
+        }
 
 GIF_CACHE = {}
 
@@ -208,8 +312,6 @@ def gif_google_search(*search_term, limit=15):
 
     return {"link": url}
 
-    return "Testing no gif found"
-
 
 """
 Setup    -----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -279,11 +381,47 @@ def get_weather(*city):
     url = f"https://api.weatherapi.com/v1/current.json?key={settings.WEATHER}&q={city}"
     response = requests.get(url)
     data = response.json()
-    return {
-        "location": f"{data['location']['name']}, {data['location']['region']}, {data['location']['country']}",
-        "temperature": data["current"]["temp_f"],
-        "description": data["current"]["condition"]["text"],
+
+    required_keys = ["location", "current"]
+    if not all(key in data for key in required_keys):
+        return {
+            "result": [],
+            "status": "not_found",
+            "message": f"❌ Weather data not found for '{city}'"
+        }
+
+    location_data = data["location"]
+    current_data = data["current"]
+
+    # Build result with fallbacks for missing data
+    weather_result = {
+        "location": f"{location_data.get('name', 'Unknown')}, {location_data.get('region', '')}, {location_data.get('country', '')}".strip(', '),
+        "temp": current_data.get("temp_f"),
+        "temp_c": current_data.get("temp_c"),
+        "desc": current_data.get("condition", {}).get("text", "Unknown"),
+        "humidity": current_data.get("humidity"),
+        "feels_like": current_data.get("feelslike_f"),
+        "wind_mph": current_data.get("wind_mph"),
+        "last_updated": current_data.get("last_updated")
     }
+
+    # Remove None values
+    weather_result = {k: v for k, v in weather_result.items() if v is not None}
+
+    temp_display = f"{weather_result.get('temp', '?')}°F"
+    if weather_result.get('temp_c'):
+        temp_display += f" ({weather_result['temp_c']}°C)"
+
+    return {
+        "result": [weather_result],  # Wrap in list for consistency
+        "status": "found",
+        "message": f"{weather_result['location']}: {temp_display}, {weather_result['desc']}"
+      }
+    # return {
+    #     "location": f"{data['location']['name']}, {data['location']['region']}, {data['location']['country']}",
+    #     "temperature": data["current"]["temp_f"],
+    #     "description": data["current"]["condition"]["text"],
+    # }
 
 
 @MANAGER.command(
@@ -327,20 +465,80 @@ def upload_to_imgur(image_data):
         return None
 
 
+# @MANAGER.command(
+#     "search",
+#     "$search <search term>",
+#     "Web Search for something you do not know about or recent news.",
+#     "Make sure to post the most relavant link or extra_info. Also make sure to post the entire link.",
+# )
+# def combined_search(*search_term):
+#     google = google_search(*search_term)
+#     pplx = perplexity_search(*search_term)
+#     return {
+#         "results": google["results"],
+#         "extra_info": pplx["result"],
+#     }
+#
+
 @MANAGER.command(
     "search",
     "$search <search term>",
     "Web Search for something you do not know about or recent news.",
-    "Make sure to post the most relavant link or extra_info. Also make sure to post the entire link.",
+    "Make sure to post the most relevant link or extra_info. Also make sure to post the entire link.",
 )
-def combined_search(*search_term):
-    google = google_search(*search_term)
-    pplx = perplexity_search(*search_term)
-    return {
-        "results": google["results"],
-        "extra_info": pplx["result"],
+def combined_search(*search_term: str) -> Dict[str, Any]:
+    """
+    Combined search: Google for links + Perplexity for context.
+    Handles partial failures gracefully.
+    """
+    query = " ".join(search_term).strip()
+
+    if not query:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Search query cannot be empty"
+        }
+
+    # Execute searches concurrently (if your framework supports it)
+    # For now, sequential with error isolation
+    google_data = google_search(*search_term)
+    pplx_data = perplexity_search(*search_term)
+
+    # Handle partial failures
+    if google_data["status"] == "error" and pplx_data["status"] == "error":
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Both searches failed"
+        }
+
+    # Combine results intelligently
+    result = {
+        "result": google_data["result"],  # Primary: Google links
+        "attempts": [],  # Alternatives from both sources
+        "status": "found",
+        "message": ""
     }
 
+    # Add Perplexity answer as supplementary info
+    if pplx_data["status"] == "found":
+        result["extra_info"] = pplx_data["result"]
+        result["sources"] = pplx_data.get("sources", [])
+        result["message"] += "📊 Perplexity: Success. "
+
+    if google_data["status"] == "found":
+        result["message"] += f"🔍 Google: {len(google_data['result'])} result(s)."
+    elif google_data["status"] == "not_found":
+        result["message"] += "🔍 Google: No results."
+
+    # Add alternatives from Perplexity if Google failed
+    if google_data["status"] != "found" and pplx_data.get("sources"):
+        result["attempts"] = pplx_data["sources"]
+
+    return result
 
 @MANAGER.command(
     "gif",
@@ -366,24 +564,175 @@ def get_gif(*search_term):
     return search(*search_term, limit=limit)
 
 
+# @MANAGER.command(
+#     "video",
+#     "$video <search term>",
+#     "Search for a video to post in chat.",
+#     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas)",
+# )
+# def get_vid(*search_term):
+#     search_term = " ".join(search_term)
+#     videosSearch = VideosSearch(search_term, limit=1)
+#     try:
+#         result = videosSearch.result()["result"][0]
+#         return {
+#             "title": result["title"],
+#             "link": result["link"],
+#         }
+#     except:
+#         return "Video not found."
+#
+#
+
+from typing import Dict, Any, List
+import shlex
+
 @MANAGER.command(
     "video",
     "$video <search term>",
     "Search for a video to post in chat.",
     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas)",
 )
-def get_vid(*search_term):
-    search_term = " ".join(search_term)
-    videosSearch = VideosSearch(search_term, limit=1)
-    try:
-        result = videosSearch.result()["result"][0]
-        return {
-            "title": result["title"],
-            "link": result["link"],
-        }
-    except:
-        return "Video not found."
+def get_vid(*search_term: str) -> Dict[str, Any]:
+    """
+    Search for a video (YouTube via VideosSearch).
 
+    Returns consistent dict:
+    - "result": List of videos [{"title": "...", "link": "..."}]
+    - "attempts": List of alternatives (empty if none)
+    - "status": "found" | "not_found" | "error"
+    - "message": Human-readable status
+    """
+    # Configuration
+    config = MANAGER.MANAGER.config.get("video", {})
+    limit = config.get("limit", 1)
+    max_results = config.get("max_results", 5)
+
+    query = " ".join(search_term).strip()
+
+    if not query:
+        return {
+            "result": [], "attempts": [], "status": "error",
+            "message": "❌ Search term cannot be empty"
+        }
+
+    cprint(f"🔍 Searching video: '{query}'", "yellow")
+
+    try:
+        videos_search = VideosSearch(query, limit=max_results)
+        search_result = videos_search.result()
+
+        # Validate API response
+        if not isinstance(search_result, dict) or "result" not in search_result:
+            raise ValueError("Invalid API response structure")
+
+        results = search_result["result"]
+
+        if not results:
+            return {
+                "result": [], "attempts": [], "status": "not_found",
+                "message": "❌ No videos found"
+            }
+
+        # Format results with link sanitization
+        def sanitize_link(url: str) -> str:
+            return url.rstrip('.,;:!?')  # Remove trailing punctuation for embed
+
+        primary = [
+            {
+                "title": v.get("title", "Untitled").strip(),
+                "link": sanitize_link(v.get("link", ""))
+            }
+            for v in results[:limit]
+        ]
+
+        alternatives = [
+            {
+                "title": v.get("title", "Untitled").strip(),
+                "link": sanitize_link(v.get("link", ""))
+            }
+            for v in results[limit:]
+        ]
+
+        status_msg = f"🎬 Found {len(primary)} video(s)"
+        if alternatives:
+            status_msg += f" ({len(alternatives)} alternatives)"
+
+        return {
+            "result": primary,
+            "attempts": alternatives,
+            "status": "found",
+            "message": status_msg
+        }
+
+    except (IndexError, KeyError) as e:
+        cprint(f"❌ No results: {e}", "red")
+        return {
+            "result": [], "attempts": [], "status": "not_found",
+            "message": "❌ Video not found"
+        }
+    except Exception as e:
+        cprint(f"❌ API error: {e}", "red")
+        return {
+            "result": [], "attempts": [], "status": "error",
+            "message": f"❌ Search failed: {str(e)}"
+        }
+
+# @MANAGER.command(
+#     "music",
+#     "$music <song title>, <artist name or 'None'>",
+#     "Search for a music link on soundcloud to post in chat.",
+#     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas). Also if the song is stated to be not found but you see it in attempts make sure to post the correct attempt.",
+# )
+# def get_music(*search_term):
+#     search_term = " ".join(search_term).split(",")
+#     song_name = search_term[0].strip()
+#     artist = search_term[1].strip().lower() if len(search_term) > 1 else None
+#     if artist == "none":
+#         artist = None
+#     num_links = 1
+#     links = []
+#     max_runs = 5
+
+#     search = song_name
+#     if artist is not None:
+#         search += f" {artist}"
+
+#     attempts = []
+
+#     cprint(f"Searching for {search}", "yellow")
+
+#     # Search SoundCloud for the track
+#     for t in sc.search_tracks(search):
+#         max_runs -= 1
+#         # If we've run out of attempts, return the attempts made
+#         if max_runs < 0:
+#             attempts = [{"title": r[0], "artist": r[1], "link": r[2]} for r in attempts]
+#             return {"result": "Song seemingly not found.", "attempts": attempts}
+
+#         # If an artist is specified, ensure it matches
+#         if (
+#             artist is not None
+#             and artist not in t["artist"].lower().replace(" ", "")
+#             and artist not in t["title"].lower().replace(" ", "")
+#         ):
+#             print(f"Attempt {max_runs} {t['title']} {t['artist']}")
+#             attempts.append((t["title"], t["artist"], t["url"]))
+#             continue
+
+#         links.append((t["title"], t["url"], t["artist"]))
+#         if len(links) >= num_links:
+#             break
+
+#     if len(links) == 0:
+#         return "Song not found."
+
+#     results = [{"title": r[0], "link": r[1]} for r in links]
+
+#     return {"result": results}
+
+import shlex
+from typing import List, Dict, Any, Optional
 
 @MANAGER.command(
     "music",
@@ -391,53 +740,132 @@ def get_vid(*search_term):
     "Search for a music link on soundcloud to post in chat.",
     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas). Also if the song is stated to be not found but you see it in attempts make sure to post the correct attempt.",
 )
-def get_music(*search_term):
-    search_term = " ".join(search_term).split(",")
-    song_name = search_term[0].strip()
-    artist = search_term[1].strip().lower() if len(search_term) > 1 else None
-    if artist == "none":
-        artist = None
-    num_links = 1
-    links = []
-    max_runs = 5
+def get_music(*search_term: str) -> Dict[str, Any]:
+    """
+    Search for a song on SoundCloud.
 
-    search = song_name
-    if artist is not None:
-        search += f" {artist}"
+    Returns consistent dict with keys:
+    - "result": List of matched tracks [{"title": "...", "link": "..."}]
+    - "attempts": List of alternatives [{"title": "...", "artist": "...", "link": "..."}]
+    - "status": "found" | "not_found" | "error"
+    - "message": Human-readable status
+    """
+    # Configuration
+    config = MANAGER.MANAGER.config.get("music", {})
+    num_links = config.get("num_links", 1)
+    max_tracks_to_check = config.get("max_tracks_to_check", 10)
 
-    attempts = []
+    # Robust argument parsing
+    try:
+        full_query = " ".join(search_term)
+        if ',' not in full_query:
+            return {
+                "result": [], "attempts": [], "status": "error",
+                "message": "❌ Invalid format. Use: $music <song>, <artist or 'None'>"
+            }
 
-    cprint(f"Searching for {search}", "yellow")
+        song_part, artist_part = full_query.split(',', 1)
+        song_name = song_part.strip() or ''
+        artist = artist_part.strip()
 
-    # Search SoundCloud for the track
-    for t in sc.search_tracks(search):
-        max_runs -= 1
-        # If we've run out of attempts, return the attempts made
-        if max_runs < 0:
-            attempts = [{"title": r[0], "artist": r[1], "link": r[2]} for r in attempts]
-            return {"result": "Song seemingly not found.", "attempts": attempts}
+        # Handle 'None' artist (case-insensitive)
+        if artist.lower() == "none" or not artist:
+            artist = None
 
-        # If an artist is specified, ensure it matches
-        if (
-            artist is not None
-            and artist not in t["artist"].lower().replace(" ", "")
-            and artist not in t["title"].lower().replace(" ", "")
-        ):
-            print(f"Attempt {max_runs} {t['title']} {t['artist']}")
-            attempts.append((t["title"], t["artist"], t["url"]))
-            continue
+    except Exception as e:
+        cprint(f"Argument parsing error: {e}", "red")
+        return {
+            "result": [], "attempts": [], "status": "error",
+            "message": f"❌ Failed to parse: {e}"
+        }
 
-        links.append((t["title"], t["url"], t["artist"]))
-        if len(links) >= num_links:
-            break
+    cprint(f"🔍 Searching for '{song_name}' by {artist or 'any artist'}", "yellow")
 
-    if len(links) == 0:
-        return "Song not found."
+    search_query = f"{song_name} {artist}" if artist else song_name
+    matches: List[Dict[str, str]] = []
+    alternatives: List[Dict[str, str]] = []
 
-    results = [{"title": r[0], "link": r[1]} for r in links]
+    try:
+        tracks_checked = 0
 
-    return {"result": results}
+        for track in sc.search_tracks(search_query):
+            tracks_checked += 1
 
+            if tracks_checked > max_tracks_to_check:
+                cprint(f"⏹️ Hit scan limit ({max_tracks_to_check})", "yellow")
+                break
+
+            track_title = track.get("title", "").strip()
+            track_artist = track.get("artist", "").strip()
+            track_url = track.get("url", "").strip()
+
+            if not track_url:
+                continue
+
+            # Artist matching
+            if artist:
+                search_artist_norm = artist.lower().replace(" ", "")
+                track_artist_norm = track_artist.lower().replace(" ", "")
+                track_title_norm = track_title.lower().replace(" ", "")
+
+                is_match = (
+                    search_artist_norm in track_artist_norm or
+                    search_artist_norm in track_title_norm
+                )
+
+                if is_match:
+                    matches.append({
+                        "title": f"{track_title} - {track_artist}",
+                        "link": track_url
+                    })
+                    cprint(f"✅ Match: {track_title} by {track_artist}", "green")
+                else:
+                    # Store non-matches as alternatives
+                    alternatives.append({
+                        "title": track_title,
+                        "artist": track_artist,
+                        "link": track_url
+                    })
+                    cprint(f"💡 Alternative: {track_title} by {track_artist}", "yellow")
+            else:
+                matches.append({
+                    "title": f"{track_title} - {track_artist}",
+                    "link": track_url
+                })
+                cprint(f"✅ Found: {track_title} by {track_artist}", "green")
+
+            if len(matches) >= num_links:
+                break
+
+        # Consistent return structure
+        if matches:
+            return {
+                "result": matches,
+                "attempts": alternatives,
+                "status": "found",
+                "message": f"🎵 Found {len(matches)} track(s)"
+            }
+        elif alternatives:
+            return {
+                "result": [],
+                "attempts": alternatives,
+                "status": "not_found",
+                "message": f"🤔 No exact match. {len(alternatives)} alternative(s)."
+            }
+        else:
+            return {
+                "result": [],
+                "attempts": [],
+                "status": "not_found",
+                "message": "❌ No tracks found."
+            }
+
+    except Exception as e:
+        cprint(f"❌ API error: {e}", "red")
+        return {
+            "result": [], "attempts": [], "status": "error",
+            "message": f"API error: {str(e)}"
+        }
 
 """
 AGENT MODE -----------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -651,27 +1079,6 @@ def format_result_item(item):
     return str(item)
 
 def format_final_results(results):
-    # If we reach max steps, return the results so far
-    # final_results = []
-    # for result in results:
-    #     if isinstance(result, dict):
-    #         if "link" in result:
-    #             final_results.append(f"[{result.get('title', 'Link')}]({result['link']})")
-    #         elif "result" in result:
-    #             if isinstance(result["result"], list):
-    #                 for item in result["result"]:
-    #                     if isinstance(item, dict) and "link" in item:
-    #                         final_results.append(f"[{item.get('title', 'Link')}]({item['link']})")
-    #                     else:
-    #                         final_results.append(str(item))
-    #             else:
-    #                 final_results.append(str(result["result"]))
-    #         else:
-    #             final_results.append(str(result))
-    #     else:
-    #         final_results.append(str(result))
-
-    # return final_results
     return [format_result_item(r) for r in results]
 
 
