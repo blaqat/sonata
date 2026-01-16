@@ -19,6 +19,7 @@ import copy
 
 import discord
 from discord.ext import commands
+from requests import get
 
 from modules.AI_manager import AI_Manager
 from modules.utils import (
@@ -33,6 +34,7 @@ from modules.utils import (
     get_reference_message as get_ref,
     get_reference_chain as get_ref_chain,
     tenor_get_dl_url,
+    get_trace,
 )
 import random
 import re
@@ -105,10 +107,12 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     print(
         "  {0}: {1}".format(
             cstr(str=get_full_name(message), style="cyan"),
-            CENSOR and censor_message(
+            CENSOR
+            and censor_message(
                 message.content.replace("\n", "\n\t"),
                 BANNED_WORDS,
-            ) or message.content.replace("\n", "\n\t"),
+            )
+            or message.content.replace("\n", "\n\t"),
         )
     )
 
@@ -219,6 +223,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         and (message.author.name in WHITELIST or message.author.id in WHITELIST)
         or not message.author.bot
     )
+    IS_SONATA = message.author.bot and message.author.name == "sonata"
 
     if message.author.bot and message.author.name != "sonata" and not VALID_USER:
         # cprint(f"Ignoring: {message.author.id}: {message.content}", "red")
@@ -259,10 +264,12 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     print(
         "  {0}: {1}".format(
             cstr(str=get_full_name(message), style="cyan"),
-            CENSOR and censor_message(
+            CENSOR
+            and censor_message(
                 message.content.replace("\n", "\n\t"),
                 BANNED_WORDS,
-            ) or message.content.replace("\n", "\n\t"),
+            )
+            or message.content.replace("\n", "\n\t"),
         )
     )
 
@@ -289,7 +296,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         message_reference = None
 
     memory_text = memory_text.strip()
-    if VALID_USER and len(message.content) > 0:
+    if IS_SONATA and len(message.content) > 0:
         m = message.content
         # Remove command from message
         if message.content[0] == "$":
@@ -415,7 +422,7 @@ def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
 def timestamp_chat(_, chat_id, message_type, author, message, replying_to=None):
     time = discord.utils.utcnow().astimezone(EASTERN)
     timestamped_message = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
-    return ( 
+    return (
         chat_id,
         message_type,
         author,
@@ -542,7 +549,6 @@ def chat(sona: AI_Manager):
                 except:
                     cprint("Error deleting chat after summarization", "red")
 
-
             return summary, deleter
 
         def send(self, id, message_type, author, message, replying_to=None):
@@ -557,7 +563,7 @@ def chat(sona: AI_Manager):
                 ):
                     self.summarize(id)[1]()  # Summarizes and deletes chat
             except Exception as e:
-                print(f"Error in chat send: {e}")
+                cprint(f"Error in chat send: {e}", "red")
                 return a[3]
 
             return a[3]  # Return the message sent
@@ -586,7 +592,7 @@ def chat(sona: AI_Manager):
             new_c["instructions"] = prompt_manager.get_instructions()
             new_c["channel_id"] = id
             # Get Images for this channel
-            new_c["images"] = (c if c else {}).get("images", {}).get(id, None)
+            new_c["images"] = ((c if c else {}).get("images") or {}).get(id, None)
             new_c.update(config)
             try:
                 if "using_assistant" not in new_c and prompt_manager.exists("History"):
@@ -616,14 +622,16 @@ def chat(sona: AI_Manager):
 
                 self.send(id, "Bot", sona.name, response, replying_to)
                 # HACK: This is a hack to get the images from the config to clear
-                c.get("images", {})[id] = None
-                sona.config.get().get("images", {})[id] = None
-                sona.memory["config"]["value"].get("images", {})[id] = None
+                (c.get("images") or {})[id] = None
+                (sona.config.get().get("images") or {})[id] = None
+                (sona.memory["config"]["value"].get("images") or {})[id] = None
                 return response
             except Exception as e:
-                response = f"{e}"
-                self.send(id, "Bot", sona.name, response, replying_to)
-                return response
+                # response = f"{e}"
+                # return response
+                # self.send(id, "Bot", sona.name, response, replying_to)
+                cprint(f"Error in chat request: {get_trace()}", "red")
+                raise e
 
         def get_history(
             self,
@@ -695,6 +703,7 @@ Use the following guidelines:
         return sum
     except Exception as e:
         cprint(f"Error in chat summarize: {e}", "red")
+        raise e
 
 
 # Chat Plugin Instantiation
