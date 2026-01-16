@@ -20,15 +20,16 @@ Test Configuration
 RANDOM_CONFIG = False
 AUTO_MODEL = "c"  # g, o, c, a, m
 PROMPT_RESET = False
-VC_RECORDING = False  # True to record voice chat
+VC_RECORDING = False
 VC_SPEAKING = True
 GIF_SEARCH = "random"  # tenor, giphy, google, random
 EMOJIS = False
+AGENT = False  # Removes ability to run single commands other than agent
 IGNORE_LIST = []
 
 
 def rand_config():
-    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS
+    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS, AGENT
     models = ["g", "o", "c", "a", "m"]
     gif_searches = ["tenor", "giphy", "google", "random"]
     AUTO_MODEL = models[randint(0, len(models) - 1)]
@@ -37,6 +38,7 @@ def rand_config():
     VC_SPEAKING = bool(randint(0, 1))
     GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
     EMOJIS = bool(randint(0, 1))
+    AGENT = bool(randint(0, 1))
 
 
 import asyncio
@@ -45,6 +47,7 @@ import os
 import re
 from io import BytesIO
 from random import randint
+import sys
 
 import aioconsole
 import anthropic
@@ -59,14 +62,13 @@ from PIL import Image
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
 from modules.plugins import PLUGINS
-from modules.utils import (
-    async_cprint as cprint,
-    async_print as print,
-)
+from modules.utils import async_cprint as cprint, async_print as print, RestartSignal
 from modules.utils import (
     get_full_name,
     settings,
     get_reference_chain as get_chain,
+    get_trace,
+    ordinal,
 )
 
 import nest_asyncio
@@ -181,10 +183,7 @@ def extend(Sonata):
             ],
             "censor": False,
         },
-        self_commands={
-            "gif_search": GIF_SEARCH,
-            "agent": True
-        },
+        self_commands={"gif_search": GIF_SEARCH, "agent": AGENT},
         term_commands={
             "inject_emojis": EMOJIS,
         },
@@ -323,7 +322,7 @@ def OpenAI(client, prompt, model, config):
     key=settings.ANTHROPIC_AI,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
     # model="claude-sonnet-4-5-20250929",
-    model="claude-haiku-4-5"
+    model="claude-haiku-4-5",
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -383,6 +382,7 @@ def Claude(client, prompt, model, config):
             .text
         )
     except:
+        cprint("Retrying without images...", "yellow")
         return (
             client.messages.create(
                 # client.beta.prompt_caching.messages.create(
@@ -432,7 +432,7 @@ def Perplexity(client, prompt, model, config):
     setup=lambda _, key: genai.configure(api_key=key),
     # model="gemini-2.0-flash-exp",
     # model="gemini-2.5-pro-exp-03-25",
-    model = "gemini-2.5-flash"
+    model="gemini-2.5-flash",
     # model = "gemini-2.5-pro"
 )
 def Gemini(client, prompt, model, config):
@@ -909,6 +909,7 @@ async def ctx_reply(ctx, r, reply=True):
         else:
             await ctx.send(r[:2000])
     except AttributeError as _:
+        cprint(r[:2000], "red")
         await ctx.send(r[:2000])
 
 
@@ -920,7 +921,13 @@ async def get_channel(ctx):
         _ = ctx.author
         return ctx.channel
     except AttributeError as _:
+        cprint("Interaction context detected", "yellow")
+        cprint(f"Channel: {ctx.channel}", "yellow")
+        cprint(f"Id: {ctx.id}", "yellow")
         return ctx
+    except Exception as e:
+        cprint(f"Error getting channel: {e}", "red")
+        raise e
 
 
 # TODO: Refactor emoji archiving to a separate util file
@@ -1043,13 +1050,19 @@ async def ping(ctx):
     await ctx_reply(ctx, "pong")
 
 
+RESPONSE_FAILURES = dict()
+MAX_FAILURES = 3
+
+
 async def ai_question(ctx, *message, ai, short, error_prompt=None):
     """
     General handler for AI question commands.
     """
+    global RESPONSE_FAILURES
     print("")
     Sonata.config.set(AI=ai)
     INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
+    channel = await get_channel(ctx)
     try:
         message = " ".join(message)
         if message is None or message == "":
@@ -1068,7 +1081,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             _ref = None
         async with ctx.typing():
             r = Sonata.chat.request(
-                (await get_channel(ctx)).id,
+                channel.id,
                 message,
                 name,
                 _ref,
@@ -1085,13 +1098,29 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                 await ctx_reply(ctx, r, not respond_or_chat)
             else:
                 await ctx_reply(ctx, r, not respond_or_chat)
+        RESPONSE_FAILURES[(await get_channel(ctx)).id] = 0
     except Exception as e:
-        import traceback
         cprint(e, "red")
-        traceback.print_stack()
+        print(get_trace())
+        chn = channel.id
+        RESPONSE_FAILURES[chn] = RESPONSE_FAILURES.get(chn, 0) + 1
+        ord_fails = ordinal(RESPONSE_FAILURES[chn])
+        cprint(f"AI response failure {RESPONSE_FAILURES[chn]}/{MAX_FAILURES}", "red")
+        if RESPONSE_FAILURES[chn] >= MAX_FAILURES:
+            await ctx_reply(
+                ctx,
+                f"THATS THE ***{ord_fails.upper()}*** TIME <@{settings.GOD}> im restarting >:(",
+            )
+            cprint("Max AI response failures reached, resetting AI Manager", "red")
+            restart()
         await ctx_reply(
             ctx,
-            "Sorry, an error occured while processing your message.",
+            f"""
+### <@{settings.GOD}> i messed up ({ord_fails} time) :c
+
+```py
+{get_trace()}
+```""",
         )
     finally:
         Sonata.config.set(auto=short)
@@ -1146,6 +1175,19 @@ async def open_ai_assistant_question(ctx, *message):
     await ai_question(ctx, *message, ai="Assistant", short="a")
 
 
+@sonata.command(name="restart", description="Restart the bot.")
+async def restart_bot(ctx):
+    """
+    Command to restart the bot.
+    """
+    await ctx_reply(
+        ctx,
+        "https://i.pinimg.com/originals/e8/ee/77/e8ee77cd01795709f86edf724c390ed6.gif",
+        reply=True,
+    )
+    restart()
+
+
 async def main():
     # TODO: Make other run modes like "flash", "view", "absorb"
     # to handle different pre/post memory scenerios
@@ -1163,13 +1205,20 @@ async def main():
     await sonata.start(settings.BOT_TOKEN)
 
 
-try:
-    if __name__ == "__main__":
-        asyncio.run(main())
-except Exception as e:
-    print(e)
-    cprint("Exiting...", "red")
-finally:
+def restart():
+    cprint("Restarting...", "yellow")
     Sonata.save("chat", "value", module=True)
-    # cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
     Sonata.do("termcmd", "save")
+    os.execv(sys.executable, ["python"] + sys.argv)
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        print(get_trace())
+        cprint("Exiting...", "red")
+    finally:
+        Sonata.save("chat", "value", module=True)
+        # cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
+        Sonata.do("termcmd", "save")

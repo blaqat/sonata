@@ -7,6 +7,8 @@ This module contains various utility functions that can be used across different
 __author__ = "Aiden Green"
 __email__ = "aidengreenj@gmail.com"
 
+import os
+import traceback
 from typing import Any, Callable, Union, Iterable
 from os import getenv
 from dotenv import load_dotenv
@@ -17,6 +19,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor
 
 
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__)).replace("src/modules", "")
 # def run_async_coroutine(coroutine):
 #     loop = asyncio.new_event_loop()
 #     asyncio.set_event_loop(loop)
@@ -585,9 +588,11 @@ def print_symbols(
         # Allign symbols
         if allign != 0 and allign != "top" and height < max_height:
             loop(
-                (max_height - height) // 2
-                if allign == 1 or allign == "center"
-                else max_height - height - 0,
+                (
+                    (max_height - height) // 2
+                    if allign == 1 or allign == "center"
+                    else max_height - height - 0
+                ),
                 lambda: s.insert(0, " " * max_widths[i]),
             )
 
@@ -605,11 +610,11 @@ def print_symbols(
                             else " " * max_widths[_j]
                         )
                         + " " * padding,
-                        colors[_j]
-                        if not callable(colors) and len(colors) > _j
-                        else colors(symbol[_j])
-                        if callable(colors)
-                        else None,
+                        (
+                            colors[_j]
+                            if not callable(colors) and len(colors) > _j
+                            else colors(symbol[_j]) if callable(colors) else None
+                        ),
                     ),
                 )
             ),
@@ -693,23 +698,115 @@ def get_full_name(ctx):
             name += f" (Nickname: {author.nick})"
         return name
     except AttributeError as _:
+        async_cprint("Error get_full_name defaulting to sonata", "red")
         return "sonata"
 
 
+# def async_print(*args, **kwargs):
+#     try:
+#         loop = asyncio.get_running_loop()
+#         loop.run_in_executor(None, print, *args, **kwargs)
+#     except Exception as e:
+#         print(*args, **kwargs)
+
+
+# def async_cprint(*args, **kwargs):
+#     try:
+#         loop = asyncio.get_running_loop()
+#         loop.run_in_executor(None, cprint, *args, **kwargs)
+#     except Exception as e:
+#         cprint(*args, **kwargs)
+
+import threading
+import queue
+import time
+from typing import Any
+
+
+class NonBlockingPrinter:
+    def __init__(self):
+        self.print_queue = queue.Queue()
+        self.worker_thread = None
+        self.running = False
+        self._start_worker()
+
+    def _start_worker(self):
+        """Start the background printing thread"""
+        if self.worker_thread is None or not self.worker_thread.is_alive():
+            self.running = True
+            self.worker_thread = threading.Thread(
+                target=self._print_worker, daemon=True
+            )
+            self.worker_thread.start()
+
+    def _print_worker(self):
+        """Background thread that handles all printing"""
+        while self.running:
+            try:
+                # Get print job from queue (blocks until available)
+                job = self.print_queue.get(timeout=1.0)
+
+                if job is None:  # Shutdown signal
+                    break
+
+                func, args, kwargs = job
+
+                # Actually do the print (this thread can block, main thread won't)
+                try:
+                    func(*args, **kwargs)
+                except Exception as e:
+                    # If this fails, try basic print as fallback
+                    try:
+                        print(f"[Print Error: {e}]")
+                    except:
+                        pass  # If even basic print fails, give up
+
+                # Mark job as done
+                self.print_queue.task_done()
+
+                # Small delay to prevent overwhelming terminal
+                time.sleep(0.001)
+
+            except queue.Empty:
+                continue  # Timeout, check if still running
+            except Exception:
+                continue  # Any other error, keep going
+
+    def queue_print(self, *args, **kwargs):
+        """Queue a regular print job"""
+        try:
+            self.print_queue.put((print, args, kwargs), block=False)
+        except queue.Full:
+            pass  # Queue full, drop this print
+
+    def queue_cprint(self, *args, **kwargs):
+        """Queue a colored print job"""
+        try:
+            self.print_queue.put((cprint, args, kwargs), block=False)
+        except queue.Full:
+            pass  # Queue full, drop this print
+
+    def shutdown(self):
+        """Shutdown the printer thread"""
+        self.running = False
+        try:
+            self.print_queue.put(None, block=False)  # Shutdown signal
+        except:
+            pass
+
+
+# Global printer instance
+_printer = NonBlockingPrinter()
+
+
 def async_print(*args, **kwargs):
-    try:
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, print, *args, **kwargs)
-    except Exception as e:
-        print(*args, **kwargs)
+    """Non-blocking print - queues the job"""
+    _printer.queue_print(*args, **kwargs)
 
 
 def async_cprint(*args, **kwargs):
-    try:
-        loop = asyncio.get_running_loop()
-        loop.run_in_executor(None, cprint, *args, **kwargs)
-    except Exception as e:
-        cprint(*args, **kwargs)
+    """Non-blocking colored print - queues the job"""
+    _printer.queue_cprint(*args, **kwargs)
 
 
 def async_input(*args, **kwargs):
@@ -725,6 +822,7 @@ def print_available_genai_models(genai):
     async_print("\n".join("{}".format(k.name[7:]) for k in genai.list_models()))
 
 
+# TODO: Store in Sona.memory to allow for saving/loading
 # Stored as ID: (message, name, content, next id)
 class Reference:
     def __init__(self, message, name, content, next_id):
@@ -849,3 +947,60 @@ def tenor_get_dl_url(url, key, size="mediumgif"):
             return None
     else:
         return None
+
+
+class Map:
+    def __init__(self, initial_dict: dict = None):
+        self._data: dict = initial_dict if initial_dict is not None else dict()
+
+    def __getattr__(self, key):
+        try:
+            if key == "_data":
+                return super().__getattribute__(key)
+            else:
+                return self._data[key]
+        except KeyError:
+            return self._data.__getattribute__(key)
+
+    def __setattr__(self, key, value):
+        if key == "_data":
+            super().__setattr__(key, value)
+        else:
+            self._data[key] = value
+
+    def __delattr__(self, key):
+        try:
+            del self._data[key]
+        except KeyError:
+            raise AttributeError(f"'Dict' object has no attribute '{key}'")
+
+    def __getitem__(self, key):
+        return self._data[key]
+
+    def __setitem__(self, key, value):
+        self._data[key] = value
+
+    def __delitem__(self, key):
+        del self._data[key]
+
+    def __contains__(self, key):
+        return key in self._data
+
+    def to_dict(self):
+        return self._data.copy()
+
+
+class RestartSignal(Exception):
+    """Exception raised to signal a restart is required."""
+
+    pass
+
+
+def get_trace() -> str:
+    tb = traceback.format_exc()
+    tb = tb.replace(PROJECT_ROOT, "")
+    return tb
+
+
+def ordinal(n: int) -> str:
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1:'st', 2:'nd', 3:'rd'}.get(n % 10, 'th')}"
