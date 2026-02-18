@@ -18,19 +18,19 @@ Test Configuration
 """
 # TODO: Move configuration to a separate file
 RANDOM_CONFIG = False
-AUTO_MODEL = "c"  # g, o, c, a, m
+AUTO_MODEL = "x"  # g, o, c, a, m, x
 PROMPT_RESET = False
 VC_RECORDING = False
 VC_SPEAKING = True
 GIF_SEARCH = "random"  # tenor, giphy, google, random
 EMOJIS = False
-AGENT = False  # Removes ability to run single commands other than agent
+AGENT = True  # Removes ability to run single commands other than agent
 IGNORE_LIST = []
 
 
 def rand_config():
     global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS, AGENT
-    models = ["g", "o", "c", "a", "m"]
+    models = ["g", "o", "c", "a", "m", "x"]
     gif_searches = ["tenor", "giphy", "google", "random"]
     AUTO_MODEL = models[randint(0, len(models) - 1)]
     PROMPT_RESET = bool(randint(0, 1))
@@ -43,6 +43,7 @@ def rand_config():
 
 import asyncio
 import base64
+from functools import reduce
 import os
 import re
 from io import BytesIO
@@ -55,14 +56,17 @@ import discord
 
 import google.generativeai as genai
 import openai
+from xai_sdk import Client as XAIClient
+from xai_sdk.chat import user as xai_user, system as xai_system, image as xai_image
 import requests
 from discord.ext import commands
 
 from PIL import Image
+from xai_sdk.types import Content
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
 from modules.plugins import PLUGINS
-from modules.utils import async_cprint as cprint, async_print as print, RestartSignal
+from modules.utils import async_cprint as cprint, async_print as print, RestartSignal, cstr
 from modules.utils import (
     get_full_name,
     settings,
@@ -253,7 +257,7 @@ def Assistant(client, prompt, model, config):
     ),
     model="grok-beta",
 )
-def Grok(client, prompt, model, config):
+def GrokBeta(client, prompt, model, config):
     content = [{"content": prompt, "role": "user"}]
 
     if config["instructions"]:
@@ -278,6 +282,38 @@ def Grok(client, prompt, model, config):
         .choices[0]
         .message.content
     )
+
+
+@MANAGER.register_ai(
+    None,
+    key=settings.X_AI,
+    setup=lambda S, key: setattr(S, "client", XAIClient(api_key=key)),
+    # model="grok-4-1-fast-reasoning"
+    model="grok-4-1-fast-non-reasoning"
+)
+def Grok(client: XAIClient, prompt, model, config):
+    chat = client.chat.create(
+        model=model,
+        max_tokens=config.get("max_tokens", 1250),
+        temperature=config.get("temp") or config.get("temperature") or 0,
+        store_messages=False,
+    )
+
+    if (instructions := config.get("instructions", None)) is not None:
+        chat.append(xai_system(instructions))
+
+    content = list()
+
+    content.append(prompt)
+    if images := config.get("images", False):
+        for url in images:
+            content.append(xai_image(url=url))
+        config["images"] = None
+
+    chat.append(xai_user(*content))
+
+    response = chat.sample()
+    return response.content
 
 
 @MANAGER.register_ai(
@@ -1166,6 +1202,17 @@ async def grok_ai_question(ctx, *message):
         ),
     )
 
+@sonata.command(name="xb", description="Ask a question using GrokBeta")
+async def grok_ai_question(ctx, *message):
+    await ai_question(
+        ctx,
+        *message,
+        ai="GrokBeta",
+        short="xb",
+        error_prompt=lambda r, name: PROMPT_MANAGER.get(
+            "ExplainBlockReasoning", r, name
+        ),
+    )
 
 @sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
 async def open_ai_assistant_question(ctx, *message):

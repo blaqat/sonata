@@ -1,0 +1,26 @@
+[project]
+name = "sonata-py"
+version = "0.4.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aioconsole==0.8.0",
+    "anthropic==0.34.2",
+    "google-api-python-client==2.48.0",
+    "google-generativeai==0.8.2",
+    "google-images-search==1.4.7",
+    "langchain==0.0.330",
+    "mistralai==1.1.0",
+    "nest-asyncio==1.6.0",
+    "nuvem-de-som==0.0.1a2",
+    "openai==1.51.0",
+    "pillow==10.4.0",
+    "pretty-errors==1.2.25",
+    "prompt-toolkit==3.0.52",
+    "py-cord==2.6.1",
+    "pynacl==1.5.0",
+    "python-dotenv==1.0.1",
+    "requests==2.32.3",
+    "speechrecognition==3.10.4",
+    "youtube-search-python==1.6.6",
+    "xai-sdk==1.6.1",
+]
