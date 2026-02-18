@@ -18,7 +18,7 @@ Test Configuration
 """
 # TODO: Move configuration to a separate file
 RANDOM_CONFIG = False
-AUTO_MODEL = "o"  # g, o, c, a, m, x
+AUTO_MODEL = "c"  # g, o, c, a, m, x
 PROMPT_RESET = False
 VC_RECORDING = False
 VC_SPEAKING = True
@@ -340,7 +340,7 @@ def OpenAI(client, prompt, model, config):
                 {"role": "user", "content": content},
             ],
             max_completion_tokens=config.get("max_tokens", 1250),
-            temperature=config.get("temp") or config.get("temperature") or 0,
+            temperature=config.get("temp") or config.get("temperature") or 1,
         )
         .choices[0]
         .message.content
@@ -1115,7 +1115,8 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
         except Exception:
             _ref = None
         async with ctx.typing():
-            r = Sonata.chat.request(
+            r = await asyncio.to_thread(
+                Sonata.chat.request,
                 channel.id,
                 message,
                 name,
