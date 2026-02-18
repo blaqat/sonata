@@ -126,14 +126,12 @@ reset_instructions()
 #  https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645122
 Sonata, MANAGER = AI_Manager.init(
     PROMPT_MANAGER,
-    "Gemini",
-    (settings.GOOGLE_AI, "Gemini", 1, 2500),
     summarize_chat=True,
     name="Sonata",
 )
 
-Sonata.config.set(temp=1)
-Sonata.config.setup()
+# Sonata.config.set(temp=1)
+# Sonata.config.setup()
 
 
 @MANAGER.prompt
@@ -155,17 +153,6 @@ def extend(Sonata):
     Extends the Sonata AI_Manager with additional plugins and configurations.
     """
     # Add funny responses with a small chance of being triggered
-    # TODO: Move to configuration
-    funny_responses = {
-        "subi": (
-            0.005,
-            "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
-        ),
-        "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
-        "blaqat": (0.005, "yes master"),
-        "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
-    }
-
     # TODO: Move config to configuration
     Sonata.extend(
         PLUGINS(openai_assistant=False),
@@ -175,7 +162,15 @@ def extend(Sonata):
             "view_replies": True,
             "auto": AUTO_MODEL,
             "ignore": [name.lower() for name in IGNORE_LIST],
-            "response_map": funny_responses,
+            "response_map": {
+                "subi": (
+                    0.005,
+                    "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
+                ),
+                "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
+                "blaqat": (0.005, "yes master"),
+                "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
+            },
             "bot_whitelist": [
                 "BluBot",
                 1311742291521835048,
@@ -323,6 +318,7 @@ def OpenAI(client, prompt, model, config):
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
     # model="claude-sonnet-4-5-20250929",
     model="claude-haiku-4-5",
+    default=True,
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -413,16 +409,22 @@ def Claude(client, prompt, model, config):
 )
 def Perplexity(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    return (
-        client.create(
-            model=model,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=config.get("max_tokens", 1250),
-            temperature=config.get("temp") or config.get("temperature") or 0,
-        )
-        .choices[0]
-        .message.content
+    response = client.create(
+        model=model,
+        messages=[{"role": "user", "content": content}],
+        max_tokens=config.get("max_tokens", 1250),
+        temperature=config.get("temp") or config.get("temperature") or 0,
     )
+
+    message = response.choices[0].message.content
+    citations = response.citations
+    search_results = response.search_results
+
+    return {
+        "message": message,
+        "citations": citations,
+        "search_results": search_results,
+    }
 
 
 @MANAGER.register_ai(

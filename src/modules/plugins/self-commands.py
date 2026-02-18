@@ -24,6 +24,7 @@ from google_images_search import GoogleImagesSearch
 import re
 from typing import Dict, Any, List, Optional
 import json
+import time
 
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
@@ -80,43 +81,6 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
-@MANAGER.new_helper(
-    "command",
-)
-def command(F, name, usage, desc=None, inst=None):
-    MANAGER.set("command", name, F, usage, desc, inst)
-
-
-def perplexity_search(*search_term):
-    """Perform a web search using the Perplexity API"""
-    search_term = " ".join(search_term)
-
-    response = PROMPT_MANAGER.send(
-        f"Be precise and as concise as possible: {search_term}",
-        AI="Perplexity",
-    )
-
-    return {
-        "result": response,
-    }
-
-
-# def google_search(*search_term):
-#     """Perform a web search using the Google Custom Search API"""
-#     search_term = " ".join(search_term)
-#     service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
-#     res = service.cse().list(q=search_term, cx=settings.SEARCH_ID, num=2).execute()
-
-#     if "items" not in res:
-#         return {"results": []}
-#     else:
-#         res = res["items"]
-
-#     results = [{"title": r["title"], "link": r["link"]} for r in res]
-
-#     return {"results": results}
-#
-
 def perplexity_search(*search_term: str) -> Dict[str, Any]:
     """
     Perform a web search using Perplexity AI.
@@ -129,7 +93,7 @@ def perplexity_search(*search_term: str) -> Dict[str, Any]:
             "result": [],
             "attempts": [],
             "status": "error",
-            "message": "❌ Search query cannot be empty"
+            "message": "❌ Search query cannot be empty",
         }
 
     system_prompt = f"""You are a precise research assistant.
@@ -144,12 +108,16 @@ def perplexity_search(*search_term: str) -> Dict[str, Any]:
             AI="Perplexity",
         )
 
-        # Fallback to raw response
+        message, citations, sites = (
+            response.values() if isinstance(response, dict) else (response, [], [])
+        )
+
         return {
-            "result": response,
-            "sources": [],
+            "result": message,
+            "sources": citations,
+            "sites": sites,
             "status": "found",
-            "message": "✅ Perplexity search completed"
+            "message": "✅ Perplexity search completed",
         }
 
     except Exception as e:
@@ -158,8 +126,9 @@ def perplexity_search(*search_term: str) -> Dict[str, Any]:
             "result": [],
             "attempts": [],
             "status": "error",
-            "message": f"❌ Perplexity failed: {str(e)}"
+            "message": f"❌ Perplexity failed: {str(e)}",
         }
+
 
 def google_search(*search_term: str) -> Dict[str, Any]:
     """
@@ -173,7 +142,7 @@ def google_search(*search_term: str) -> Dict[str, Any]:
             "result": [],
             "attempts": [],
             "status": "error",
-            "message": "❌ Search query cannot be empty"
+            "message": "❌ Search query cannot be empty",
         }
 
     config = MANAGER.MANAGER.config.get("search", {})
@@ -181,24 +150,24 @@ def google_search(*search_term: str) -> Dict[str, Any]:
 
     try:
         service = build("customsearch", "v1", developerKey=settings.SEARCH_KEY)
-        res = service.cse().list(
-            q=query,
-            cx=settings.SEARCH_ID,
-            num=num_results
-        ).execute()
+        res = (
+            service.cse()
+            .list(q=query, cx=settings.SEARCH_ID, num=num_results)
+            .execute()
+        )
 
         if "items" not in res or not res["items"]:
             return {
                 "result": [],
                 "attempts": [],
                 "status": "not_found",
-                "message": "❌ No results from Google"
+                "message": "❌ No results from Google",
             }
 
         results = [
             {
                 "title": item.get("title", "No title").strip(),
-                "link": item.get("link", "").strip()
+                "link": item.get("link", "").strip(),
             }
             for item in res["items"]
         ]
@@ -207,7 +176,7 @@ def google_search(*search_term: str) -> Dict[str, Any]:
             "result": results,
             "attempts": [],
             "status": "found",
-            "message": f"✅ Found {len(results)} result(s)"
+            "message": f"✅ Found {len(results)} result(s)",
         }
 
     except Exception as e:
@@ -216,8 +185,9 @@ def google_search(*search_term: str) -> Dict[str, Any]:
             "result": [],
             "attempts": [],
             "status": "error",
-            "message": f"❌ Google search failed: {str(e)}"
+            "message": f"❌ Google search failed: {str(e)}",
         }
+
 
 GIF_CACHE = {}
 
@@ -329,9 +299,7 @@ Setup    -----------------------------------------------------------------------
     validate=lambda M, command: command in M["value"],
     names=lambda M: list(M["value"].keys()),
     str=lambda M, command, cobj=None: f"{command} - {(cobj or M['value'][command])['usage']} - {(cobj or M['value'][command])['desc']}",
-    list=lambda M: "; ".join(
-        M["str"](M, k, c) for k, c in M["value"].items()
-    )
+    list=lambda M: "; ".join(M["str"](M, k, c) for k, c in M["value"].items()),
 )
 def use_command(M, command, *args):
     try:
@@ -339,6 +307,13 @@ def use_command(M, command, *args):
     except Exception as e:
         cprint(f"Error running command {command}: {e}", "red")
         return f"Error running command {command}: {e}"
+
+
+@MANAGER.new_helper(
+    "command",
+)
+def command(F, name, usage, desc=None, inst=None):
+    MANAGER.set("command", name, F, usage, desc, inst)
 
 
 """
@@ -375,6 +350,7 @@ def roll(*args):
     except:
         return "Invalid input. Please use the format $roll <number of dice> <number of sides>"
 
+
 @MANAGER.command("weather", "$weather <city>", "Get the weather for a location.")
 def get_weather(*city):
     city = " ".join(city)
@@ -387,7 +363,7 @@ def get_weather(*city):
         return {
             "result": [],
             "status": "not_found",
-            "message": f"❌ Weather data not found for '{city}'"
+            "message": f"❌ Weather data not found for '{city}'",
         }
 
     location_data = data["location"]
@@ -395,33 +371,30 @@ def get_weather(*city):
 
     # Build result with fallbacks for missing data
     weather_result = {
-        "location": f"{location_data.get('name', 'Unknown')}, {location_data.get('region', '')}, {location_data.get('country', '')}".strip(', '),
+        "location": f"{location_data.get('name', 'Unknown')}, {location_data.get('region', '')}, {location_data.get('country', '')}".strip(
+            ", "
+        ),
         "temp": current_data.get("temp_f"),
         "temp_c": current_data.get("temp_c"),
         "desc": current_data.get("condition", {}).get("text", "Unknown"),
         "humidity": current_data.get("humidity"),
         "feels_like": current_data.get("feelslike_f"),
         "wind_mph": current_data.get("wind_mph"),
-        "last_updated": current_data.get("last_updated")
+        "last_updated": current_data.get("last_updated"),
     }
 
     # Remove None values
     weather_result = {k: v for k, v in weather_result.items() if v is not None}
 
     temp_display = f"{weather_result.get('temp', '?')}°F"
-    if weather_result.get('temp_c'):
+    if weather_result.get("temp_c"):
         temp_display += f" ({weather_result['temp_c']}°C)"
 
     return {
         "result": [weather_result],  # Wrap in list for consistency
         "status": "found",
-        "message": f"{weather_result['location']}: {temp_display}, {weather_result['desc']}"
-      }
-    # return {
-    #     "location": f"{data['location']['name']}, {data['location']['region']}, {data['location']['country']}",
-    #     "temperature": data["current"]["temp_f"],
-    #     "description": data["current"]["condition"]["text"],
-    # }
+        "message": f"{weather_result['location']}: {temp_display}, {weather_result['desc']}",
+    }
 
 
 @MANAGER.command(
@@ -440,51 +413,11 @@ def imagine(*prompt):
     }
 
 
-def upload_to_imgur(image_data):
-    """Upload image data to Imgur and return URL"""
-    try:
-        import requests
-
-        url = "https://api.imgur.com/3/image"
-        headers = {
-            "Authorization": "Client-ID 546c25a59c58ad7"  # Anonymous upload client ID
-        }
-
-        files = {"image": image_data}
-        response = requests.post(url, headers=headers, files=files)
-
-        if response.status_code == 200:
-            data = response.json()
-            return data["data"]["link"]
-        else:
-            print(f"Imgur upload failed: {response.text}")
-            return None
-
-    except Exception as e:
-        print(f"Error uploading to Imgur: {e}")
-        return None
-
-
-# @MANAGER.command(
-#     "search",
-#     "$search <search term>",
-#     "Web Search for something you do not know about or recent news.",
-#     "Make sure to post the most relavant link or extra_info. Also make sure to post the entire link.",
-# )
-# def combined_search(*search_term):
-#     google = google_search(*search_term)
-#     pplx = perplexity_search(*search_term)
-#     return {
-#         "results": google["results"],
-#         "extra_info": pplx["result"],
-#     }
-#
-
 @MANAGER.command(
     "search",
     "$search <search term>",
     "Web Search for something you do not know about or recent news.",
-    "Make sure to post the most relevant link or extra_info. Also make sure to post the entire link.",
+    "Make sure to post the most relevant link or info from perplexity. Also make sure to post the entire link.",
 )
 def combined_search(*search_term: str) -> Dict[str, Any]:
     """
@@ -498,7 +431,7 @@ def combined_search(*search_term: str) -> Dict[str, Any]:
             "result": [],
             "attempts": [],
             "status": "error",
-            "message": "❌ Search query cannot be empty"
+            "message": "❌ Search query cannot be empty",
         }
 
     # Execute searches concurrently (if your framework supports it)
@@ -512,22 +445,22 @@ def combined_search(*search_term: str) -> Dict[str, Any]:
             "result": [],
             "attempts": [],
             "status": "error",
-            "message": "❌ Both searches failed"
+            "message": "❌ Both searches failed",
         }
 
     # Combine results intelligently
     result = {
+        "status": "found",
+        "message": "",
         "result": google_data["result"],  # Primary: Google links
         "attempts": [],  # Alternatives from both sources
-        "status": "found",
-        "message": ""
     }
 
     # Add Perplexity answer as supplementary info
     if pplx_data["status"] == "found":
-        result["extra_info"] = pplx_data["result"]
-        result["sources"] = pplx_data.get("sources", [])
-        result["message"] += "📊 Perplexity: Success. "
+        result["perplexity_result"] = pplx_data["result"]
+        result["perplexity_sources"] = pplx_data.get("sources", [])
+        result["message"] += f"📊 Perplexity: {len(pplx_data['result'])} result(s)."
 
     if google_data["status"] == "found":
         result["message"] += f"🔍 Google: {len(google_data['result'])} result(s)."
@@ -539,6 +472,7 @@ def combined_search(*search_term: str) -> Dict[str, Any]:
         result["attempts"] = pplx_data["sources"]
 
     return result
+
 
 @MANAGER.command(
     "gif",
@@ -563,29 +497,6 @@ def get_gif(*search_term):
 
     return search(*search_term, limit=limit)
 
-
-# @MANAGER.command(
-#     "video",
-#     "$video <search term>",
-#     "Search for a video to post in chat.",
-#     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas)",
-# )
-# def get_vid(*search_term):
-#     search_term = " ".join(search_term)
-#     videosSearch = VideosSearch(search_term, limit=1)
-#     try:
-#         result = videosSearch.result()["result"][0]
-#         return {
-#             "title": result["title"],
-#             "link": result["link"],
-#         }
-#     except:
-#         return "Video not found."
-#
-#
-
-from typing import Dict, Any, List
-import shlex
 
 @MANAGER.command(
     "video",
@@ -612,8 +523,10 @@ def get_vid(*search_term: str) -> Dict[str, Any]:
 
     if not query:
         return {
-            "result": [], "attempts": [], "status": "error",
-            "message": "❌ Search term cannot be empty"
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Search term cannot be empty",
         }
 
     cprint(f"🔍 Searching video: '{query}'", "yellow")
@@ -630,18 +543,20 @@ def get_vid(*search_term: str) -> Dict[str, Any]:
 
         if not results:
             return {
-                "result": [], "attempts": [], "status": "not_found",
-                "message": "❌ No videos found"
+                "result": [],
+                "attempts": [],
+                "status": "not_found",
+                "message": "❌ No videos found",
             }
 
         # Format results with link sanitization
         def sanitize_link(url: str) -> str:
-            return url.rstrip('.,;:!?')  # Remove trailing punctuation for embed
+            return url.rstrip(".,;:!?")  # Remove trailing punctuation for embed
 
         primary = [
             {
                 "title": v.get("title", "Untitled").strip(),
-                "link": sanitize_link(v.get("link", ""))
+                "link": sanitize_link(v.get("link", "")),
             }
             for v in results[:limit]
         ]
@@ -649,7 +564,7 @@ def get_vid(*search_term: str) -> Dict[str, Any]:
         alternatives = [
             {
                 "title": v.get("title", "Untitled").strip(),
-                "link": sanitize_link(v.get("link", ""))
+                "link": sanitize_link(v.get("link", "")),
             }
             for v in results[limit:]
         ]
@@ -662,77 +577,26 @@ def get_vid(*search_term: str) -> Dict[str, Any]:
             "result": primary,
             "attempts": alternatives,
             "status": "found",
-            "message": status_msg
+            "message": status_msg,
         }
 
     except (IndexError, KeyError) as e:
         cprint(f"❌ No results: {e}", "red")
         return {
-            "result": [], "attempts": [], "status": "not_found",
-            "message": "❌ Video not found"
+            "result": [],
+            "attempts": [],
+            "status": "not_found",
+            "message": "❌ Video not found",
         }
     except Exception as e:
         cprint(f"❌ API error: {e}", "red")
         return {
-            "result": [], "attempts": [], "status": "error",
-            "message": f"❌ Search failed: {str(e)}"
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Search failed: {str(e)}",
         }
 
-# @MANAGER.command(
-#     "music",
-#     "$music <song title>, <artist name or 'None'>",
-#     "Search for a music link on soundcloud to post in chat.",
-#     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so it embeds (no periods or commas). Also if the song is stated to be not found but you see it in attempts make sure to post the correct attempt.",
-# )
-# def get_music(*search_term):
-#     search_term = " ".join(search_term).split(",")
-#     song_name = search_term[0].strip()
-#     artist = search_term[1].strip().lower() if len(search_term) > 1 else None
-#     if artist == "none":
-#         artist = None
-#     num_links = 1
-#     links = []
-#     max_runs = 5
-
-#     search = song_name
-#     if artist is not None:
-#         search += f" {artist}"
-
-#     attempts = []
-
-#     cprint(f"Searching for {search}", "yellow")
-
-#     # Search SoundCloud for the track
-#     for t in sc.search_tracks(search):
-#         max_runs -= 1
-#         # If we've run out of attempts, return the attempts made
-#         if max_runs < 0:
-#             attempts = [{"title": r[0], "artist": r[1], "link": r[2]} for r in attempts]
-#             return {"result": "Song seemingly not found.", "attempts": attempts}
-
-#         # If an artist is specified, ensure it matches
-#         if (
-#             artist is not None
-#             and artist not in t["artist"].lower().replace(" ", "")
-#             and artist not in t["title"].lower().replace(" ", "")
-#         ):
-#             print(f"Attempt {max_runs} {t['title']} {t['artist']}")
-#             attempts.append((t["title"], t["artist"], t["url"]))
-#             continue
-
-#         links.append((t["title"], t["url"], t["artist"]))
-#         if len(links) >= num_links:
-#             break
-
-#     if len(links) == 0:
-#         return "Song not found."
-
-#     results = [{"title": r[0], "link": r[1]} for r in links]
-
-#     return {"result": results}
-
-import shlex
-from typing import List, Dict, Any, Optional
 
 @MANAGER.command(
     "music",
@@ -758,14 +622,16 @@ def get_music(*search_term: str) -> Dict[str, Any]:
     # Robust argument parsing
     try:
         full_query = " ".join(search_term)
-        if ',' not in full_query:
+        if "," not in full_query:
             return {
-                "result": [], "attempts": [], "status": "error",
-                "message": "❌ Invalid format. Use: $music <song>, <artist or 'None'>"
+                "result": [],
+                "attempts": [],
+                "status": "error",
+                "message": "❌ Invalid format. Use: $music <song>, <artist or 'None'>",
             }
 
-        song_part, artist_part = full_query.split(',', 1)
-        song_name = song_part.strip() or ''
+        song_part, artist_part = full_query.split(",", 1)
+        song_name = song_part.strip() or ""
         artist = artist_part.strip()
 
         # Handle 'None' artist (case-insensitive)
@@ -775,8 +641,10 @@ def get_music(*search_term: str) -> Dict[str, Any]:
     except Exception as e:
         cprint(f"Argument parsing error: {e}", "red")
         return {
-            "result": [], "attempts": [], "status": "error",
-            "message": f"❌ Failed to parse: {e}"
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Failed to parse: {e}",
         }
 
     cprint(f"🔍 Searching for '{song_name}' by {artist or 'any artist'}", "yellow")
@@ -809,29 +677,29 @@ def get_music(*search_term: str) -> Dict[str, Any]:
                 track_title_norm = track_title.lower().replace(" ", "")
 
                 is_match = (
-                    search_artist_norm in track_artist_norm or
-                    search_artist_norm in track_title_norm
+                    search_artist_norm in track_artist_norm
+                    or search_artist_norm in track_title_norm
                 )
 
                 if is_match:
-                    matches.append({
-                        "title": f"{track_title} - {track_artist}",
-                        "link": track_url
-                    })
+                    matches.append(
+                        {"title": f"{track_title} - {track_artist}", "link": track_url}
+                    )
                     cprint(f"✅ Match: {track_title} by {track_artist}", "green")
                 else:
                     # Store non-matches as alternatives
-                    alternatives.append({
-                        "title": track_title,
-                        "artist": track_artist,
-                        "link": track_url
-                    })
+                    alternatives.append(
+                        {
+                            "title": track_title,
+                            "artist": track_artist,
+                            "link": track_url,
+                        }
+                    )
                     cprint(f"💡 Alternative: {track_title} by {track_artist}", "yellow")
             else:
-                matches.append({
-                    "title": f"{track_title} - {track_artist}",
-                    "link": track_url
-                })
+                matches.append(
+                    {"title": f"{track_title} - {track_artist}", "link": track_url}
+                )
                 cprint(f"✅ Found: {track_title} by {track_artist}", "green")
 
             if len(matches) >= num_links:
@@ -843,33 +711,68 @@ def get_music(*search_term: str) -> Dict[str, Any]:
                 "result": matches,
                 "attempts": alternatives,
                 "status": "found",
-                "message": f"🎵 Found {len(matches)} track(s)"
+                "message": f"🎵 Found {len(matches)} track(s)",
             }
         elif alternatives:
             return {
                 "result": [],
                 "attempts": alternatives,
                 "status": "not_found",
-                "message": f"🤔 No exact match. {len(alternatives)} alternative(s)."
+                "message": f"🤔 No exact match. {len(alternatives)} alternative(s).",
             }
         else:
             return {
                 "result": [],
                 "attempts": [],
                 "status": "not_found",
-                "message": "❌ No tracks found."
+                "message": "❌ No tracks found.",
             }
 
     except Exception as e:
         cprint(f"❌ API error: {e}", "red")
         return {
-            "result": [], "attempts": [], "status": "error",
-            "message": f"API error: {str(e)}"
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"API error: {str(e)}",
         }
+
+
+@MANAGER.command(
+    "eval",
+    "$eval <python expression>",
+    "Runs a sendboxed python expression through eval(<python expression>). Use this to do simple calculations or logic and $exec for more complex code.",
+)
+def evaluate(*expr: str):
+    """Evaluate a python expression in a sandboxed environment"""
+    try:
+        result = eval(" ".join(expr))
+        return {"result": result}
+    except Exception as e:
+        cprint(f"❌ Eval error: {e}", "red")
+        return {"error": f"Eval error: {str(e)}"}
+
+
+@MANAGER.command(
+    "exec",
+    "$exec <python code>",
+    "Runs a sandboxed python code through exec(<python code>). Use this for complex code to solve problems other commands cannot. The local variables will be returned as the result.",
+)
+def execute(*code: str):
+    """Execute python code in a sandboxed environment and return the output or error"""
+    try:
+        local_vars = {}
+        exec(" ".join(code), {}, local_vars)
+        return {"result": local_vars}
+    except Exception as e:
+        cprint(f"❌ Exec error: {e}", "red")
+        return {"error": f"Exec error: {str(e)}"}
+
 
 """
 AGENT MODE -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
+
 
 @MANAGER.mem(
     {},
@@ -885,30 +788,30 @@ def clear_state(M):
     "agent",
     "$agent <goal>",
     "Starts an autonomous agent to achieve the specified goal. Agent mode has many commands such as flip coin search web etc.",
-    "Write the goal in an ordered list format with steps to be executed sequentially"
+    "Write the goal in an ordered list format with steps to be executed sequentially",
 )
 def plan_and_execute(*args):
     try:
-      model = MANAGER.MANAGER.config.get("agent_model", "Claude")
-      goal = " ".join(args)
+        model = MANAGER.MANAGER.config.get("agent_model", "Claude")
+        goal = " ".join(args)
 
-      # Get available commands
-      command_list = MANAGER.do("command", "list")
+        # Get available commands
+        command_list = MANAGER.do("command", "list")
 
-      # Clear previous state for a new plan
-      MANAGER.do("state", "clear")
+        # Clear previous state for a new plan
+        MANAGER.do("state", "clear")
 
-      # Initialize the agent state
-      MANAGER.set("state", "goal", goal)
-      MANAGER.set("state", "current_step", 0)
-      MANAGER.set("state", "completed_steps", [])
-      MANAGER.set("state", "results", [])
+        # Initialize the agent state
+        MANAGER.set("state", "goal", goal)
+        MANAGER.set("state", "current_step", 0)
+        MANAGER.set("state", "completed_steps", [])
+        MANAGER.set("state", "results", [])
 
-      # Start the chain of thought loop
-      return agent_loop(model, command_list)
+        # Start the chain of thought loop
+        return agent_loop(model, command_list)
     except Exception as e:
-      MANAGER.do("state", "clear")
-      raise e
+        MANAGER.do("state", "clear")
+        raise e
 
 
 def agent_loop(model, command_list):
@@ -949,10 +852,7 @@ IMPORTANT:
 2. Respond with ONLY the JSON object. No explanations, no additional text, no markdown formatting, no code blocks."""
 
         try:
-            response = PROMPT_MANAGER.send(
-                prompt,
-                AI=model
-            )
+            response = PROMPT_MANAGER.send(prompt, AI=model)
 
             cprint(f"AGENT RESPONSE: {response}", "green")
 
@@ -960,8 +860,8 @@ IMPORTANT:
             try:
 
                 # Remove markdown code blocks if present
-                clean_response = re.sub(r'```(?:json)?\s*', '', response).strip()
-                clean_response = re.sub(r'\s*```', '', clean_response)
+                clean_response = re.sub(r"```(?:json)?\s*", "", response).strip()
+                clean_response = re.sub(r"\s*```", "", clean_response)
 
                 action_data = json.loads(clean_response)
             except json.JSONDecodeError as e:
@@ -977,12 +877,14 @@ IMPORTANT:
                 return {
                     "results": final_results,
                     "combined": "\n".join(final_results),
-                    "steps": completed_steps
+                    "steps": completed_steps,
                 }
 
             # Parse the command
             if action_data.get("action") == "COMMAND":
-                command = action_data.get("command", "").lstrip("$")  # Remove $ if present
+                command = action_data.get("command", "").lstrip(
+                    "$"
+                )  # Remove $ if present
                 args_str = action_data.get("args", "")
 
                 # Split the args string into a list
@@ -1001,9 +903,11 @@ IMPORTANT:
                     result = MANAGER.do("command", "use", command, *cmd_args)
                     if not isinstance(result, dict) or not result.get("error"):
                         break  # Success
-                    cprint(f"Attempt {attempt + 1} failed: {result.get('error')}", "yellow")
-                    import time
-                    time.sleep(2 ** attempt)  # Exponential backoff
+                    cprint(
+                        f"Attempt {attempt + 1} failed: {result.get('error')}", "yellow"
+                    )
+
+                    time.sleep(2**attempt)  # Exponential backoff
                 else:
                     cprint(f"Command failed after {max_retries} attempts", "red")
                     continue
@@ -1021,7 +925,9 @@ IMPORTANT:
                 cprint(f"\tRESULT: {result}", "yellow")
             else:
                 cprint(f"Invalid action: {action_data.get('action')}", "red")
-                results.append({"error": f"Invalid action: {action_data.get('action')}"})
+                results.append(
+                    {"error": f"Invalid action: {action_data.get('action')}"}
+                )
 
         except Exception as e:
             print(f"Error in agent loop: {e}")
@@ -1029,13 +935,13 @@ IMPORTANT:
 
     final_results = format_final_results(results)
 
-
     return {
         "results": final_results,
         "combined": "\n".join(final_results),
         "steps": completed_steps,
-        "status": "Max steps reached"
+        "status": "Max steps reached",
     }
+
 
 def format_results(results):
     """Format the results for display in the prompt"""
@@ -1051,7 +957,9 @@ def format_results(results):
                     formatted.append(f"Result {i}:")
                     for item in items:
                         if isinstance(item, dict) and "link" in item:
-                            formatted.append(f"  - [{item.get('title', 'Link')}]({item['link']})")
+                            formatted.append(
+                                f"  - [{item.get('title', 'Link')}]({item['link']})"
+                            )
                         else:
                             formatted.append(f"  - {item}")
                 else:
@@ -1067,6 +975,7 @@ def format_results(results):
 
     return "\n".join(formatted)
 
+
 def format_result_item(item):
     if isinstance(item, dict):
         if "link" in item:
@@ -1077,6 +986,7 @@ def format_result_item(item):
     if isinstance(item, list):
         return "\n".join(format_result_item(subitem) for subitem in item)
     return str(item)
+
 
 def format_final_results(results):
     return [format_result_item(r) for r in results]

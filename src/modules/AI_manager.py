@@ -187,7 +187,7 @@ def _config_builder(aiman):
             if name is None:
                 return _c
 
-            if name in _c:
+            if name in _c and _c[name] is not None:
                 return _c[name]
             else:
                 for d in default_to:
@@ -238,7 +238,7 @@ class AI_Manager:
             MEMORY: Shortcut reference to MANAGER.memory.
         """
 
-        MANAGER: 'AI_Manager'  = None
+        MANAGER: "AI_Manager" = None
         PROMPTS = None
         MEMORY = None
 
@@ -452,6 +452,7 @@ class AI_Manager:
             Or, when event_name is omitted, by supplying a function whose name
             follows the convention "event_keyname".
             """
+
             def decorator(hook_func):
                 nonlocal key, event_name, prepend
                 if cls.MANAGER.lazy:
@@ -489,6 +490,7 @@ class AI_Manager:
 
             This registers an effect that will run after the original event handler.
             """
+
             def decorator(hook_func):
                 nonlocal key, event_name, prepend
                 if cls.MANAGER.lazy:
@@ -530,6 +532,7 @@ class AI_Manager:
 
             Or when event_name omitted, key should be a function with name "event_key".
             """
+
             def decorator(func):
                 nonlocal key, event_name
                 cls.MANAGER.add(key, event_name, func)
@@ -560,6 +563,7 @@ class AI_Manager:
             whether it is an 'update', 'set', 'reset', 'add' or other event and wires
             the function accordingly.
             """
+
             def decorator(func):
                 nonlocal key, v, inner, u, s, r
                 event_name = func.__name__
@@ -785,7 +789,11 @@ class AI_Manager:
 
         self.memory[key] = {
             "default_value": value if default_value is None else default_value,
-            "value": Map(copy.deepcopy(value)) if isinstance(value, dict) else copy.deepcopy(value),
+            "value": (
+                Map(copy.deepcopy(value))
+                if isinstance(value, dict)
+                else copy.deepcopy(value)
+            ),
             "update": update_func or self.__default_update,
             "set": set_func or self.__default_set,
             "reset": reset_func or self.__default_reset,
