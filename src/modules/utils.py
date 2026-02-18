@@ -7,13 +7,23 @@ This module contains various utility functions that can be used across different
 __author__ = "Aiden Green"
 __email__ = "aidengreenj@gmail.com"
 
+from functools import reduce
 import os
 import traceback
-from typing import Any, Callable, Union, Iterable
+from typing import Any, Callable, Union, Iterable, Literal
 from os import getenv
+from annotated_types import IsInfinite
+from discord.colour import Color
+from typing_extensions import cast
 from dotenv import load_dotenv
 import asyncio
+from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 import requests
+import threading
+import queue
+import time
 
 import re
 from concurrent.futures import ThreadPoolExecutor
@@ -189,6 +199,13 @@ class Enum:
 
 
 class bcolors:
+    """
+    Colors:
+    PURPLE, BLUE, CYAN, GREEN, YELLOW, RED
+    _0: Reset color
+    B: Bold
+    _: Underline
+    """
     PURPLE = "\033[95m"
     BLUE = "\033[94m"
     CYAN = "\033[96m"
@@ -197,8 +214,35 @@ class bcolors:
     RED = "\033[91m"
     _0 = "\033[0m"
     B = "\033[1m"
+    BOLD = "\033[1m"
     _ = "\033[4m"
+    UNDERLINE = "\033[4m"
 
+
+BColor = Literal[
+    "_",
+    "underline",
+    "b",
+    "bold",
+    "_0",
+    "purple",
+    "blue",
+    "cyan",
+    "green",
+    "yellow",
+    "red",
+]
+
+class Colors(Enum):
+    PURPLE = "purple"
+    BLUE = "blue"
+    CYAN = "cyan"
+    GREEN = "green"
+    YELLOW = "yellow"
+    RED = "red"
+    RESET = "_0"
+    BOLD = "b"
+    UNDERLINE = "_"
 
 __input = input
 
@@ -538,13 +582,19 @@ def __get_color(color: str):
     return bcolors.__getattribute__(bcolors, color.upper())
 
 
-def cstr(str, style):
+def cstr(str, style: str | Color | None):
     if not style:
         return str
 
-    st = __get_color(style)
+    if isinstance(style, Color):
+        st = rgb_to_terminal_color(*style.to_rgb())
+    else:
+        st = __get_color(style)
+
     return f"{st}{str}{bcolors._0}"
 
+def cstrs(str, *styles):
+    return reduce(lambda s, c: cstr(s, c), styles, str)
 
 def cprint(str: str, *styles: str, end="\n"):
     """
@@ -554,10 +604,79 @@ def cprint(str: str, *styles: str, end="\n"):
         str (str): The string to print.
         *styles (str): The styles to apply to the string.
     """
-    for st in styles:
-        str = f"{__get_color(st)}{str}"
-    str += bcolors._0
-    print(str, end=end)
+
+    print(cstrs(str, *styles), end=end)
+
+
+# Global prompt session and helper prompts for PromptToolkit-based terminal I/O
+PROMPT_SESSION = PromptSession()
+
+
+class E(Exception):
+    """Shared terminal prompt exit exception."""
+    pass
+
+
+async def prompt(
+    text,
+    convert=None,
+    exit_if=None,
+    exit_msg=None,
+    color: BColor | None = None,
+    exit_callback: Callable = None,
+):
+    """Prompt using the global PromptSession. Mirrors the behavior expected by
+    the terminal plugin: returns converted value, raises `E` on `exit` or
+    invalid conversions/conditions.
+    """
+    with patch_stdout():
+        x = await PROMPT_SESSION.prompt_async(text if not color else ANSI(cstr(text, color)))
+    if x == "exit":
+        if exit_callback is not None:
+            exit_callback()
+        raise E
+    if convert is not None:
+        x = convert(x)
+        if x is None:
+            cprint(exit_msg or "Invalid conversion", "red")
+            raise E
+    if exit_if is not None and exit_if(x):
+        if exit_msg is not None:
+            cprint(exit_msg, "red")
+        raise E
+    return x
+
+
+async def editable_prompt(
+    text: str,
+    current: str,
+    convert=None,
+    exit_if=None,
+    exit_msg=None,
+    color: BColor | None = None,
+    exit_callback: Callable = None,
+):
+    """Editable Prompt that shows the current value and allows the user to edit it
+    using the shared PromptSession.
+    """
+    with patch_stdout():
+        x = await PROMPT_SESSION.prompt_async(
+            text if not color else ANSI(cstr(text, color)), default=current
+        )
+    if x == "exit":
+        if exit_callback is not None:
+            exit_callback()
+        raise E
+    if convert is not None:
+        x = convert(x)
+        if x is None:
+            cprint(exit_msg or "Invalid conversion", "red")
+            raise E
+    if exit_if is not None and exit_if(x):
+        if exit_msg is not None:
+            cprint(exit_msg, "red")
+        raise E
+    return x
 
 
 def print_symbols(
@@ -717,21 +836,16 @@ def get_full_name(ctx):
 #     except Exception as e:
 #         cprint(*args, **kwargs)
 
-import threading
-import queue
-import time
-from typing import Any
-
-
 class NonBlockingPrinter:
-    def __init__(self):
-        self.print_queue = queue.Queue()
+    ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+    def __init__(self, max_queue_size=0):
+        self.print_queue = queue.Queue(maxsize=max_queue_size)
         self.worker_thread = None
         self.running = False
         self._start_worker()
 
     def _start_worker(self):
-        """Start the background printing thread"""
         if self.worker_thread is None or not self.worker_thread.is_alive():
             self.running = True
             self.worker_thread = threading.Thread(
@@ -739,74 +853,114 @@ class NonBlockingPrinter:
             )
             self.worker_thread.start()
 
+    def _run_in_terminal(self, callable_obj):
+        """Try to run callable in shared PromptSession app, or fallback."""
+        # Prefer session app runner
+        try:
+            app = getattr(PROMPT_SESSION, "app", None)
+            if app is not None and hasattr(app, "run_in_terminal"):
+                try:
+                    return app.run_in_terminal(callable_obj)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Fallback to prompt_toolkit.shortcuts.run_in_terminal if available
+        try:
+            from prompt_toolkit.shortcuts import run_in_terminal
+
+            try:
+                return run_in_terminal(callable_obj)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        # Last resort: direct call
+        try:
+            return callable_obj()
+        except Exception:
+            return None
+
     def _print_worker(self):
-        """Background thread that handles all printing"""
+        """Worker that handles queued print jobs."""
+        try:
+            from prompt_toolkit.shortcuts import print_formatted_text
+            from prompt_toolkit.formatted_text import ANSI as PTK_ANSI
+        except Exception:
+            print_formatted_text = None
+            PTK_ANSI = None
+
         while self.running:
             try:
-                # Get print job from queue (blocks until available)
                 job = self.print_queue.get(timeout=1.0)
-
-                if job is None:  # Shutdown signal
+                if job is None:
                     break
 
-                func, args, kwargs = job
+                kind, payload = job
+                match kind:
+                    case "call":
+                        func, args, kwargs = payload
 
-                # Actually do the print (this thread can block, main thread won't)
+                        def _call():
+                            func(*args, **(kwargs or {}))
+
+                        self._run_in_terminal(_call)
+
+                    case "text":
+                        text, kwargs = payload
+                        if self.ANSI_RE.search(text) and print_formatted_text is not None and PTK_ANSI is not None:
+                            def _call_pf():
+                                print_formatted_text(PTK_ANSI(text), **(kwargs or {}))
+
+                            self._run_in_terminal(_call_pf)
+                        else:
+                            self._run_in_terminal(lambda: print(text, **(kwargs or {})))
+
                 try:
-                    func(*args, **kwargs)
-                except Exception as e:
-                    # If this fails, try basic print as fallback
-                    try:
-                        print(f"[Print Error: {e}]")
-                    except:
-                        pass  # If even basic print fails, give up
+                    self.print_queue.task_done()
+                except Exception:
+                    pass
 
-                # Mark job as done
-                self.print_queue.task_done()
-
-                # Small delay to prevent overwhelming terminal
                 time.sleep(0.001)
 
             except queue.Empty:
-                continue  # Timeout, check if still running
+                continue
             except Exception:
-                continue  # Any other error, keep going
+                continue
 
-    def queue_print(self, *args, **kwargs):
-        """Queue a regular print job"""
+    def queue_text(self, text: str, **kwargs):
         try:
-            self.print_queue.put((print, args, kwargs), block=False)
+            self.print_queue.put(("text", (text, kwargs)), block=False)
         except queue.Full:
-            pass  # Queue full, drop this print
+            pass
 
-    def queue_cprint(self, *args, **kwargs):
-        """Queue a colored print job"""
+    def queue_call(self, func: Callable, *args, **kwargs):
         try:
-            self.print_queue.put((cprint, args, kwargs), block=False)
+            self.print_queue.put(("call", (func, args, kwargs)), block=False)
         except queue.Full:
-            pass  # Queue full, drop this print
+            pass
 
     def shutdown(self):
-        """Shutdown the printer thread"""
         self.running = False
         try:
-            self.print_queue.put(None, block=False)  # Shutdown signal
+            self.print_queue.put(None, block=False)
         except:
             pass
 
 
-# Global printer instance
 _printer = NonBlockingPrinter()
 
 
-def async_print(*args, **kwargs):
+def async_print(*args, sep=" ", **kwargs):
     """Non-blocking print - queues the job"""
-    _printer.queue_print(*args, **kwargs)
+    _printer.queue_text(sep.join(str(arg) for arg in args), **kwargs)
 
 
-def async_cprint(*args, **kwargs):
+def async_cprint(text, *styles, **kwargs):
     """Non-blocking colored print - queues the job"""
-    _printer.queue_cprint(*args, **kwargs)
+    async_print(cstrs(text, *styles), **kwargs)
 
 
 def async_input(*args, **kwargs):
@@ -1004,3 +1158,15 @@ def get_trace() -> str:
 
 def ordinal(n: int) -> str:
     return f"{n}{'th' if 11 <= n % 100 <= 13 else {1:'st', 2:'nd', 3:'rd'}.get(n % 10, 'th')}"
+
+def rgb_to_terminal_color(r, g, b):
+    return f"\033[38;2;{r};{g};{b}m"
+
+
+def safe_get(obj, *attrs, default=None):
+    for attr in attrs:
+        try:
+            obj = getattr(obj, attr)
+        except AttributeError:
+            return default
+    return obj

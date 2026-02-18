@@ -1059,9 +1059,8 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
     General handler for AI question commands.
     """
     global RESPONSE_FAILURES
-    print("")
     Sonata.config.set(AI=ai)
-    INTERCEPT = Sonata.get("termcmd", "intercepting", default=False)
+    intercept_reply = Sonata.get("termcmd", "intercept_hook", default=None)
     channel = await get_channel(ctx)
     try:
         message = " ".join(message)
@@ -1076,7 +1075,6 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
         try:
             if Sonata.config.get("view_replies", False):
                 _ref = await get_chain(ctx.message)
-                # print(_ref)
         except Exception:
             _ref = None
         async with ctx.typing():
@@ -1087,17 +1085,14 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                 _ref,
                 AI=ai,
                 error_prompt=error_prompt,
+                save=False,
             )
-            if INTERCEPT:
-                print("Intercepting: ", r)
-                new_message = await aioconsole.ainput("Enter message: ")
-                if new_message != "exit":
-                    r = new_message
-                else:
-                    Sonata.set("termcmd", False, inner="intercepting")
+            if intercept_reply is not None:
+                r = await intercept_reply(r, Sonata)
                 await ctx_reply(ctx, r, not respond_or_chat)
             else:
                 await ctx_reply(ctx, r, not respond_or_chat)
+            Sonata.chat.send(channel.id, "Bot", Sonata.name, r, _ref)
         RESPONSE_FAILURES[(await get_channel(ctx)).id] = 0
     except Exception as e:
         cprint(e, "red")
@@ -1212,13 +1207,18 @@ def restart():
     os.execv(sys.executable, ["python"] + sys.argv)
 
 
+Sonata.restart = restart
+
+
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
     except Exception as e:
         print(get_trace())
-        cprint("Exiting...", "red")
     finally:
+        cprint("Exiting...", "red")
         Sonata.save("chat", "value", module=True)
         # cprint(f"\nMemory on crash: {Sonata.get('chat')}", "yellow")
         Sonata.do("termcmd", "save")

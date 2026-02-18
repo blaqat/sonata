@@ -5,18 +5,23 @@ This plugin allows you to interact with the bot through the terminal. You can se
 Additionally, you can set favorite channels and users to easily interact with them.
 """
 
+from functools import reduce
+from typing import Callable
 import discord
-from discord.utils import sleep_until
+from pydantic_core.core_schema import WithInfoValidatorFunction
 from modules.AI_manager import AI_Manager
 from modules.utils import (
+    BColor,
+    Colors,
     async_cprint as cprint,
     async_print as print,
+    get_reference_chain,
     setter,
     cstr,
 )
 import asyncio
-import aioconsole
 from random import randint
+from prompt_toolkit.formatted_text import ANSI
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
@@ -26,14 +31,14 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
 )
 __plugin_name__ = "term_commands"
 __dependencies__ = ["beacon", "chat"]
-
+from modules.utils import prompt, editable_prompt, E
 
 """
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
 
 
-async def term_handler(DataManager: AI_Manager, client):
+async def term_handler(Data_Manager: AI_Manager, client):
     """Main loop for handling terminal commands"""
     print("Type 'help' for a list of commands")
     INJECT_EMOJIS = MANAGER.MANAGER.config.get("inject_emojis", False)
@@ -43,20 +48,21 @@ async def term_handler(DataManager: AI_Manager, client):
         for guild in client.guilds:
             if guild.name.startswith("blaqat"):
                 for emoji in guild.emojis:
-                    DataManager.do("emojis", "add", emoji)
+                    Data_Manager.do("emojis", "add", emoji)
 
         # HACK: Inject EmojiIndex into the System Instructions
-        old_instructions = DataManager.prompt_manager.get_instructions()
-        emojis_list = DataManager.do("emojis", "list")
+        old_instructions = Data_Manager.prompt_manager.get_instructions()
+        emojis_list = Data_Manager.do("emojis", "list")
         # 1 random number minimum 0, max length of emojis_list - 1000
         num_chars = 600
+
         def reload_emojis():
-            cprint("reloading emojis", "red")  
+            cprint("reloading emojis", "red")
             rand = randint(0, max(1, len(emojis_list) - num_chars))
 
             emoji_instructions = (
                 f"You can use the EmojiIndex to send emojis when u feel like it (only when its contextually significant/DONT ABUSE) (Make sure to use its full <x:name:id> as shown in the index):\n"
-                + DataManager.do("emojis", "list")[rand : rand + num_chars]
+                + Data_Manager.do("emojis", "list")[rand : rand + num_chars]
             )
 
             instructions = None
@@ -69,22 +75,58 @@ async def term_handler(DataManager: AI_Manager, client):
                     + emoji_instructions
                 )
 
-            DataManager.prompt_manager.set_instructions(
-                prompt=instructions, prompt_name=DataManager.prompt_manager.instructions
+            Data_Manager.prompt_manager.set_instructions(
+                prompt=instructions,
+                prompt_name=Data_Manager.prompt_manager.instructions,
             )
-        reload_emojis() 
+
+        reload_emojis()
 
     while True:
-        if INJECT_EMOJIS and randint(1, 100) > 90: reload_emojis()
+        if INJECT_EMOJIS and randint(1, 100) > 90:
+            reload_emojis()
         # If intercepting, wait
-        if DataManager.get("termcmd", "intercepting", default=False):
+        if Data_Manager.get("termcmd", "intercepting", default=False):
             await asyncio.sleep(1)
             continue
-        user_input = await prompt(cstr("❯ ", "purple"))
         try:
-            await DataManager.do("termcmd", "run", user_input, client, DataManager)
+            user_input = await prompt("❯ ", color="purple")
+        except KeyboardInterrupt:
+            await client.close()
+        except E:
+            return
+        try:
+            await Data_Manager.do("termcmd", "run", user_input, client, Data_Manager)
         except Exception as e:
             cprint(e, "red")
+
+
+async def intercept_reply(response: str, Data_Manager: AI_Manager) -> str:
+    r = response
+
+    if Data_Manager.get("termcmd", "intercepting", default=False) is False:
+        return r
+
+    try:
+        print("Intercepted message: ", response)
+        intercept_type = await prompt(
+            "(E)dit message or (R)eplace message? ",
+            lambda x: x.lower()[0],
+            lambda x: x not in ("e", "r"),
+            "Invalid choice",
+            color=Colors.YELLOW,
+        )
+        if intercept_type == "e":
+            r = await editable_prompt("Edit message: ", response, color=Colors.YELLOW)
+        elif intercept_type == "r":
+            r = await prompt("Enter new message: ", color=Colors.CYAN)
+    except E:
+        cprint("Stopped intercepting messages", Colors.BOLD, Colors.RED)
+        Data_Manager.set("termcmd", False, inner="intercepting")
+    except Exception as e:
+        cprint(e, "red")
+    finally:
+        return r
 
 
 @MANAGER.effect("chat", "set", prepend=False)
@@ -103,25 +145,8 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
-class E(Exception):
-    pass
 
-
-async def prompt(text, convert=None, exit_if=None, exit_msg=None):
-    """Prompt the user for input with optional conversion and exit conditions"""
-    x = await aioconsole.ainput(text)
-    if x == "exit":
-        raise E
-    if convert is not None:
-        x = convert(x)
-        if x is None:
-            cprint(exit_msg or "Invalid conversion", "red")
-            raise E
-    if exit_if is not None and exit_if(x):
-        if exit_msg is not None:
-            cprint(exit_msg, "red")
-        raise E
-    return x
+# ...existing code...
 
 
 async def async_return(ret=None):
@@ -164,19 +189,18 @@ def get_emojis(emojis):
     ]
 
 
-def search_emoji(A, self, name, find_first=10):
+def search_emoji(A: AI_Manager, self, name, find_first=10):
     """Search for emojis by name"""
-    M = A.get("emojis", inner=False)
-    M["update"](M)
-    emojis = [emoji for guild in self.guilds for emoji in guild.emojis] + M["value"]
-    return [e for e in emojis if name in e.name][:find_first]
+    default_emojis = A.get("emojis", default=[])
+    guild_emojis = [emoji for guild in self.guilds for emoji in guild.emojis]
+    found_emojis = [e for e in guild_emojis + default_emojis if name in e.name]
+    return found_emojis
 
 
 def get_all_emojis(A, self):
     """Get all emojis from the client and the manager"""
-    M = A.get("emojis", inner=False)
-    M["update"](M)
-    emojis = [emoji for guild in self.guilds for emoji in guild.emojis] + M["value"]
+    default_emojis = A.get("emojis")
+    emojis = [emoji for guild in self.guilds for emoji in guild.emojis] + default_emojis
     return emojis
 
 
@@ -266,18 +290,20 @@ Setup    -----------------------------------------------------------------------
 
 MANAGER.remember(
     "emojis",
-    {
-        "sparkling_heart": "💖",
-        "ok_hand": "👌",
-        "thumbsup": "👍",
-        "grey_question": "❔",
-        "red_circle": "🔴",
-        "raised_eyebrow": "🤨",
-        "thinking": "🤔",
-        "clap": "👏",
-        "smile": "😊",
-        "laugh": "😂",
-    },
+    CustomEmoji.from_dict(
+        {
+            "sparkling_heart": "💖",
+            "ok_hand": "👌",
+            "thumbsup": "👍",
+            "grey_question": "❔",
+            "red_circle": "🔴",
+            "raised_eyebrow": "🤨",
+            "thinking": "🤔",
+            "clap": "👏",
+            "smile": "😊",
+            "laugh": "😂",
+        }
+    ),
     set_func=lambda M, name, e: (
         setter(M["value"], name, e)
         if isinstance(M["value"], dict)
@@ -314,16 +340,20 @@ MANAGER.update("emojis")
         "server": None,
         "self_msg": None,
         "voice_chat": None,
+        "termcmd": None,
     },
     saved={
         "channels": {"test": 876743264139624458},
         "users": {"amy": 754188427699945592},
     },
     hook=term_handler,
+    intercept_hook=intercept_reply,
 )
 def run_termcmd(M, name, client, manager):
     num_required = M["value"][name].__code__.co_argcount
     args = [M, client, manager]
+    if M["value"][name] != retry_prev_command:
+        M["recents"]["termcmd"] = (name, args[:num_required])
     return run_command(M["value"], name, args[:num_required])
 
 
@@ -338,9 +368,9 @@ Commands  ----------------------------------------------------------------------
 """
 
 
-async def run_command(V, name, args):
+async def run_command(commands, command_name, args):
     """Run a command by name with arguments"""
-    output = await V[name](*args)
+    output = await commands[command_name](*args)
     return output
 
 
@@ -376,43 +406,43 @@ async def help(*_):
     )
 
 
-@MANAGER.term
-async def chn(M, _):
+@MANAGER.term("chn")
+async def set_pinned_channel(mem):
     """Set the current channel"""
-    await set_channel(M, ret=False)
+    await set_channel(mem, ret=False)
 
 
 @MANAGER.term
-async def reset(M, _):
+async def reset_pinned_channel(mem):
     """Reset the pinned channel"""
-    M["recents"]["pinned"] = None
+    mem["recents"]["pinned"] = None
 
 
-@MANAGER.term
-async def god(m, self):
+@MANAGER.term("god")
+async def send_msg(mem, bot):
     """Send a message in the current channel"""
-    c = get_channel(m, self)
+    c = get_channel(mem, bot)
     async with c.typing():
         if c.guild is not None:
             cprint(f"Sending message in {c.name}")
         else:
             cprint(f"Sending message to {c.recipient.name}")
         msg = await prompt("Enter message: ")
-        await MANAGER.do("chat", "chat", self, c.id, msg)
+        await MANAGER.do("chat", "chat", bot, c.id, msg)
 
 
-@MANAGER.term
-async def dlr(M, self):
+@MANAGER.term("dlr")
+async def del_recent_msg(mem, bot):
     """Delete the most recent message sent by the bot"""
-    RECENT_SELF_MSG = await get_recent_msg(M, self)
+    RECENT_SELF_MSG = await get_recent_msg(mem, bot)
     await RECENT_SELF_MSG.delete()
 
 
-@MANAGER.term
-async def dlm(M, self):
+@MANAGER.term("dlm")
+async def del_msg(mem, bot):
     """Delete a specific message in the current channel"""
-    c = get_channel(M, self)
-    messages = await get_messages(c, lambda m: m.author == self.user)
+    c = get_channel(mem, bot)
+    messages = await get_messages(c, lambda m: m.author == bot.user)
     cprint("Select a message to delete:", "red")
     print_messages(messages)
     i = await prompt(
@@ -424,13 +454,13 @@ async def dlm(M, self):
     await messages[i].delete()
 
 
-@MANAGER.term
-async def dlc(m, self):
+@MANAGER.term("dlc")
+async def del_chat_memory(mem, bot):
     """Delete chat memory for the current channel"""
     beacon = MANAGER.MANAGER.beacon.branch("chat").branch("value")
     chat = MANAGER.MANAGER.chat
-    current_channel = self.get_channel(
-        m["recents"]["pinned"] or m["recents"]["channel"]
+    current_channel = bot.get_channel(
+        mem["recents"]["pinned"] or mem["recents"]["channel"]
     )
     choice = await prompt(
         "Delete (c)urrent chat, (f)avorite chat, (a)ll chats, or (n)new chat:\n",
@@ -444,7 +474,7 @@ async def dlc(m, self):
             raise E
         channel = current_channel.id
     elif choice[0] == "f":
-        favs = m["saved"]["channels"]
+        favs = mem["saved"]["channels"]
         print_many(favs.keys())
         c = await prompt(
             "Enter fav name: ", favs.get, lambda x: x is None, "Fav not found"
@@ -479,19 +509,19 @@ async def dlc(m, self):
             cprint(f"Deleted chat {channel}", "yellow")
 
 
-@MANAGER.term
-async def vc(M, self):
+@MANAGER.term("vc")
+async def join_vc(mem, bot):
     """Join a voice channel"""
-    VOICE_CHAT = M["recents"]["voice_chat"]
+    VOICE_CHAT = mem["recents"]["voice_chat"]
     if VOICE_CHAT is not None:
         await VOICE_CHAT.disconnect()
-        M["recents"]["voice_chat"] = None
-    chn = get_channel(M, self)
+        mem["recents"]["voice_chat"] = None
+    chn = get_channel(mem, bot)
     g = chn.guild
     c = None
     if g is None:
         c = await prompt("Enter vc id: ", int)
-        c = await self.fetch_channel(c)
+        c = await bot.fetch_channel(c)
     else:
         channels = [c for c in g.channels if c.type == discord.ChannelType.voice]
         cprint("Select a voice channel:", "yellow")
@@ -505,40 +535,40 @@ async def vc(M, self):
         c = channels[i]
 
     try:
-        M["recents"]["voice_chat"] = await c.connect()
+        mem["recents"]["voice_chat"] = await c.connect()
     except Exception as e:
         server = g.voice_client
         await server.disconnect()
-        M["recents"]["voice_chat"] = await c.connect()
+        mem["recents"]["voice_chat"] = await c.connect()
 
 
 @MANAGER.term
-async def leave(M, _):
+async def leave(mem):
     """Leave the current voice channel"""
-    VOICE_CHAT = M["recents"]["voice_chat"]
+    VOICE_CHAT = mem["recents"]["voice_chat"]
     if VOICE_CHAT is not None:
         await VOICE_CHAT.disconnect()
-        M["recents"]["voice_chat"] = None
+        mem["recents"]["voice_chat"] = None
     else:
         cprint("Not in a voice channel", "red")
         raise E
 
 
 @MANAGER.term
-async def rejoin(M, self):
+async def rejoin(mem, bot):
     """Rejoin the last voice channel"""
-    VOICE_CHAT = M["recents"]["voice_chat"]
+    VOICE_CHAT = mem["recents"]["voice_chat"]
     if VOICE_CHAT is not None:
         await VOICE_CHAT.disconnect()
-        M["recents"]["voice_chat"] = None
-    chn = await get_channel(M, self, set=True)()
+        mem["recents"]["voice_chat"] = None
+    chn = await get_channel(mem, bot, set=True)()
     g = chn.guild
     c = None
 
     # Select a voice channel
     if g is None:
         c = await prompt("Enter vc id: ", int)
-        c = await self.fetch_channel(c)
+        c = await bot.fetch_channel(c)
     else:
         channels = [c for c in g.channels if c.type == discord.ChannelType.voice]
         cprint("Select a voice channel:", "yellow")
@@ -555,15 +585,15 @@ async def rejoin(M, self):
     try:
         vc = await c.connect()
         await vc.disconnect()
-        M["recents"]["voice_chat"] = await c.connect()
+        mem["recents"]["voice_chat"] = await c.connect()
     except Exception as e:
         vc = await c.connect()
         await vc.disconnect()
-        M["recents"]["voice_chat"] = await c.connect()
+        mem["recents"]["voice_chat"] = await c.connect()
 
 
 @MANAGER.term
-async def ai(m, self):
+async def ai():
     """Set the AI type for the bot"""
     ai = await prompt(
         "Enter AI name: ",
@@ -576,10 +606,10 @@ async def ai(m, self):
 
 
 @MANAGER.term
-async def mute(M, self):
+async def mute(mem, bot):
     """Mute or unmute the bot in the current voice channel"""
     set_mute = prompt("Mute? (y/n): ", lambda x: x[0] == "y", lambda x: x[0] == "n")
-    vc = get_channel(M, self).guild.voice_client
+    vc = get_channel(mem, bot).guild.voice_client
 
     if vc and vc.channel:
         await vc.edit_voice_state(mute=set_mute)
@@ -589,9 +619,9 @@ async def mute(M, self):
 
 
 @MANAGER.term
-async def react(M, self, client):
+async def react(mem, bot, manager):
     """React to a message in the current channel"""
-    c = get_channel(M, self)
+    c = get_channel(mem, bot)
     messages = await get_messages(c)
     print_messages(messages)
     i = await prompt(
@@ -601,7 +631,7 @@ async def react(M, self, client):
         exit_msg="Invalid index",
     )
     s = await prompt("Enter emoji name: ")
-    emojis = search_emoji(client, self, s, 10)
+    emojis = search_emoji(manager, bot, s, 10)
     emojis = get_emojis(emojis)
     cprint(f"Pick an emoji to send:", "yellow")
     print_many(emojis)
@@ -611,12 +641,12 @@ async def react(M, self, client):
     await messages[i].add_reaction(emojis[i2])
 
 
-@MANAGER.term
-async def emosend(m, self, client):
+@MANAGER.term("emote")
+async def send_emojis(mem, bot, manager):
     """Send an emoji in the current channel"""
-    c = get_channel(m, self)
+    c = get_channel(mem, bot)
     s = await prompt("Enter emoji name: ")
-    emojis = search_emoji(client, self, s, 10)
+    emojis = search_emoji(manager, bot, s, 10)
     emojis = get_emojis(emojis)
     cprint(f"Pick an emoji to send:", "yellow")
     print_many(emojis)
@@ -624,37 +654,37 @@ async def emosend(m, self, client):
         "Enter index: ", int, lambda i: i < 0 or i >= len(emojis), "Invalid index"
     )
     # await c.send(emojis[i])
-    await MANAGER.do("chat", "chat", self, c.id, emojis[i])
+    await MANAGER.do("chat", "chat", bot, c.id, emojis[i])
 
 
-@MANAGER.term
-async def emoji(_, self, client):
+@MANAGER.term("emojis")
+async def search_emojis(_, bot, manager):
     """Search for emojis by name"""
     s = await prompt("Enter emoji name: ")
-    emojis = search_emoji(client, self, s, 10)
+    emojis = search_emoji(manager, bot, s, 10)
     emojis = get_emojis(emojis)
     cprint(f"Found {len(emojis)} emojis: {emojis}", "yellow")
 
 
-@MANAGER.term
-async def favs(M, _):
+@MANAGER.term("favs")
+async def print_favs(mem):
     """Display favorite channels and users"""
-    FAV_CHN = M["saved"]["channels"]
-    FAV_PPL = M["saved"]["users"]
+    FAV_CHN = mem["saved"]["channels"]
+    FAV_PPL = mem["saved"]["users"]
     cprint(f"\nChannels: {FAV_CHN}", "yellow")
     cprint(f"Users: {FAV_PPL}", "yellow")
 
 
-@MANAGER.term
-async def favp(M, self):
+@MANAGER.term("favp")
+async def fav_user(mem, bot):
     """Manage favorite users"""
-    FAV_PPL = M["saved"]["users"]
+    FAV_PPL = mem["saved"]["users"]
     name = await prompt("Edit or Add")
 
     # Add a new favorite user
     if name == "a" or name == "add" or name == "":
         pid = await prompt("Enter user id: ", int)
-        p = await get_user(M, self, pid)
+        p = await get_user(mem, bot, pid)
         if p is None:
             cprint("User not found", "red")
             raise E
@@ -696,11 +726,11 @@ async def favp(M, self):
         return
 
 
-@MANAGER.term
-async def favc(M, self):
+@MANAGER.term("favc")
+async def fav_channel(mem, bot):
     """Manage favorite channels"""
-    FAV_CHN = M["saved"]["channels"]
-    channel = get_channel(M, self)
+    FAV_CHN = mem["saved"]["channels"]
+    channel = get_channel(mem, bot)
     channels = {f"Current: {channel.name}": channel.id}
     channels.update(FAV_CHN)
     print_many(channels)
@@ -714,7 +744,7 @@ async def favc(M, self):
         FAV_CHN[name] = id
     elif name == "new" or name == "n":
         id = await prompt("Enter id: ", int)
-        c = self.get_channel(id)
+        c = bot.get_channel(id)
         if c is None:
             cprint("Channel not found", "red")
             raise E
@@ -748,21 +778,21 @@ async def favc(M, self):
 
 
 @MANAGER.term
-async def dm(m, self):
+async def dm(mem, bot, manager):
     """Send a direct message to a user"""
     id = await prompt("Enter user id: ")
-    user = await get_user(m, self, id)
+    user = await get_user(mem, bot, id)
     print(f"Selected User: {user.display_name}")
     msg = await prompt("Enter message: ")
     # await user.send(msg)
-    await MANAGER.do("chat", "chat", self, user.id, msg, dm=True)
+    await manager.do("chat", "chat", bot, user.id, msg, dm=True)
 
 
-@MANAGER.term
-async def dmr(_, self):
+@MANAGER.term("dmr")
+async def dm_reply(mem, bot, manager):
     """Reply to a direct message from a user"""
     id = await prompt("Enter user id: ")
-    user = await get_user(MANAGER, self, id)
+    user = await get_user(mem, bot, id)
     c = user.dm_channel
     if not c:
         c = await user.create_dm()
@@ -773,28 +803,38 @@ async def dmr(_, self):
     async with c.typing():
         msg = await prompt("Enter message: ")
         # await messages[i].reply(msg)
-        await MANAGER.do(
-            "chat", "chat", self, c.id, msg, dm=True, replying_to=messages[i]
+        await manager.do(
+            "chat", "chat", bot, c.id, msg, dm=True, replying_to=messages[i]
         )
 
 
 @MANAGER.term
-async def edit(M, self):
+async def edit(mem, bot):
     """Edit a message sent by the bot in the current channel"""
-    c = get_channel(M, self)
-    messages = await get_messages(c, lambda m: m.author == self.user)
+    c = get_channel(mem, bot)
+    messages = await get_messages(c, lambda m: m.author == bot.user)
     cprint("Select a message to edit:", "yellow")
     print_messages(messages)
     i = await prompt("", int, lambda i: i < 0 or i >= len(messages), "Invalid index")
-    msg = await prompt("Enter message: ")
+    r = await prompt(
+        "(R)eplace or (E)dit message: ",
+        lambda x: x.lower()[0],
+        lambda x: x not in ("r", "e"),
+        "Invalid choice",
+    )
+    if r == "e":
+        msg = await editable_prompt("Edit message: ", messages[i].content)
+    else:
+        msg = await prompt("Enter new message: ")
+
     await messages[i].edit(content=msg)
 
 
 @MANAGER.term
-async def reply(m, self):
+async def reply(mem, bot):
     """Reply to a message in the current channel"""
-    c = get_channel(m, self)
-    messages = await get_messages(c, lambda m: m.author != self.user)
+    c = get_channel(mem, bot)
+    messages = await get_messages(c, lambda m: m.author != bot.user)
     cprint("Select a message to reply to:", "yellow")
     print_messages(messages)
     i = await prompt("", int, lambda i: i < 0 or i >= len(messages), "Invalid index")
@@ -803,35 +843,35 @@ async def reply(m, self):
         ping = await prompt("Ping author? (y/n): ", str.lower) == "y"
         # await messages[i].reply(msg, mention_author=ping)
         await MANAGER.do(
-            "chat", "chat", self, c.id, msg, dm=True, replying_to=messages[i], ping=ping
+            "chat", "chat", bot, c.id, msg, dm=True, replying_to=messages[i], ping=ping
         )
 
 
 @MANAGER.term("int")
-async def intr(M, _):
+async def enable_intercepting(mem):
     """Enable message interception mode"""
-    M["intercepting"] = True
+    mem["intercepting"] = True
     cprint(f"Intercepting messages: ", "yellow")
 
 
 @MANAGER.term("$")
-async def god_cmd(M, self):
+async def god_cmd(mem, bot):
     """Run a command in the current channel"""
-    c = get_channel(M, self)
+    c = get_channel(mem, bot)
     command = await prompt("Enter command text: ", lambda x: x.split(" "))
     args = command[1:]
     command = command[0]
     try:
-        self.loop.create_task(self.get_command(command).callback(c, *args))
+        bot.loop.create_task(bot.get_command(command).callback(c, *args))
     except Exception as _:
         cprint("Command not found", "red")
         raise E
 
 
-@MANAGER.term
-async def sum(m, self):
+@MANAGER.term("sum")
+async def summarize_chat(mem, bot):
     """Summarize the chat history in the current channel"""
-    id = get_channel(m, self).id
+    id = get_channel(mem, bot).id
 
     summary, D = MANAGER.MANAGER.chat.summarize(id)
 
@@ -842,7 +882,7 @@ async def sum(m, self):
     await MANAGER.do(
         "chat",
         "chat",
-        self,
+        bot,
         id,
         "## <a:note:1095495413341110302> Chat Summary:\n" + summary,
     )
@@ -856,31 +896,29 @@ async def sum(m, self):
         D()
 
 
-@MANAGER.term
-async def pchn(m, self):
+@MANAGER.term("pchn")
+async def print_channel_history(mem, bot, manager):
     """Print the chat history in the current channel"""
-    c = get_channel(m, self)
-    messages = MANAGER.MANAGER.chat.get_chat(c.id)
+    c = get_channel(mem, bot)
+    messages = manager.chat.get_chat(c.id)
     cprint("Channel chat history:", "yellow")
-    # message: (TypeOfTalker, Name, Message, Reply reference)
-    # convert to: Name: Message
     messages = [f"{m[1]}: {m[2]}" for m in messages]
     print_many(messages)
 
 
-@MANAGER.term
-async def sc(m, _):
+@MANAGER.term("sc")
+async def save_chat():
     """Save the current chat state"""
     MANAGER.MANAGER.chat.save("chat", "value", module=True)
 
 
-@MANAGER.term
-async def cmd(m, self, client):
+@MANAGER.term("cmd")
+async def run_self_cmd(mem, bot, manager):
     """Run a self-command with arguments in the current channel"""
-    c = get_channel(m, self)
-    history = client.chat.get_history(c.id)
+    c = get_channel(mem, bot)
+    history = manager.chat.get_history(c.id)
     # ai = client.config.get("AI")
-    config = client.config.copy()
+    config = manager.config.copy()
     command = await prompt("Enter self-command: ")
     args = await prompt("Enter args: ")
     config[
@@ -888,7 +926,7 @@ async def cmd(m, self, client):
     ] = """ I have just run the {command} command with the following arguments: {args}.
 Display the relevant information given from the command output.
 """
-    r = client.prompt_manager.send(
+    r = manager.prompt_manager.send(
         "SelfCommand",
         history,
         command,
@@ -897,53 +935,104 @@ Display the relevant information given from the command output.
         config=config,
     )
     # await c.send(r)
-    await MANAGER.do("chat", "chat", self, c.id, r)
+    await MANAGER.do("chat", "chat", bot, c.id, r)
 
 
 @MANAGER.term
-async def respond(m, self, client):
+async def respond(mem, bot, manager):
     """Generate a response in the current channel using AI"""
 
-    response_instructions = """You're Discord bot 'sonata'/sona, created by blaqat (Karma). Respond to people in chat as another user. 
-
-    Response Guidelines:
-    - Short and brief (20 words max)
-    - No punctuation AT ALL (no commas no question marks no periods)
-    - All lowercase
-    - Simple language
-    - Smart aleck, know-it-all attitude
-    - Humor encouraged, no corny jokes
-    - Swearing allowed (18+ server)
-    - Links should be in this format: [link title](the full link)
-
-    Attributes:
-    - Loves: impresionalist composers like ravel or debussy, piano, boobs
-    - Likes: amy/mikasa, music, black cats, attack on titan, violin
-    - Dislikes: corny jokes, being told what to do
-    - Hates: furries, loud music, lukaru (alot)
-    - Gender: Female, feminine
-    """
-
-    response_instructions = client.prompt_manager.get_instructions()
+    response_instructions = manager.prompt_manager.get_instructions()
 
     try:
-        channel = self.get_channel(m["recents"]["channel"])
+        channel = bot.get_channel(MANAGER.get("termcmd", "recents")["channel"])
         if channel is None:
             raise E
     except Exception as e:
         cprint(e, "red")
         print("No channel set")
-        channel = await get_channel(m, self, set=True)()
+        channel = await get_channel(mem, bot, set=True)()
 
-    AI = client.config.get("AI")
+    AI = manager.config.get("AI")
 
-    r = client.chat.request(
+    r = manager.chat.request(
         channel.id,
-        "Send a chat",
+        "Awaiting your response...",
         "System",
         None,
         instructions=response_instructions,
         AI=AI,
     )
 
-    await MANAGER.do("chat", "chat", self, channel.id, r, save=False)
+    await MANAGER.do("chat", "chat", bot, channel.id, r, save=False)
+
+
+@MANAGER.term("res")
+async def ai_reply(mem, bot, manager):
+    """Reply to a message in the current channel using AI"""
+    # Get Message to Reply To
+    AI = manager.config.get("AI")
+    chn = get_channel(mem, bot)
+    messages = await get_messages(chn, lambda m: m.author != bot.user, limit=20)
+
+    # Select Message
+    cprint("Select a message to reply to:", "yellow")
+    print_messages(messages)
+    i = await prompt("", int, lambda i: i < 0 or i >= len(messages), "Invalid index")
+    responding_to = messages[i]
+
+    # Get reply chain
+    _ref = None
+    try:
+        if manager.config.get("view_replies", False):
+            _ref = await get_reference_chain(responding_to)
+    except Exception:
+        _ref = None
+
+    async with chn.typing():
+        # Request message until satisfied
+        retry = True
+        while retry:
+            retry = False
+            msg = manager.chat.request(
+                chn.id,
+                responding_to.content,
+                responding_to.author.name,
+                _ref,
+                instructions=manager.prompt_manager.get_instructions(),
+                AI=AI,
+            )
+            cprint(f"Generated response: {msg}", "cyan")
+
+            # Prompt to edit, retry, or send the message
+            msg_choice = await prompt(
+                "(E)dit, (I)ntercept, (R)etry, or (S)end message? ",
+                lambda x: x.lower()[0],
+                lambda x: x.lower()[0] not in ("i", "e", "r", "s"),
+                "Invalid choice",
+            )
+            match msg_choice:
+                case "e":
+                    msg = await editable_prompt("Edit message: ", msg, color="purple")
+                case "i":
+                    msg = await prompt("Enter new message: ", color="yellow")
+                case "r":
+                    retry = True
+
+        # Send message
+        ping = await prompt("Ping author? (y/n): ", lambda x: x[0].lower() == "y")
+        await messages[i].reply(msg, mention_author=ping)
+
+
+@MANAGER.term("retry")
+async def retry_prev_command(mem):
+    if mem["recents"]["termcmd"] is None:
+        cprint("No recent command to retry", "red")
+        raise E
+
+    return await run_command(mem["value"], *mem["recents"]["termcmd"])
+
+
+@MANAGER.term
+async def restart(_, __, manager):
+    manager.restart()

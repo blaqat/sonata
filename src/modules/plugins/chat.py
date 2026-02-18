@@ -104,9 +104,10 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
         message.content = message.content.replace(" sona", "")
 
     # Format and display the message
+
     print(
         "  {0}: {1}".format(
-            cstr(str=get_full_name(message), style="cyan"),
+            cstr(str=get_full_name(message), style=message.author.color),
             CENSOR
             and censor_message(
                 message.content.replace("\n", "\n\t"),
@@ -263,7 +264,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
 
     print(
         "  {0}: {1}".format(
-            cstr(str=get_full_name(message), style="cyan"),
+            cstr(str=get_full_name(message), style=message.author.color),
             CENSOR
             and censor_message(
                 message.content.replace("\n", "\n\t"),
@@ -296,16 +297,18 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         message_reference = None
 
     memory_text = memory_text.strip()
-    if IS_SONATA and len(message.content) > 0:
-        m = message.content
-        # Remove command from message
-        if message.content[0] == "$":
-            split = message.content.split(" ")
-            if len(split[0]) == 1:
-                m = " ".join(split[1:])
 
-        message.content = Sonata.chat.send(
-            message.channel.id, "User", get_full_name(message), m
+    # Process user messages
+    if VALID_USER and len(message.content) > 0:
+        # m = message.content
+        # Remove command from message
+        # if message.content[0] == "$":
+        #     split = message.content.split(" ")
+        #     if len(split[0]) == 1:
+        #         m = " ".join(split[1:])
+
+        Sonata.chat.send(
+            message.channel.id, "User", get_full_name(message), message.content
         )
 
         if message.content is None:
@@ -577,6 +580,7 @@ def chat(sona: AI_Manager):
             *args,
             AI=sona.config.get("AI"),
             error_prompt=None,
+            save=True,
             **config,
         ):
             """Request a response from the AI for a given message and chat ID."""
@@ -620,7 +624,8 @@ def chat(sona: AI_Manager):
                         config=new_c,
                     )
 
-                self.send(id, "Bot", sona.name, response, replying_to)
+                if save:
+                    self.send(id, "Bot", sona.name, response, replying_to)
                 # HACK: This is a hack to get the images from the config to clear
                 (c.get("images") or {})[id] = None
                 (sona.config.get().get("images") or {})[id] = None
