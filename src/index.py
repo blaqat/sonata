@@ -18,7 +18,7 @@ Test Configuration
 """
 # TODO: Move configuration to a separate file
 RANDOM_CONFIG = False
-AUTO_MODEL = "x"  # g, o, c, a, m, x
+AUTO_MODEL = "o"  # g, o, c, a, m, x
 PROMPT_RESET = False
 VC_RECORDING = False
 VC_SPEAKING = True
@@ -302,25 +302,24 @@ def Grok(client: XAIClient, prompt, model, config):
     if (instructions := config.get("instructions", None)) is not None:
         chat.append(xai_system(instructions))
 
-    content = list()
+    content = [prompt]
 
-    content.append(prompt)
     if images := config.get("images", False):
         for url in images:
-            content.append(xai_image(url=url))
+            content.append(xai_image(url))
         config["images"] = None
 
     chat.append(xai_user(*content))
 
-    response = chat.sample()
-    return response.content
+    return chat.sample().content
 
 
 @MANAGER.register_ai(
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-4.1-2025-04-14",
+    model="gpt-5-mini-2025-08-07",
+    # model="gpt-5.2-2025-12-11",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -340,7 +339,7 @@ def OpenAI(client, prompt, model, config):
                 {"role": "system", "content": config["instructions"]},
                 {"role": "user", "content": content},
             ],
-            max_tokens=config.get("max_tokens", 1250),
+            max_completion_tokens=config.get("max_tokens", 1250),
             temperature=config.get("temp") or config.get("temperature") or 0,
         )
         .choices[0]
