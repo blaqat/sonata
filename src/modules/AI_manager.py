@@ -973,11 +973,11 @@ class AI_Manager:
         """
         if not inner:
             return self.memory.get(key, default)
-        if not key in self.memory:
+        if key not in self.memory:
             print(f"Key {key} not found in ChatBot memory")
             return default
 
-        if not val in self.memory[key]:
+        if val not in self.memory[key]:
             print(f"Key {val} not found in ChatBot memory[{key}]")
             return default
 

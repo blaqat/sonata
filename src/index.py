@@ -13,6 +13,47 @@ P"Ybmmd"   `Ybmd9'.JMML  JMML.`Moo9^Yo.`Mbmo`Moo9^Yo.
 _____________________________________________________
 """
 
+from __init__ import apply_patches
+import asyncio
+import base64
+import os
+import re
+import sys
+from io import BytesIO
+from random import randint
+
+import anthropic
+import discord
+import google.generativeai as genai
+from google import genai as google_genai
+import nest_asyncio
+import openai
+import requests
+from discord.ext import commands
+from PIL import Image
+from xai_sdk import Client as XAIClient
+from xai_sdk.chat import image as xai_image
+from xai_sdk.chat import system as xai_system
+from xai_sdk.chat import user as xai_user
+
+from modules.AI_manager import AI_Error, AI_Manager, PromptManager
+from modules.plugins import PLUGINS
+from modules.utils import (
+    get_full_name,
+    get_trace,
+    ordinal,
+    settings,
+)
+from modules.utils import (
+    async_cprint as cprint,
+)
+from modules.utils import (
+    async_print as print,
+)
+from modules.utils import (
+    get_reference_chain as get_chain,
+)
+
 """
 Test Configuration
 """
@@ -24,7 +65,7 @@ VC_RECORDING = False
 VC_SPEAKING = True
 GIF_SEARCH = "random"  # tenor, giphy, google, random
 EMOJIS = False
-AGENT = True  # Removes ability to run single commands other than agent
+AGENT = False  # Removes ability to run single commands other than agent
 IGNORE_LIST = []
 
 
@@ -40,42 +81,6 @@ def rand_config():
     EMOJIS = bool(randint(0, 1))
     AGENT = bool(randint(0, 1))
 
-
-import asyncio
-import base64
-from functools import reduce
-import os
-import re
-from io import BytesIO
-from random import randint
-import sys
-
-import aioconsole
-import anthropic
-import discord
-
-import google.generativeai as genai
-import openai
-from xai_sdk import Client as XAIClient
-from xai_sdk.chat import user as xai_user, system as xai_system, image as xai_image
-import requests
-from discord.ext import commands
-
-from PIL import Image
-from xai_sdk.types import Content
-
-from modules.AI_manager import AI_Error, AI_Manager, PromptManager
-from modules.plugins import PLUGINS
-from modules.utils import async_cprint as cprint, async_print as print, RestartSignal, cstr
-from modules.utils import (
-    get_full_name,
-    settings,
-    get_reference_chain as get_chain,
-    get_trace,
-    ordinal,
-)
-
-import nest_asyncio
 
 nest_asyncio.apply()
 
@@ -104,8 +109,10 @@ def reset_instructions():
     PROMPT_MANAGER.set_instructions(lambda *a: PROMPT.format(*a))
     PROMPT_MANAGER.add(
         "Message",
-        lambda user, msg, responding_to: "message chain:\n{2}\nnew message: {0}: {1}".format(
-            user, msg, responding_to
+        lambda user, msg, responding_to: (
+            "message chain:\n{2}\nnew message: {0}: {1}".format(
+                user, msg, responding_to
+            )
         ),
     )
     PROMPT_MANAGER.add(
@@ -114,9 +121,10 @@ def reset_instructions():
     )
     PROMPT_MANAGER.add(
         "History",
-        lambda history: f"""Here is the chat history so far BEGINING :: {
-            history} :: END
-""",
+        lambda history: (
+            f"""Here is the chat history so far BEGINING :: {history} :: END
+"""
+        ),
     )
 
     PROMPT_MANAGER.add("DefaultInstructions", lambda *a: PROMPT.format(*a))
@@ -291,7 +299,7 @@ def GrokBeta(client, prompt, model, config):
     key=settings.X_AI,
     setup=lambda S, key: setattr(S, "client", XAIClient(api_key=key)),
     # model="grok-4-1-fast-reasoning"
-    model="grok-4-1-fast-non-reasoning"
+    model="grok-4-1-fast-non-reasoning",
 )
 def Grok(client: XAIClient, prompt, model, config):
     chat = client.chat.create(
@@ -361,8 +369,8 @@ def OpenAI(client, prompt, model, config):
     None,
     key=settings.ANTHROPIC_AI,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
-    # model="claude-sonnet-4-5-20250929",
-    model="claude-haiku-4-5",
+    model="claude-sonnet-4-6",
+    # model="claude-haiku-4-5",
     default=True,
 )
 def Claude(client, prompt, model, config):
@@ -518,7 +526,7 @@ def Gemini(client, prompt, model, config):
         config["images"].append(True)
     try:
         response = None
-        if type(content) == list:
+        if isinstance(content, list):
             content = [config["instructions"]] + content
         else:
             content = config["instructions"] + content
@@ -553,6 +561,41 @@ def Gemini(client, prompt, model, config):
             )
         else:
             raise AI_Error(str(e))
+
+
+@MANAGER.register_ai(
+    None,
+    default=False,
+    key=settings.GOOGLE_AI,
+    setup=lambda S, key: setattr(S, "client", google_genai.Client(api_key=key)),
+    # model="imagen-4.0-generate-001",
+    model="imagen-4.0-fast-generate-001",
+    # model="imagen-3.0-capability-001",
+)
+def NanoBanana(client, prompt, model, config):
+    result = client.models.generate_images(
+        model=model,
+        prompt=prompt,
+        config=dict(
+            number_of_images=config.get("num_images", 1),
+            output_mime_type="image/jpeg",
+            aspect_ratio="1:1",
+        ),
+    )
+    image_bytes = result.generated_images[0].image.image_bytes
+
+    # Upload to catbox.moe
+    url = "https://catbox.moe/user/api.php"
+    files = {
+        "reqtype": (None, "fileupload"),
+        "fileToUpload": ("image.jpg", image_bytes),
+    }
+    response = requests.post(url, files=files)
+
+    if response.status_code == 200 and response.text.startswith("http"):
+        return response.text
+    else:
+        raise AI_Error(f"Failed to upload image to catbox: {response.text}")
 
 
 # -------------------------------------------------------------------
@@ -1218,8 +1261,9 @@ async def grok_ai_question(ctx, *message):
         ),
     )
 
+
 @sonata.command(name="xb", description="Ask a question using GrokBeta")
-async def grok_ai_question(ctx, *message):
+async def grok_beta_ai_question(ctx, *message):
     await ai_question(
         ctx,
         *message,
@@ -1229,6 +1273,7 @@ async def grok_ai_question(ctx, *message):
             "ExplainBlockReasoning", r, name
         ),
     )
+
 
 @sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
 async def open_ai_assistant_question(ctx, *message):
@@ -1277,6 +1322,7 @@ Sonata.restart = restart
 
 if __name__ == "__main__":
     try:
+        apply_patches()
         asyncio.run(main())
     except KeyboardInterrupt:
         pass

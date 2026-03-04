@@ -200,10 +200,10 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
     RESPONSES = Sonata.config.get("response_map", {})
-    WHITELIST = Sonata.config.get("bot_whitelist", [])
+    BOT_WHITELIST = Sonata.config.get("bot_whitelist", [])
     VALID_USER = (
         message.author.bot
-        and (message.author.name in WHITELIST or message.author.id in WHITELIST)
+        and (message.author.name in BOT_WHITELIST or message.author.id in BOT_WHITELIST)
         or not message.author.bot
     )
     IS_SONATA = message.author.bot and message.author.name == "sonata"
@@ -363,7 +363,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             else:
                 message.content += "0"
             message.content = f"${AI} " + message.content
-            await self.process_commands(message, bot_whitelist=WHITELIST)
+            await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
             return
         #
         # await self.process_commands(message)
@@ -388,7 +388,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         else:
             message.content += "0"
 
-    await self.process_commands(message, bot_whitelist=WHITELIST)
+    await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
 
 
 @MANAGER.effect("chat", "set", prepend=True)

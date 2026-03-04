@@ -206,6 +206,7 @@ class bcolors:
     B: Bold
     _: Underline
     """
+
     PURPLE = "\033[95m"
     BLUE = "\033[94m"
     CYAN = "\033[96m"
@@ -233,6 +234,7 @@ BColor = Literal[
     "red",
 ]
 
+
 class Colors(Enum):
     PURPLE = "purple"
     BLUE = "blue"
@@ -243,6 +245,7 @@ class Colors(Enum):
     RESET = "_0"
     BOLD = "b"
     UNDERLINE = "_"
+
 
 __input = input
 
@@ -582,7 +585,7 @@ def __get_color(color: str):
     return bcolors.__getattribute__(bcolors, color.upper())
 
 
-def cstr(str, style: str | Color | None):
+def cstr(str, style):
     if not style:
         return str
 
@@ -593,8 +596,10 @@ def cstr(str, style: str | Color | None):
 
     return f"{st}{str}{bcolors._0}"
 
+
 def cstrs(str, *styles):
     return reduce(lambda s, c: cstr(s, c), styles, str)
+
 
 def cprint(str: str, *styles: str, end="\n"):
     """
@@ -614,6 +619,7 @@ PROMPT_SESSION = PromptSession()
 
 class E(Exception):
     """Shared terminal prompt exit exception."""
+
     pass
 
 
@@ -630,7 +636,9 @@ async def prompt(
     invalid conversions/conditions.
     """
     with patch_stdout():
-        x = await PROMPT_SESSION.prompt_async(text if not color else ANSI(cstr(text, color)))
+        x = await PROMPT_SESSION.prompt_async(
+            text if not color else ANSI(cstr(text, color))
+        )
     if x == "exit":
         if exit_callback is not None:
             exit_callback()
@@ -836,6 +844,7 @@ def get_full_name(ctx):
 #     except Exception as e:
 #         cprint(*args, **kwargs)
 
+
 class NonBlockingPrinter:
     ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -910,7 +919,12 @@ class NonBlockingPrinter:
 
                     case "text":
                         text, kwargs = payload
-                        if self.ANSI_RE.search(text) and print_formatted_text is not None and PTK_ANSI is not None:
+                        if (
+                            self.ANSI_RE.search(text)
+                            and print_formatted_text is not None
+                            and PTK_ANSI is not None
+                        ):
+
                             def _call_pf():
                                 print_formatted_text(PTK_ANSI(text), **(kwargs or {}))
 
@@ -958,7 +972,7 @@ def async_print(*args, sep=" ", **kwargs):
     _printer.queue_text(sep.join(str(arg) for arg in args), **kwargs)
 
 
-def async_cprint(text, *styles, **kwargs):
+def async_cprint(text, *styles: BColor, **kwargs):
     """Non-blocking colored print - queues the job"""
     async_print(cstrs(text, *styles), **kwargs)
 
@@ -1158,6 +1172,7 @@ def get_trace() -> str:
 
 def ordinal(n: int) -> str:
     return f"{n}{'th' if 11 <= n % 100 <= 13 else {1:'st', 2:'nd', 3:'rd'}.get(n % 10, 'th')}"
+
 
 def rgb_to_terminal_color(r, g, b):
     return f"\033[38;2;{r};{g};{b}m"

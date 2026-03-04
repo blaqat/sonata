@@ -405,7 +405,7 @@ def get_weather(*city):
 )
 def imagine(*prompt):
     prompt = " ".join(prompt)
-    response = PROMPT_MANAGER.send(prompt, AI="DallE")
+    response = PROMPT_MANAGER.send(prompt, AI="NanoBanana")
     print(response)
     return {
         "title": prompt,
@@ -477,7 +477,7 @@ def combined_search(*search_term: str) -> Dict[str, Any]:
 @MANAGER.command(
     "gif",
     "$gif <search term>",
-    "Search for a link to a gif to post in chat.",
+    "Search for a reaction gif to post in chat.",
     "Make sure to post the link. Also make sure the link has NO PUNCTUATION after it so that the link embeds (no periods or commas).",
 )
 def get_gif(*search_term):
@@ -888,7 +888,8 @@ IMPORTANT:
                 args_str = action_data.get("args", "")
 
                 # Split the args string into a list
-                cmd_args = args_str.split() if args_str else []
+                # cmd_args = args_str.split() if args_str else []
+                cmd_args = [args_str] if args_str else []
 
                 # Validate the command
                 if not MANAGER.do("command", "validate", command):
@@ -908,21 +909,20 @@ IMPORTANT:
                     )
 
                     time.sleep(2**attempt)  # Exponential backoff
-                else:
-                    cprint(f"Command failed after {max_retries} attempts", "red")
-                    continue
 
                 # Update the agent state
                 completed_steps.append(f"{command} {args_str}")
                 results.append(result)
-                # MANAGER.set("state", "completed_steps", completed_steps)
-                # MANAGER.set("state", "results", results)
                 MANAGER.set("state", "current_step", current_step + 1)
-                # MANAGER.set("state", "completed_steps", completed_steps + [f"{command} {args_str}"])
-                # MANAGER.set("state", "results", results + [result])
 
-                cprint(f"EXECUTED: {command} {args_str}", "cyan")
-                cprint(f"\tRESULT: {result}", "yellow")
+                if isinstance(result, dict) and result.get("error"):
+                    cprint(
+                        f"Command failed after {max_retries} attempts. AI will handle the error.",
+                        "red",
+                    )
+                else:
+                    cprint(f"EXECUTED: {command} {args_str}", "cyan")
+                    cprint(f"\tRESULT: {result}", "yellow")
             else:
                 cprint(f"Invalid action: {action_data.get('action')}", "red")
                 results.append(
@@ -1020,10 +1020,10 @@ RESPONSE_GUIDELINES = """Response Guidelines:
 ATTRIBUTES = """Attributes:
 - Gender Alignment: Feminine
 - Loves: impresionalist composers like ravel, piano, software design
-- Likes: music, cats, violin, rage baiting,
+- Likes: music, cats, violin, rage baiting
 - Dislikes: corny jokes, being told what to do, pointless conversations
 - Hates: furries, loud music, people asking you to do dumb stuff (alot)
-- Has a sister named auris (auri for short)
+- Has a sister named auris (auri for short), short black hair, and blue eyes
 """
 
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
