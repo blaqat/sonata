@@ -687,71 +687,8 @@ async def editable_prompt(
     return x
 
 
-def print_symbols(
-    *symbol: str | Enum,
-    padding: int = 1,
-    allign: int | str = 0,
-    colors: list | Callable = [],
-):
-    # Split symbols by lines
-    symbols = [
-        (s if s.isinstance(str) else s.VALUE).split("\n") for i, s in enumerate(symbol)
-    ]
-    max_height = 0
-    max_widths = []
-
-    # Get max height and max width for each symbol
-    for s in symbols:
-        max_height = max(max_height, len(s))
-        max_widths.append(max(len(line) for line in s))
-
-    # Keep smaller symbols centered vertically
-    for i, s in enumerate(symbols):
-        height = len(s)
-        # Add trailing spaces to symbols
-        if auto_trailing:
-            for j, line in enumerate(s):
-                s[j] = line.ljust(max_widths[i])
-        # Allign symbols
-        if allign != 0 and allign != "top" and height < max_height:
-            loop(
-                (
-                    (max_height - height) // 2
-                    if allign == 1 or allign == "center"
-                    else max_height - height - 0
-                ),
-                lambda: s.insert(0, " " * max_widths[i]),
-            )
-
-    # Build new string, then print
-    return propogate(
-        loop(
-            max_height,
-            lambda _i: "".join(
-                loop(
-                    len(symbols),
-                    lambda _j: cstr(
-                        (
-                            symbols[_j][_i]
-                            if _i < len(symbols[_j])
-                            else " " * max_widths[_j]
-                        )
-                        + " " * padding,
-                        (
-                            colors[_j]
-                            if not callable(colors) and len(colors) > _j
-                            else colors(symbol[_j]) if callable(colors) else None
-                        ),
-                    ),
-                )
-            ),
-        ),
-        lambda s: "\n".join(s[:-1]).rstrip(),
-        print,
-    )
-
-
 def picker(choices: list = [], delay_count=0, reverse_on_end: bool = False):
+    """Picker function that returns the next item in the list based on the delay count."""
     last = -1
     i = 0
     direction = 1
@@ -827,22 +764,6 @@ def get_full_name(ctx):
     except AttributeError as _:
         async_cprint("Error get_full_name defaulting to sonata", "red")
         return "sonata"
-
-
-# def async_print(*args, **kwargs):
-#     try:
-#         loop = asyncio.get_running_loop()
-#         loop.run_in_executor(None, print, *args, **kwargs)
-#     except Exception as e:
-#         print(*args, **kwargs)
-
-
-# def async_cprint(*args, **kwargs):
-#     try:
-#         loop = asyncio.get_running_loop()
-#         loop.run_in_executor(None, cprint, *args, **kwargs)
-#     except Exception as e:
-#         cprint(*args, **kwargs)
 
 
 class NonBlockingPrinter:

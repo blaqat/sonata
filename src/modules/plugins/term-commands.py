@@ -5,23 +5,18 @@ This plugin allows you to interact with the bot through the terminal. You can se
 Additionally, you can set favorite channels and users to easily interact with them.
 """
 
-from functools import reduce
-from typing import Callable
 import discord
-from pydantic_core.core_schema import WithInfoValidatorFunction
 from modules.AI_manager import AI_Manager
 from modules.utils import (
-    BColor,
     Colors,
     async_cprint as cprint,
     async_print as print,
     get_reference_chain,
     setter,
-    cstr,
 )
 import asyncio
 from random import randint
-from prompt_toolkit.formatted_text import ANSI
+from modules.utils import prompt, editable_prompt, E
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
@@ -31,7 +26,6 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
 )
 __plugin_name__ = "term_commands"
 __dependencies__ = ["beacon", "chat"]
-from modules.utils import prompt, editable_prompt, E
 
 """
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------

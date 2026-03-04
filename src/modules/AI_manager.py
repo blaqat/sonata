@@ -180,37 +180,78 @@ class PromptManager:
         # return "HELLO"
 
 
-def _config_builder(aiman):
-    self = aiman
+# def _config_builder(aiman):
+#     self = aiman
 
-    class Config:
-        def get(kelf, name: str = None, *default_to):
-            _c = self.get("config")
-            if name is None:
-                return _c
+#     class Config:
+#         def get(kelf, name: str = None, *default_to):
+#             _c = self.get("config")
+#             if name is None:
+#                 return _c
 
-            if name in _c and _c[name] is not None:
-                return _c[name]
-            else:
-                for d in default_to:
-                    if d is not None:
-                        return d
-            return None
+#             if name in _c and _c[name] is not None:
+#                 return _c[name]
+#             else:
+#                 for d in default_to:
+#                     if d is not None:
+#                         return d
+#             return None
 
-        def copy(kelf):
-            return self.get("config").copy()
+#         def copy(kelf):
+#             return self.get("config").copy()
 
-        def set(kelf, **kwargs):
-            self.update("config", **kwargs)
+#         def set(kelf, **kwargs):
+#             self.update("config", **kwargs)
 
-        def merge(kelf, *configs):
-            self.update("config", *configs)
+#         def merge(kelf, *configs):
+#             self.update("config", *configs)
 
-        def setup(kelf):
-            _setup = kelf.get("setup")
-            AI_Type.initalize(tuple([*_setup]))
+#         def setup(kelf):
+#             _setup = kelf.get("setup")
+#             AI_Type.initalize(tuple([*_setup]))
 
-    return Config
+#     return Config
+
+
+class Config:
+    def __init__(self, manager: AI_Manager):
+        self.manager = manager
+
+    def get(self, name: str = None, *default_to):
+        m = object.__getattribute__(self, "manager")
+        _c = m.get("config")
+        if name is None:
+            return _c
+
+        if name in _c and _c[name] is not None:
+            return _c[name]
+        else:
+            for d in default_to:
+                if d is not None:
+                    return d
+        return None
+
+    def copy(self):
+        m = object.__getattribute__(self, "manager")
+        return m.get("config").copy()
+
+    def set(self, **kwargs):
+        m = object.__getattribute__(self, "manager")
+        m.update("config", **kwargs)
+
+    def merge(self, *configs):
+        m = object.__getattribute__(self, "manager")
+        m.update("config", *configs)
+
+    def setup(self):
+        m = object.__getattribute__(self, "manager")
+        _setup = m.get("setup")
+        AI_Type.initalize(tuple([*_setup]))
+
+    def __getattribute__(self, name):
+        if name == "manager":
+            raise AttributeError("Config does not have a manager attribute")
+        return super().__getattribute__(name)
 
 
 class Context:
@@ -248,7 +289,7 @@ class Context:
     def __init__(
         self,
         manager: AI_Manager = None,
-        config: "_config_builder.Config" = None,
+        config: Config = None,
         prompt_manager: PromptManager = None,
         sub_classes: dict = None,
         client: discord.Client = None,
@@ -731,9 +772,9 @@ class AI_Manager:
             self.lazy = False
         self.sub_classes = {}
         self.name = name
-        Config = _config_builder(self)
+        # Config = _config_builder(self)
 
-        self.config = Config()
+        self.config = Config(self)
         self.__init_memoi(memoi)
 
         if (
