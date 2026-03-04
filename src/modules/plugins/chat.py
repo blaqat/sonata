@@ -15,11 +15,11 @@ Also, it provides a way to send messages to a specific channel or user.
 # ______________________________
 # Message class will also have translators to convert to differe ai api chat history formats
 
+from modules.AI_manager import Context
 import copy
 
 import discord
 from discord.ext import commands
-from requests import get
 
 from modules.AI_manager import AI_Manager
 from modules.utils import (
@@ -150,25 +150,6 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     #
     #
     # Handle message attachments
-    #
-    # image_types = ["png", "jpg", "jpeg", "webp"]
-    # if message.attachments and not message.author.bot and len(message.attachments) > 0:
-    #     # attachment = [x.url for x in message.attachments]
-    #     attachment = []
-    #     not_grabbed = []
-    #     for x in message.attachments:
-    #         if has_inside(x.url, image_types):
-    #             attachment.append(x.url)
-    #         else:
-    #             not_grabbed.append(x.url)
-    #
-    #     Sonata.config.set(images=attachment)
-    #     if len(not_grabbed) > 0:
-    #         message.content += f"\nAttachment: {not_grabbed}"
-    # attachment = message.attachments[0].url
-    # if attachment:
-    #     message.content += f"\nAttachment: {attachment}"
-
     if not message.author.bot:
         attachments = []
         not_grabbed = []
@@ -197,6 +178,7 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
             # FIXME: Images being queued and only loaded when the next @sonata happens
             # Handle message attachments
             images = Sonata.config.get("images", {})
+            attachments = images.get(message.channel.id, []) + attachments
             images[message.channel.id] = attachments
             Sonata.config.set(images=images)
 
@@ -349,6 +331,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             # FIXME: Images being queued and only loaded when the next @sonata happens
             # Handle message attachments
             images = Sonata.config.get("images", {})
+            attachments = images.get(message.channel.id, []) + attachments
             images[message.channel.id] = attachments
             Sonata.config.set(images=images)
 
@@ -432,6 +415,17 @@ def timestamp_chat(_, chat_id, message_type, author, message, replying_to=None):
         timestamped_message,
         replying_to,
     )
+
+
+@MANAGER.with_context(config=True)
+def clear_images_init(context: Context):
+    @MANAGER.effect_post("chat", "set")
+    def clear_images(_, *args):
+        # if "images" in CONTEXT.config and CONTEXT.config["images"][-1] is True:
+        images = context.config.get("images", {}).get(args[0], False)
+        if images and images[-1] is True:
+            images.clear()
+        return args
 
 
 """
@@ -627,9 +621,9 @@ def chat(sona: AI_Manager):
                 if save:
                     self.send(id, "Bot", sona.name, response, replying_to)
                 # HACK: This is a hack to get the images from the config to clear
-                (c.get("images") or {})[id] = None
-                (sona.config.get().get("images") or {})[id] = None
-                (sona.memory["config"]["value"].get("images") or {})[id] = None
+                # (c.get("images") or {})[id] = None
+                # (sona.config.get().get("images") or {})[id] = None
+                # (sona.memory["config"]["value"].get("images") or {})[id] = None
                 return response
             except Exception as e:
                 # response = f"{e}"

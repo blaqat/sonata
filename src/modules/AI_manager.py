@@ -19,6 +19,8 @@ The PromptManager class provides the following methods:
 - stream(prompt: str, *prompt_args, model=MODEL, max_tokens=1250, temperature=0, **kwargs): Generates a stream of AI-generated text based on the given prompt.
 """
 
+from __future__ import annotations
+import discord
 from modules.utils import Map
 from typing import Any, Callable, Tuple, Union
 import copy
@@ -209,6 +211,75 @@ def _config_builder(aiman):
             AI_Type.initalize(tuple([*_setup]))
 
     return Config
+
+
+class Context:
+    class ContextError(Exception):
+        def __init__(self, message):
+            self.message = message
+            super().__init__(self.message)
+
+    class Contract(Callable):
+        def __init__(
+            self,
+            manager: bool,
+            config: bool,
+            prompt_manager: bool,
+            sub_classes: bool,
+            client: bool,
+            func: Callable,
+        ):
+            self.manager = manager
+            self.config = config
+            self.prompt_manager = prompt_manager
+            self.sub_classes = sub_classes
+            self.client = client
+            self.func = func
+
+        def __call__(
+            self, Manager: AI_Manager, Client: discord.Client, *args, **kwargs
+        ):
+            context = Context.request(self, Manager, Client)
+            return self.func(context, *args, **kwargs)
+
+        def __str__(self):
+            return f"ContextContract(manager={self.manager}, config={self.config}, prompt_manager={self.prompt_manager}, sub_classes={self.sub_classes}, client={self.client})"
+
+    def __init__(
+        self,
+        manager: AI_Manager = None,
+        config: "_config_builder.Config" = None,
+        prompt_manager: PromptManager = None,
+        sub_classes: dict = None,
+        client: discord.Client = None,
+    ):
+        self.manager = manager
+        self.config = config
+        self.prompt_manager = prompt_manager
+        self.sub_classes = sub_classes
+        self.client = client
+
+    @classmethod
+    def request(cls, contract: Contract, Manager: AI_Manager, Client: discord.Client):
+        return cls(
+            manager=contract.manager and Manager or None,
+            config=contract.config and Manager.config or None,
+            prompt_manager=contract.prompt_manager and Manager.prompt_manager or None,
+            sub_classes=contract.sub_classes and Manager.sub_classes or None,
+            client=contract.client and Client or None,
+        )
+
+    # Meta method to say if self.config = null and user does self.config we return an exception
+    def __getattribute__(self, __name: str) -> Any:
+        if __name == "__dict__":
+            return object.__getattribute__(self, "__dict__")
+        d = object.__getattribute__(self, "__dict__")
+        if __name not in d or d[__name] is None:
+            raise Context.ContextError(f"'{__name}' context not requested")
+        return d[__name]
+
+    def __str__(self):
+        return f"Context(manager={self.__dict__['manager']}, config={self.__dict__['config']}, prompt_manager={self.__dict__['prompt_manager']}, sub_classes={self.__dict__['sub_classes']}, client={self.__dict__['client']})"
 
 
 class AI_Manager:
@@ -593,6 +664,38 @@ class AI_Manager:
 
             return decorator
 
+        @classmethod
+        def with_context(
+            cls,
+            manager=False,
+            config=False,
+            prompt_manager=False,
+            sub_classes=False,
+            client=False,
+        ):
+            """
+            Decorator method to add a method to be run on initialization with live context
+            manager = Sonata/AI_Manager
+            config = Sonata.config
+            prompt_manager = Sonata.prompt_manager
+            sub_classes[n] = Sonata.sub_classes[n]
+            client = Sonata.client
+            """
+
+            def decorator(func):
+                nonlocal manager, config, prompt_manager, sub_classes, client
+                contract = Context.Contract(
+                    manager=manager,
+                    config=config,
+                    prompt_manager=prompt_manager,
+                    sub_classes=sub_classes,
+                    client=client,
+                    func=func,
+                )
+                cls.MANAGER.on_load.append(contract)
+
+            return decorator
+
     @classmethod
     def init(cls, *args, lazy=False, config={}, **kwargs):
         if lazy:
@@ -660,7 +763,7 @@ class AI_Manager:
         self.config.merge(config)
         self.config.set(AI=default_AI, setup=default_args, ai_types=AI_TYPES, **config)
 
-    def extend(A, Plugins, **configs):
+    def extend(A, B, Plugins, **configs):
         """Extend this AI_Manager with plugin contexts.
 
         Args:
@@ -697,8 +800,10 @@ class AI_Manager:
                         class_body = class_body(A)()
                     A.sub_classes[class_name] = class_body
 
-            pre_load = [f for f in L.on_load if len(f.__code__.co_varnames) == 0]
-            post_load = [f for f in L.on_load if len(f.__code__.co_varnames) > 0]
+            functions = filter(lambda f: not isinstance(f, Context.Contract), L.on_load)
+            pre_load = [f for f in functions if len(f.__code__.co_varnames) == 0]
+            post_load = [f for f in functions if len(f.__code__.co_varnames) > 0]
+            contracts = [f for f in L.on_load if isinstance(f, Context.Contract)]
 
             for func in pre_load:
                 func()
@@ -720,6 +825,9 @@ class AI_Manager:
                 )
             L.prompt_manager = A.prompt_manager
             L.sub_classes = A.sub_classes
+
+            for contract in contracts:
+                contract(A, B)
 
             for func in post_load:
                 func(A)

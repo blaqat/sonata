@@ -152,13 +152,14 @@ Here is the prompt_feedback: {r}
 # - This more easily allows scope access to other plugins
 # - Like self-command cant have a join vc command since it needs to be async and have access to the client
 # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645203
-def extend(Sonata):
+def extend(Sonata: AI_Manager):
     """
     Extends the Sonata AI_Manager with additional plugins and configurations.
     """
     # Add funny responses with a small chance of being triggered
     # TODO: Move config to configuration
     Sonata.extend(
+        sonata,
         PLUGINS(openai_assistant=False),
         chat={
             "summarize": True,
@@ -230,9 +231,10 @@ def Assistant(client, prompt, model, config):
     if i:
         if model != "gpt-4o":
             model = "gpt-4-vision-preview"
-        i = [{"type": "image_url", "image_url": {"url": u}} for u in i]
+        i = [{"type": "image_url", "image_url": {"url": u}} for u in i if u is not True]
         content.extend(i)
-        config["images"] = None
+        # config["images"] = None
+        config["images"].append(True)
 
     A = Sonata.chat_assistant
     messages = A.send_request(config["channel_id"], "user", content).data
@@ -306,8 +308,11 @@ def Grok(client: XAIClient, prompt, model, config):
 
     if images := config.get("images", False):
         for url in images:
+            if url is True:
+                continue
             content.append(xai_image(url))
-        config["images"] = None
+        # config["images"] = None
+        config["images"].append(True)
 
     chat.append(xai_user(*content))
 
@@ -328,9 +333,14 @@ def OpenAI(client, prompt, model, config):
     if images:
         # if model != "gpt-4o":
         #     model = "gpt-4-vision-preview"
-        images = [{"type": "image_url", "image_url": {"url": url}} for url in images]
+        images = [
+            {"type": "image_url", "image_url": {"url": url}}
+            for url in images
+            if url is not True
+        ]
         content.extend(images)
-        config["images"] = None
+        # config["images"] = None
+        config["images"].append(True)
 
     return (
         client.create(
@@ -374,6 +384,8 @@ def Claude(client, prompt, model, config):
     if i:
         images = []
         for u in i:
+            if u is True:
+                continue
             response = requests.get(u)
             data = response.content
             content_type = response.headers["content-type"]
@@ -395,8 +407,11 @@ def Claude(client, prompt, model, config):
         content = []
         content.extend(old_content)
         content.extend(images)
-        config["images"] = None
-        Sonata.memory["config"]["images"] = None
+        # config["images"] = None
+        config["images"].append(True)
+        print(config["images"])
+        # Sonata.memory["config"]["images"] = None
+        # Sonata.memory["config"]["images"].append(True)
 
     try:
         return (
@@ -499,7 +514,8 @@ def Gemini(client, prompt, model, config):
         images = [Image.open(BytesIO(requests.get(u).content)) for u in images]
         content = [content]
         content.extend(images)
-        config["images"] = None
+        # Insert True at begining of images list
+        config["images"].append(True)
     try:
         response = None
         if type(content) == list:
@@ -543,12 +559,6 @@ def Gemini(client, prompt, model, config):
 # Discord Bot Setup
 # -------------------------------------------------------------------
 
-extend(Sonata)
-
-# HACK: This is a hack to DESTROY SONATAS MEMORY
-if PROMPT_RESET:
-    reset_instructions()
-
 
 class SonataClient(commands.Bot):
     current_guild = ""
@@ -571,6 +581,12 @@ class SonataClient(commands.Bot):
 INTENTS = discord.Intents.all()
 sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
+
+extend(Sonata)
+
+# HACK: This is a hack to DESTROY SONATAS MEMORY
+if PROMPT_RESET:
+    reset_instructions()
 
 # TODO: Move all speaking related things to a separate module
 # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645198
