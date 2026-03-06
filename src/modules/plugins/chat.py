@@ -234,7 +234,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
-    channel_policy: ChannelPolicy = Sonata.chat.policy_manager.get_channel_policy(message.channel.id)
+    channel_policy: ChannelPolicy = Sonata.chat.policy_manager.get_channel_policy(
+        message.channel.id
+    )
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
     if not channel_policy.can_speak:
@@ -251,7 +253,10 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             f"`{command_name}` is not allowed in this channel.",
             mention_author=False,
         )
-        cprint(f"Blocked command '{command_name}' by channel policy in {message.channel.name}", "yellow")
+        cprint(
+            f"Blocked command '{command_name}' by channel policy in {message.channel.name}",
+            "yellow",
+        )
         return
 
     _guild_name = message.guild.name
@@ -311,20 +316,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     memory_text = memory_text.strip()
 
     # Process user messages
-    if VALID_USER and len(message.content) > 0:
-        # m = message.content
-        # Remove command from message
-        # if message.content[0] == "$":
-        #     split = message.content.split(" ")
-        #     if len(split[0]) == 1:
-        #         m = " ".join(split[1:])
-
-        Sonata.chat.send(
-            message.channel.id, "User", get_full_name(message), message.content
-        )
-
     if message.content is None:
         return
+
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
     #
@@ -378,6 +372,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     ):
         return
 
+    if VALID_USER:
+        Sonata.chat.send(
+            message.channel.id, "User", get_full_name(message), message.content
+        )
+
     # Pass referenced messages to AI
     if message_reference_id is not None and VALID_USER:
         # Check if reference is pointing to a message sent by the bot
@@ -406,7 +405,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # await self.process_commands(message)
         # return
 
-    if VALID_USER and (sonata_exp.search(message.content) or channel_policy.respond_all):
+    if VALID_USER and (
+        sonata_exp.search(message.content) or channel_policy.respond_all
+    ):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
         if _name in RESPONSES:
@@ -458,12 +459,13 @@ def clear_images_init(context: Context):
         images = context.config.get("images", {}).get(chat_id, False)
         if images and images[-1] is True:
             images.clear()
-        return args
+        return (chat_id, *args)
 
 
 """
 Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
+
 
 async def __chat(
     M, bot, channel_id, message, dm=False, replying_to=None, ping=False, save=True
@@ -531,6 +533,7 @@ BANNED_WORDS = {
     "bitch",
     "ME OFF",
 }
+
 
 @MANAGER.builder
 def chat(sona: AI_Manager):
@@ -762,9 +765,9 @@ Use the following guidelines:
     r=lambda M, chat_id: setter(M["value"], chat_id, copy.deepcopy(M["default_value"])),
     request=lambda _, *args, **kwargs: PROMPT_MANAGER.send(*args, **kwargs),
     summarize=Summarize,
-    validate=lambda M, id: not get_channel_policy(
-        MANAGER.MANAGER.config, id
-    ).get("can_speak", True),
+    validate=lambda M, id: not get_channel_policy(MANAGER.MANAGER.config, id).get(
+        "can_speak", True
+    ),
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
     dm_hook=dm_hook,
