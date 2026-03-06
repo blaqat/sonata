@@ -281,20 +281,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     memory_text = memory_text.strip()
 
     # Process user messages
-    if VALID_USER and len(message.content) > 0:
-        # m = message.content
-        # Remove command from message
-        # if message.content[0] == "$":
-        #     split = message.content.split(" ")
-        #     if len(split[0]) == 1:
-        #         m = " ".join(split[1:])
 
-        Sonata.chat.send(
-            message.channel.id, "User", get_full_name(message), message.content
-        )
-
-        if message.content is None:
-            return
+    if message.content is None:
+        return
 
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
@@ -341,6 +330,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # if attachment:
         #     message.content += f"\nAttachment: {attachment}"
 
+    if VALID_USER:
+        Sonata.chat.send(
+            message.channel.id, "User", get_full_name(message), message.content
+        )
+
     # Pass referenced messages to AI
     if message_reference_id is not None and VALID_USER:
         # Check if reference is pointing to a message sent by the bot
@@ -381,7 +375,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             chance, response = RESPONSES.get(
                 message.author.name, RESPONSES.get(message.author.nick)
             )
-            if random.random()  chance:
+            if random.random() < chance:
                 await message.reply(response, mention_author=False)
                 Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
                 message.content += "1"
@@ -426,12 +420,13 @@ def clear_images_init(context: Context):
         images = context.config.get("images", {}).get(chat_id, False)
         if images and images[-1] is True:
             images.clear()
-        return args
+        return (chat_id, *args)
 
 
 """
 Helper Functions -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
+
 
 async def __chat(
     M, bot, channel_id, message, dm=False, replying_to=None, ping=False, save=True
@@ -555,7 +550,7 @@ def chat(sona: AI_Manager):
             a = sona.set("chat", id, message_type, author, message, replying_to)
 
             try:
-                if len(chat)  sona.config.get("max_chats") + 1 and sona.config.get(
+                if len(chat) > sona.config.get("max_chats") + 1 and sona.config.get(
                     "summarize"
                 ):
                     self.summarize(id)[1]()  # Summarizes and deletes chat
