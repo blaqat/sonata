@@ -19,6 +19,7 @@ Can also create island folders to save data in.
 
 from modules.utils import (
     async_cprint as cprint,
+    settings,
 )
 from modules.AI_manager import AI_Manager
 from typing import Literal
@@ -26,6 +27,7 @@ from typing import Literal
 import pickle
 import os
 import shutil
+from cryptography.fernet import Fernet
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(lazy=True)
 __plugin_name__ = "beacon"
@@ -72,14 +74,30 @@ def beacon(sonata: AI_Manager):
     # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645000
     class Beacon:
         home: str  # The home folder where things are saved
+        key: bytes | None
 
-        def __init__(self, path: str = "beacon-mainland"):
-            """Initialize the Beacon with a home folder"""
+        def __init__(self, path: str = "beacon-mainland", key: bytes | None = None):
+            """Initialize the Beacon with a home folder and optional encryption key"""
+            self.key = key
             self.light_house(path, True)
+
+        def _get_fernet(self):
+            if not self.key:
+                # If no key is provided, we try to get one from the environment or config
+                # As a fallback, this will raise an error if encryption is requested but no key exists
+                key = settings.BEACON_ENCRYPTION_KEY
+                if key:
+                    self.key = key.encode() if isinstance(key, str) else key
+
+            if not self.key:
+                raise ValueError(
+                    "Encryption requested but no encryption key is set. Please set the BEACON_ENCRYPTION_KEY environment variable or pass a key to Beacon."
+                )
+            return Fernet(self.key)
 
         def island(self, path: str, home=False):
             """Set the home folder"""
-            l = Beacon()
+            l = Beacon(key=self.key)
             l.light_house(path, home)
             return l
 
@@ -98,7 +116,13 @@ def beacon(sonata: AI_Manager):
             """List all the files in the home folder"""
             return os.listdir(self.home)
 
-        def guide(self, name: str, data: any = None, remember: SaveType = None):
+        def guide(
+            self,
+            name: str,
+            data: any = None,
+            remember: SaveType = None,
+            encrypted: bool = False,
+        ):
             """Save data to a file"""
             if remember != None:
                 data = parse_save_type(name, data, remember)
@@ -108,11 +132,21 @@ def beacon(sonata: AI_Manager):
                 return
 
             with open(f"{self.home}/{name}.p", "wb") as f:
-                pickle.dump(data, f)
+                pickled_data = pickle.dumps(data)
+                if encrypted:
+                    fernet = self._get_fernet()
+                    pickled_data = fernet.encrypt(pickled_data)
+                f.write(pickled_data)
 
             return self
 
-        def illuminate(self, module_name: str, data: dict, remember: SaveType = None):
+        def illuminate(
+            self,
+            module_name: str,
+            data: dict,
+            remember: SaveType = None,
+            encrypted: bool = False,
+        ):
             """Save module to a file"""
             if remember != None:
                 data = parse_save_type(module_name, data, remember)
@@ -136,20 +170,27 @@ def beacon(sonata: AI_Manager):
                 else:
                     t = "s"
 
-                lamp_post.guide(f"{t}{key}", value)
+                lamp_post.guide(f"{t}{key}", value, encrypted=encrypted)
 
             return self
 
-        def locate(self, name: str):
+        def locate(self, name: str, encrypted: bool = False):
             """Load data from a file"""
             try:
                 with open(f"{self.home}/{name}.p", "rb") as f:
-                    return pickle.load(f)
+                    data = f.read()
+                    if encrypted:
+                        fernet = self._get_fernet()
+                        data = fernet.decrypt(data)
+                    return pickle.loads(data)
             except:
-                cprint(f"Can not locate the path, {name} is not found.", "red")
+                cprint(
+                    f"Can not locate the path, {name} is not found or could not be decrypted.",
+                    "red",
+                )
                 return
 
-        def discover(self, module_name: str):
+        def discover(self, module_name: str, encrypted: bool = False):
             """Load module from a file"""
             lamp_post = self.branch(module_name)
             data = {}
@@ -165,12 +206,18 @@ def beacon(sonata: AI_Manager):
                         key = bool(key[1:])
                     case "s":
                         key = str(key[1:])
-                data[key] = lamp_post.locate(i)
+                data[key] = lamp_post.locate(i, encrypted=encrypted)
             return data
 
-        def reflect(self, name: str, replacing: dict, remember: SaveType = None):
+        def reflect(
+            self,
+            name: str,
+            replacing: dict,
+            remember: SaveType = None,
+            encrypted: bool = False,
+        ):
             """Update data in a file"""
-            data = self.locate(name)
+            data = self.locate(name, encrypted=encrypted)
 
             if remember != None:
                 replacing = parse_save_type(name, replacing, remember)
@@ -183,10 +230,14 @@ def beacon(sonata: AI_Manager):
             return replacing
 
         def reconstruct(
-            self, module_name: str, replacing: dict, remember: SaveType = None
+            self,
+            module_name: str,
+            replacing: dict,
+            remember: SaveType = None,
+            encrypted: bool = False,
         ):
             """Update module in a file"""
-            data = self.discover(module_name)
+            data = self.discover(module_name, encrypted=encrypted)
 
             if remember != None:
                 replacing = parse_save_type(module_name, replacing, remember)
@@ -226,7 +277,7 @@ def beacon(sonata: AI_Manager):
                 )
             return self
 
-        def flash(self, save=True):
+        def flash(self, save=True, encrypted: bool = False):
             """Temporary Clone the beacon files"""
 
             dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
@@ -237,15 +288,15 @@ def beacon(sonata: AI_Manager):
                 for file in self.scan():
                     # Locate the data then guide it to the flash
                     if os.path.isdir(f"{self.home}/{file}"):
-                        data = self.discover(file)
-                        flash.illuminate(file, data)
+                        data = self.discover(file, encrypted=encrypted)
+                        flash.illuminate(file, data, encrypted=encrypted)
                     else:
-                        data = self.locate(file.split(".")[0])
-                        flash.guide(file.split(".")[0], data)
+                        data = self.locate(file.split(".")[0], encrypted=encrypted)
+                        flash.guide(file.split(".")[0], data, encrypted=encrypted)
 
             return flash
 
-        def absorb(self, flash=None, extinguish=True):
+        def absorb(self, flash=None, extinguish=True, encrypted: bool = False):
             """Absorb the flash files"""
             if flash is None:
                 dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
@@ -253,11 +304,11 @@ def beacon(sonata: AI_Manager):
                 flash = self.island(f"beacon-flashes", home=True).branch(dir)
             for file in flash.scan():
                 if os.path.isdir(f"{flash.home}/{file}"):
-                    data = flash.discover(file)
-                    self.illuminate(file, data)
+                    data = flash.discover(file, encrypted=encrypted)
+                    self.illuminate(file, data, encrypted=encrypted)
                 else:
-                    data = flash.locate(file.split(".")[0])
-                    self.guide(file.split(".")[0], data)
+                    data = flash.locate(file.split(".")[0], encrypted=encrypted)
+                    self.guide(file.split(".")[0], data, encrypted=encrypted)
 
             if extinguish:
                 flash.extinguish()
