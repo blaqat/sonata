@@ -1066,7 +1066,7 @@ async def channels(ctx, action="", *args):
         return await ctx_reply(ctx, usage)
 
     if action == "list":
-        channel_map = Sonata.chat.get_channels()
+        channel_map = Sonata.chat.policy_manager.get_channels()
         if not channel_map:
             return await ctx_reply(ctx, "No channel overrides are configured.")
 
@@ -1081,7 +1081,7 @@ async def channels(ctx, action="", *args):
         channel, error = _resolve_text_channel(ctx, args[0])
         if error:
             return await ctx_reply(ctx, error)
-        policy = Sonata.chat.get_channel_policy(channel.id)
+        policy = Sonata.chat.policy_manager.get_channel_policy(channel.id)
         return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
 
     if action == "remove":
@@ -1090,7 +1090,7 @@ async def channels(ctx, action="", *args):
         channel, error = _resolve_text_channel(ctx, args[0])
         if error:
             return await ctx_reply(ctx, error)
-        removed = Sonata.chat.remove_channel_policy(channel.id)
+        removed = Sonata.chat.policy_manager.remove_channel_policy(channel.id)
         if removed is None:
             return await ctx_reply(ctx, f"No override existed for `{channel.id}`.")
         return await ctx_reply(ctx, f"Removed override for `{channel.id}`.")
@@ -1106,13 +1106,13 @@ async def channels(ctx, action="", *args):
                 return await ctx_reply(ctx, error)
 
             if sub_action == "add":
-                policy = Sonata.chat.blacklist_add(channel.id)
+                policy = Sonata.chat.policy_manager.blacklist_add(channel.id)
                 return await ctx_reply(
                     ctx,
                     f"Blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
                 )
             if sub_action == "remove":
-                policy = Sonata.chat.blacklist_remove(channel.id)
+                policy = Sonata.chat.policy_manager.blacklist_remove(channel.id)
                 return await ctx_reply(
                     ctx,
                     f"Un-blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
@@ -1138,7 +1138,7 @@ async def channels(ctx, action="", *args):
                 value = parse_bool(args[2])
             except ValueError:
                 return await ctx_reply(ctx, "Value must be true/false.")
-            policy = Sonata.chat.set_channel_flag(channel.id, field, value)
+            policy = Sonata.chat.policy_manager.set_channel_flag(channel.id, field, value)
             return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
 
         command_name = args[1].lower().strip().lstrip("$")
@@ -1146,9 +1146,9 @@ async def channels(ctx, action="", *args):
             return await ctx_reply(ctx, "Command cannot be empty.")
 
         if action == "allow":
-            policy = Sonata.chat.allow_command(channel.id, command_name)
+            policy = Sonata.chat.policy_manager.allow_command(channel.id, command_name)
         else:
-            policy = Sonata.chat.deny_command(channel.id, command_name)
+            policy = Sonata.chat.policy_manager.deny_command(channel.id, command_name)
         return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
 
     await ctx_reply(ctx, usage)

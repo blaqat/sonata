@@ -233,7 +233,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
-    channel_policy = Sonata.chat.get_channel_policy(message.channel.id)
+    channel_policy = Sonata.chat.policy_manager.get_channel_policy(message.channel.id)
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
     if is_command and not is_command_allowed(channel_policy, command_name):
@@ -722,6 +722,7 @@ def chat(sona: AI_Manager):
         def blacklist_remove(self, channel_id):
             return policy_manager.blacklist_remove(channel_id)
 
+    Chat.policy_manager = policy_manager
     return Chat
 
 

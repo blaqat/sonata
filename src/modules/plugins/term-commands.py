@@ -467,7 +467,7 @@ async def manage_channel_policies(mem, bot, manager):
         return
 
     if action == "list":
-        channel_map = chat.get_channels()
+        channel_map = chat.policy_manager.get_channels()
         if not channel_map:
             cprint("No channel overrides are configured.", "yellow")
             return
@@ -486,7 +486,7 @@ async def manage_channel_policies(mem, bot, manager):
         if error:
             cprint(error, "red")
             return
-        cprint(format_channel_policy(channel.id, chat.get_channel_policy(channel.id)), "yellow")
+        cprint(format_channel_policy(channel.id, chat.policy_manager.get_channel_policy(channel.id)), "yellow")
         return
 
     if action == "remove":
@@ -497,7 +497,7 @@ async def manage_channel_policies(mem, bot, manager):
         if error:
             cprint(error, "red")
             return
-        removed = chat.remove_channel_policy(channel.id)
+        removed = chat.policy_manager.remove_channel_policy(channel.id)
         if removed is None:
             cprint(f"No override existed for `{channel.id}`.", "yellow")
             return
@@ -514,14 +514,14 @@ async def manage_channel_policies(mem, bot, manager):
             cprint(error, "red")
             return
         if sub_action == "add":
-            policy = chat.blacklist_add(channel.id)
+            policy = chat.policy_manager.blacklist_add(channel.id)
             cprint(
                 f"Blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
                 "yellow",
             )
             return
         if sub_action == "remove":
-            policy = chat.blacklist_remove(channel.id)
+            policy = chat.policy_manager.blacklist_remove(channel.id)
             cprint(
                 f"Un-blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
                 "yellow",
@@ -552,7 +552,7 @@ async def manage_channel_policies(mem, bot, manager):
             except ValueError:
                 cprint("Value must be true/false.", "red")
                 return
-            policy = chat.set_channel_flag(channel.id, field, value)
+            policy = chat.policy_manager.set_channel_flag(channel.id, field, value)
             cprint(format_channel_policy(channel.id, policy), "yellow")
             return
 
@@ -561,9 +561,9 @@ async def manage_channel_policies(mem, bot, manager):
             cprint("Command cannot be empty.", "red")
             return
         if action == "allow":
-            policy = chat.allow_command(channel.id, command_name)
+            policy = chat.policy_manager.allow_command(channel.id, command_name)
         else:
-            policy = chat.deny_command(channel.id, command_name)
+            policy = chat.policy_manager.deny_command(channel.id, command_name)
         cprint(format_channel_policy(channel.id, policy), "yellow")
         return
 
