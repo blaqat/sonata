@@ -40,6 +40,7 @@ from modules.AI_manager import AI_Error, AI_Manager, PromptManager
 from modules.channel_policies import (
     parse_bool,
     format_channel_policy,
+    has_manage_guild_permission,
     resolve_channel_in_guild,
 )
 from modules.plugins import PLUGINS
@@ -1033,7 +1034,7 @@ async def get_channel(ctx):
 
 def _resolve_text_channel(ctx, raw_channel):
     channel, error = resolve_channel_in_guild(
-        getattr(ctx, "guild", None), raw_channel, current_channel=ctx.channel
+        getattr(ctx, "guild", None), raw_channel
     )
     if error:
         return None, error
@@ -1045,19 +1046,18 @@ def _resolve_text_channel(ctx, raw_channel):
 @sonata.command(name="channels", description="Manage per-channel chat permissions.")
 async def channels(ctx, action="", *args):
     action = action.lower().strip()
-    if hasattr(ctx, "author") and hasattr(ctx.author, "guild_permissions"):
-        if not ctx.author.guild_permissions.manage_guild:
-            return await ctx_reply(
-                ctx, "You need `Manage Server` permission to use this command."
-            )
+    if not has_manage_guild_permission(ctx):
+        return await ctx_reply(
+            ctx, "You need `Manage Server` permission to use this command."
+        )
 
     usage = (
         "Usage:\n"
         "`$channels list`\n"
-        "`$channels show <channel_id|#name|here>`\n"
+        "`$channels show <channel_id|<#channel_id>>`\n"
         "`$channels set <channel> <can_speak|respond_all> <true|false>`\n"
-        "`$channels allow <channel> <command|*>`\n"
-        "`$channels deny <channel> <command|*>`\n"
+        "`$channels allow <channel> <command>`\n"
+        "`$channels deny <channel> <command>`\n"
         "`$channels blacklist <add|remove> <channel>`\n"
         "`$channels remove <channel>`"
     )
@@ -1106,18 +1106,13 @@ async def channels(ctx, action="", *args):
                 return await ctx_reply(ctx, error)
 
             if sub_action == "add":
-                policy = Sonata.chat.set_channel_policy(
-                    channel.id,
-                    can_speak=False,
-                    respond_all=False,
-                    allowed_commands=[],
-                )
+                policy = Sonata.chat.blacklist_add(channel.id)
                 return await ctx_reply(
                     ctx,
                     f"Blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
                 )
             if sub_action == "remove":
-                policy = Sonata.chat.set_channel_policy(channel.id, can_speak=True)
+                policy = Sonata.chat.blacklist_remove(channel.id)
                 return await ctx_reply(
                     ctx,
                     f"Un-blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",

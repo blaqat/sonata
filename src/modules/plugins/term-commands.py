@@ -10,7 +10,7 @@ from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
     parse_bool,
     format_channel_policy,
-    resolve_channel_in_guild,
+    parse_channel_reference,
 )
 from modules.utils import (
     Colors,
@@ -125,8 +125,7 @@ async def intercept_reply(response: str, Data_Manager: AI_Manager) -> str:
         Data_Manager.set("termcmd", False, inner="intercepting")
     except Exception as e:
         cprint(e, "red")
-    finally:
-        return r
+    return r
 
 
 @MANAGER.effect("chat", "set", prepend=False)
@@ -180,8 +179,8 @@ async def resolve_term_text_channel(mem, bot, raw_channel):
             return None, "No current channel is set."
         return current_channel, None
 
-    if re.search(r"\d+", raw):
-        channel_id = int(re.search(r"\d+", raw).group(0))
+    channel_id = parse_channel_reference(raw)
+    if channel_id is not None:
         channel = bot.get_channel(channel_id)
         if channel is None:
             try:
@@ -193,14 +192,7 @@ async def resolve_term_text_channel(mem, bot, raw_channel):
         if not isinstance(channel, discord.TextChannel):
             return None, "Only text channels are supported."
         return channel, None
-
-    guild = current_channel.guild if current_channel is not None else None
-    channel, error = resolve_channel_in_guild(guild, raw, current_channel=current_channel)
-    if error:
-        return None, error
-    if channel is None or not isinstance(channel, discord.TextChannel):
-        return None, "Only text channels are supported."
-    return channel, None
+    return None, "Channel must be a channel id or Discord channel mention."
 
 
 async def get_messages(c, check=None, limit=10):
@@ -452,10 +444,10 @@ async def set_pinned_channel(mem):
 async def manage_channel_policies(mem, bot, manager):
     usage = (
         "channels list\n"
-        "channels show <channel_id|#name|here>\n"
+        "channels show <channel_id|<#channel_id>|here>\n"
         "channels set <channel> <can_speak|respond_all> <true|false>\n"
-        "channels allow <channel> <command|*>\n"
-        "channels deny <channel> <command|*>\n"
+        "channels allow <channel> <command>\n"
+        "channels deny <channel> <command>\n"
         "channels blacklist <add|remove> <channel>\n"
         "channels remove <channel>"
     )
@@ -522,16 +514,14 @@ async def manage_channel_policies(mem, bot, manager):
             cprint(error, "red")
             return
         if sub_action == "add":
-            policy = chat.set_channel_policy(
-                channel.id, can_speak=False, respond_all=False, allowed_commands=[]
-            )
+            policy = chat.blacklist_add(channel.id)
             cprint(
                 f"Blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
                 "yellow",
             )
             return
         if sub_action == "remove":
-            policy = chat.set_channel_policy(channel.id, can_speak=True)
+            policy = chat.blacklist_remove(channel.id)
             cprint(
                 f"Un-blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
                 "yellow",

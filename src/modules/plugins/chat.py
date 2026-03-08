@@ -24,14 +24,11 @@ from discord.ext import commands
 from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
-    default_channel_policy,
-    normalize_channel_policy,
-    ensure_channels_config,
-    persist_channels,
-    init_channels,
+    ChannelPolicies,
     get_channel_policy,
     is_command_allowed,
     get_command_name,
+    should_respond_to_message,
 )
 from modules.utils import (
     censor_message,
@@ -246,7 +243,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         )
         return
 
-    if not channel_policy.get("can_speak", True):
+    if not channel_policy.can_speak:
         if is_command:
             await message.reply(
                 "Sonata is disabled in this channel.",
@@ -295,13 +292,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         re.IGNORECASE,
     )
     called_sonata = bool(sonata_exp.search(message.content))
-    if (
-        not channel_policy.get("respond_all", False)
-        and not is_command
-        and not (message_reference_id == self.user.id)
-        and not called_sonata
-    ):
-        return
 
     if USE_REPLY_REF and message_reference is not None:
         message_reference = await get_ref_chain(message_reference, include_message=True)
@@ -377,6 +367,14 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # attachment = message.attachments[0].url
         # if attachment:
         #     message.content += f"\nAttachment: {attachment}"
+
+    if not should_respond_to_message(
+        channel_policy,
+        is_command=is_command,
+        is_reply_to_sonata=message_reference_id == self.user.id,
+        called_sonata=called_sonata,
+    ):
+        return
 
     # Pass referenced messages to AI
     if message_reference_id is not None and VALID_USER:
@@ -538,7 +536,8 @@ def chat(sona: AI_Manager):
     Chat plugin for handling messages and interactions
     """
     prompt_manager = sona.prompt_manager
-    init_channels(sona)
+    policy_manager = ChannelPolicies(sona)
+    policy_manager.init()
 
     # TODO: Make way to translate history into proper chat log format for each AI
     # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645361
@@ -697,47 +696,31 @@ def chat(sona: AI_Manager):
                 )
 
         def get_channels(self):
-            return ensure_channels_config(sona.config)
+            return policy_manager.get_channels()
 
         def get_channel_policy(self, channel_id):
-            return get_channel_policy(sona.config, channel_id)
+            return policy_manager.get_channel_policy(channel_id)
 
         def set_channel_policy(self, channel_id, **updates):
-            channels = self.get_channels()
-            key = str(channel_id)
-            current = channels.get(key, default_channel_policy())
-            channels[key] = normalize_channel_policy({**current, **updates})
-            sona.config.set(channels=channels)
-            persist_channels(sona, channels)
-            return channels[key]
+            return policy_manager.set_channel_policy(channel_id, **updates)
 
         def remove_channel_policy(self, channel_id):
-            channels = self.get_channels()
-            removed = channels.pop(str(channel_id), None)
-            sona.config.set(channels=channels)
-            persist_channels(sona, channels)
-            return removed
+            return policy_manager.remove_channel_policy(channel_id)
 
         def set_channel_flag(self, channel_id, key, value):
-            if key not in {"can_speak", "respond_all"}:
-                raise ValueError("Channel flag must be can_speak or respond_all")
-            return self.set_channel_policy(channel_id, **{key: bool(value)})
+            return policy_manager.set_channel_flag(channel_id, key, value)
 
         def allow_command(self, channel_id, command):
-            command = str(command).strip().lower().lstrip("$")
-            policy = self.get_channel_policy(channel_id)
-            allowed_commands = list(policy.get("allowed_commands", []))
-            if command and command not in allowed_commands:
-                allowed_commands.append(command)
-            return self.set_channel_policy(channel_id, allowed_commands=allowed_commands)
+            return policy_manager.allow_command(channel_id, command)
 
         def deny_command(self, channel_id, command):
-            command = str(command).strip().lower().lstrip("$")
-            policy = self.get_channel_policy(channel_id)
-            allowed_commands = [
-                cmd for cmd in policy.get("allowed_commands", []) if cmd != command
-            ]
-            return self.set_channel_policy(channel_id, allowed_commands=allowed_commands)
+            return policy_manager.deny_command(channel_id, command)
+
+        def blacklist_add(self, channel_id):
+            return policy_manager.blacklist_add(channel_id)
+
+        def blacklist_remove(self, channel_id):
+            return policy_manager.blacklist_remove(channel_id)
 
     return Chat
 
