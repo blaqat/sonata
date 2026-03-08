@@ -19,6 +19,7 @@ Can also create island folders to save data in.
 
 from modules.utils import (
     async_cprint as cprint,
+    settings,
 )
 from modules.AI_manager import AI_Manager
 from typing import Literal
@@ -84,7 +85,7 @@ def beacon(sonata: AI_Manager):
             if not self.key:
                 # If no key is provided, we try to get one from the environment or config
                 # As a fallback, this will raise an error if encryption is requested but no key exists
-                key = os.environ.get("BEACON_ENCRYPTION_KEY")
+                key = settings.BEACON_ENCRYPTION_KEY
                 if key:
                     self.key = key.encode() if isinstance(key, str) else key
 
