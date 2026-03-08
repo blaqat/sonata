@@ -7,6 +7,11 @@ Additionally, you can set favorite channels and users to easily interact with th
 
 import discord
 from modules.AI_manager import AI_Manager
+from modules.channel_policies import (
+    parse_bool,
+    format_channel_policy,
+    resolve_channel_in_guild,
+)
 from modules.utils import (
     Colors,
     async_cprint as cprint,
@@ -16,6 +21,7 @@ from modules.utils import (
 )
 import asyncio
 from random import randint
+import re
 from modules.utils import prompt, editable_prompt, E
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
@@ -159,6 +165,42 @@ def get_channel(M, self, set=False):
     if set:
         return lambda: async_return(ret=c)
     return c
+
+
+async def resolve_term_text_channel(mem, bot, raw_channel):
+    current_channel = None
+    try:
+        current_channel = get_channel(mem, bot)
+    except Exception:
+        current_channel = None
+
+    raw = str(raw_channel).strip()
+    if raw.lower() in {"here", "current", "this"}:
+        if current_channel is None:
+            return None, "No current channel is set."
+        return current_channel, None
+
+    if re.search(r"\d+", raw):
+        channel_id = int(re.search(r"\d+", raw).group(0))
+        channel = bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await bot.fetch_channel(channel_id)
+            except Exception:
+                channel = None
+        if channel is None:
+            return None, f"Channel id `{raw_channel}` was not found."
+        if not isinstance(channel, discord.TextChannel):
+            return None, "Only text channels are supported."
+        return channel, None
+
+    guild = current_channel.guild if current_channel is not None else None
+    channel, error = resolve_channel_in_guild(guild, raw, current_channel=current_channel)
+    if error:
+        return None, error
+    if channel is None or not isinstance(channel, discord.TextChannel):
+        return None, "Only text channels are supported."
+    return channel, None
 
 
 async def get_messages(c, check=None, limit=10):
@@ -386,6 +428,7 @@ async def help(*_):
         favs: Show favs
         favp: Edit fav person
         favc: Edit fav channel
+        channels: Manage channel policies
         dm: Send dm
         dmr: Send dm reply
         edit: Edit message
@@ -403,6 +446,138 @@ async def help(*_):
 async def set_pinned_channel(mem):
     """Set the current channel"""
     await set_channel(mem, ret=False)
+
+
+@MANAGER.term("channels")
+async def manage_channel_policies(mem, bot, manager):
+    usage = (
+        "channels list\n"
+        "channels show <channel_id|#name|here>\n"
+        "channels set <channel> <can_speak|respond_all> <true|false>\n"
+        "channels allow <channel> <command|*>\n"
+        "channels deny <channel> <command|*>\n"
+        "channels blacklist <add|remove> <channel>\n"
+        "channels remove <channel>"
+    )
+
+    raw = await prompt("Enter channels command: ")
+    parts = [p for p in raw.strip().split(" ") if p] if raw else []
+    if not parts:
+        cprint(usage, "yellow")
+        return
+
+    action = parts[0].lower()
+    args = parts[1:]
+    chat = manager.chat
+
+    if action in {"help", "h"}:
+        cprint(usage, "yellow")
+        return
+
+    if action == "list":
+        channel_map = chat.get_channels()
+        if not channel_map:
+            cprint("No channel overrides are configured.", "yellow")
+            return
+        lines = [
+            format_channel_policy(channel_id, channel_map[channel_id])
+            for channel_id in sorted(channel_map.keys())
+        ]
+        cprint("\n".join(lines[:50]), "yellow")
+        return
+
+    if action == "show":
+        if len(args) < 1:
+            cprint(usage, "yellow")
+            return
+        channel, error = await resolve_term_text_channel(mem, bot, args[0])
+        if error:
+            cprint(error, "red")
+            return
+        cprint(format_channel_policy(channel.id, chat.get_channel_policy(channel.id)), "yellow")
+        return
+
+    if action == "remove":
+        if len(args) < 1:
+            cprint(usage, "yellow")
+            return
+        channel, error = await resolve_term_text_channel(mem, bot, args[0])
+        if error:
+            cprint(error, "red")
+            return
+        removed = chat.remove_channel_policy(channel.id)
+        if removed is None:
+            cprint(f"No override existed for `{channel.id}`.", "yellow")
+            return
+        cprint(f"Removed override for `{channel.id}`.", "yellow")
+        return
+
+    if action == "blacklist":
+        if len(args) < 2:
+            cprint(usage, "yellow")
+            return
+        sub_action = args[0].lower()
+        channel, error = await resolve_term_text_channel(mem, bot, args[1])
+        if error:
+            cprint(error, "red")
+            return
+        if sub_action == "add":
+            policy = chat.set_channel_policy(
+                channel.id, can_speak=False, respond_all=False, allowed_commands=[]
+            )
+            cprint(
+                f"Blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
+                "yellow",
+            )
+            return
+        if sub_action == "remove":
+            policy = chat.set_channel_policy(channel.id, can_speak=True)
+            cprint(
+                f"Un-blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
+                "yellow",
+            )
+            return
+        cprint(usage, "yellow")
+        return
+
+    if action in {"set", "allow", "deny"}:
+        if len(args) < 2:
+            cprint(usage, "yellow")
+            return
+        channel, error = await resolve_term_text_channel(mem, bot, args[0])
+        if error:
+            cprint(error, "red")
+            return
+
+        if action == "set":
+            if len(args) < 3:
+                cprint(usage, "yellow")
+                return
+            field = args[1].lower().strip()
+            if field not in {"can_speak", "respond_all"}:
+                cprint("Field must be can_speak or respond_all.", "red")
+                return
+            try:
+                value = parse_bool(args[2])
+            except ValueError:
+                cprint("Value must be true/false.", "red")
+                return
+            policy = chat.set_channel_flag(channel.id, field, value)
+            cprint(format_channel_policy(channel.id, policy), "yellow")
+            return
+
+        command_name = args[1].lower().strip().lstrip("$")
+        if not command_name:
+            cprint("Command cannot be empty.", "red")
+            return
+        if action == "allow":
+            policy = chat.allow_command(channel.id, command_name)
+        else:
+            policy = chat.deny_command(channel.id, command_name)
+        cprint(format_channel_policy(channel.id, policy), "yellow")
+        return
+
+    cprint(usage, "yellow")
 
 
 @MANAGER.term

@@ -22,6 +22,17 @@ import discord
 from discord.ext import commands
 
 from modules.AI_manager import AI_Manager
+from modules.channel_policies import (
+    LEGACY_CHANNEL_BLACKLIST,
+    default_channel_policy,
+    normalize_channel_policy,
+    ensure_channels_config,
+    persist_channels,
+    init_channels,
+    get_channel_policy,
+    is_command_allowed,
+    get_command_name,
+)
 from modules.utils import (
     censor_message,
     async_print as print,
@@ -55,6 +66,7 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     },
 )
 __plugin_name__ = "chat"
+__dependencies__ = ["beacon"]
 
 
 """
@@ -84,10 +96,6 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     _name = message.author.name
     if _name == "None" or not _name:
         _name = message.author.name
-
-    # Validate the message for processing
-    if Sonata.do("chat", "validate", message.channel.id):
-        return
 
     # Handle specific keywords in message content
     if (
@@ -228,12 +236,27 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
+    channel_policy = Sonata.chat.get_channel_policy(message.channel.id)
+    command_name = get_command_name(message.content)
+    is_command = bool(command_name)
+    if is_command and not is_command_allowed(channel_policy, command_name):
+        await message.reply(
+            f"`{command_name}` is not allowed in this channel.",
+            mention_author=False,
+        )
+        return
+
+    if not channel_policy.get("can_speak", True):
+        if is_command:
+            await message.reply(
+                "Sonata is disabled in this channel.",
+                mention_author=False,
+            )
+        return
+
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     message_reference = None
-
-    if Sonata.do("chat", "validate", message.channel.id):
-        return
 
     if _guild_name != self.current_guild:
         cprint("\n" + _guild_name.lower(), "purple", "_")
@@ -265,6 +288,20 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     message_reference_id = (
         message_reference is not None and message_reference.author.id or None
     )
+
+    sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
+    sonata_exp = re.compile(
+        f"<@{self.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
+        re.IGNORECASE,
+    )
+    called_sonata = bool(sonata_exp.search(message.content))
+    if (
+        not channel_policy.get("respond_all", False)
+        and not is_command
+        and not (message_reference_id == self.user.id)
+        and not called_sonata
+    ):
+        return
 
     if USE_REPLY_REF and message_reference is not None:
         message_reference = await get_ref_chain(message_reference, include_message=True)
@@ -369,11 +406,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # await self.process_commands(message)
         # return
 
-    sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
-    sonata_exp = re.compile(
-        f"<@{self.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
-        re.IGNORECASE,
-    )
     if VALID_USER and sonata_exp.search(message.content):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
@@ -381,7 +413,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             chance, response = RESPONSES.get(
                 message.author.name, RESPONSES.get(message.author.nick)
             )
-            if random.random()  chance:
+            if random.random() < chance:
                 await message.reply(response, mention_author=False)
                 Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
                 message.content += "1"
@@ -500,26 +532,13 @@ BANNED_WORDS = {
     "ME OFF",
 }
 
-# TODO: Convert channel blacklist into more ergonomic thingy
-# 1. Should control if bot can speak in
-# 2. Should control if bot speaks to all messages or just invokations
-# 3. Should control what commands bot can do
-# etc
-# https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645262
-CHANNEL_BLACKLIST = {
-    # 743280190452400159,
-    1175907292072398858,
-    724158738138660894,
-    725170957206945859,
-}
-
-
 @MANAGER.builder
 def chat(sona: AI_Manager):
     """
     Chat plugin for handling messages and interactions
     """
     prompt_manager = sona.prompt_manager
+    init_channels(sona)
 
     # TODO: Make way to translate history into proper chat log format for each AI
     # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645361
@@ -555,7 +574,7 @@ def chat(sona: AI_Manager):
             a = sona.set("chat", id, message_type, author, message, replying_to)
 
             try:
-                if len(chat)  sona.config.get("max_chats") + 1 and sona.config.get(
+                if len(chat) > sona.config.get("max_chats") + 1 and sona.config.get(
                     "summarize"
                 ):
                     self.summarize(id)[1]()  # Summarizes and deletes chat
@@ -677,6 +696,49 @@ def chat(sona: AI_Manager):
                     chat_id, human_messages, ai_messages, system_messages
                 )
 
+        def get_channels(self):
+            return ensure_channels_config(sona.config)
+
+        def get_channel_policy(self, channel_id):
+            return get_channel_policy(sona.config, channel_id)
+
+        def set_channel_policy(self, channel_id, **updates):
+            channels = self.get_channels()
+            key = str(channel_id)
+            current = channels.get(key, default_channel_policy())
+            channels[key] = normalize_channel_policy({**current, **updates})
+            sona.config.set(channels=channels)
+            persist_channels(sona, channels)
+            return channels[key]
+
+        def remove_channel_policy(self, channel_id):
+            channels = self.get_channels()
+            removed = channels.pop(str(channel_id), None)
+            sona.config.set(channels=channels)
+            persist_channels(sona, channels)
+            return removed
+
+        def set_channel_flag(self, channel_id, key, value):
+            if key not in {"can_speak", "respond_all"}:
+                raise ValueError("Channel flag must be can_speak or respond_all")
+            return self.set_channel_policy(channel_id, **{key: bool(value)})
+
+        def allow_command(self, channel_id, command):
+            command = str(command).strip().lower().lstrip("$")
+            policy = self.get_channel_policy(channel_id)
+            allowed_commands = list(policy.get("allowed_commands", []))
+            if command and command not in allowed_commands:
+                allowed_commands.append(command)
+            return self.set_channel_policy(channel_id, allowed_commands=allowed_commands)
+
+        def deny_command(self, channel_id, command):
+            command = str(command).strip().lower().lstrip("$")
+            policy = self.get_channel_policy(channel_id)
+            allowed_commands = [
+                cmd for cmd in policy.get("allowed_commands", []) if cmd != command
+            ]
+            return self.set_channel_policy(channel_id, allowed_commands=allowed_commands)
+
     return Chat
 
 
@@ -710,11 +772,13 @@ Use the following guidelines:
     {},
     default_value=[],
     banned_words=BANNED_WORDS,
-    black_list=CHANNEL_BLACKLIST,
+    black_list=LEGACY_CHANNEL_BLACKLIST,
     r=lambda M, chat_id: setter(M["value"], chat_id, copy.deepcopy(M["default_value"])),
     request=lambda _, *args, **kwargs: PROMPT_MANAGER.send(*args, **kwargs),
     summarize=Summarize,
-    validate=lambda M, id: id in M["black_list"],
+    validate=lambda M, id: not get_channel_policy(
+        MANAGER.MANAGER.config, id
+    ).get("can_speak", True),
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
     dm_hook=dm_hook,
