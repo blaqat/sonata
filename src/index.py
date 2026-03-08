@@ -93,7 +93,7 @@ nest_asyncio.apply()
 if not discord.opus.is_loaded():
     # The 'libopus.so' path might need to be adjusted based on your installation
     # discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so")
-    discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.5.2/lib/libopus.0.dylib")
+    discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.6.1/lib/libopus.0.dylib")
 
 
 PROMPT = """

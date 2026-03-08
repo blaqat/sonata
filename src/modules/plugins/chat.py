@@ -25,6 +25,7 @@ from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
     ChannelPolicies,
+    ChannelPolicy,
     get_channel_policy,
     is_command_allowed,
     get_command_name,
@@ -233,7 +234,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
-    channel_policy = Sonata.chat.policy_manager.get_channel_policy(message.channel.id)
+    channel_policy: ChannelPolicy = Sonata.chat.policy_manager.get_channel_policy(message.channel.id)
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
     if is_command and not is_command_allowed(channel_policy, command_name):
@@ -241,6 +242,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             f"`{command_name}` is not allowed in this channel.",
             mention_author=False,
         )
+        cprint(f"Blocked command '{command_name}' by channel policy in {message.channel.name}", "yellow")
         return
 
     if not channel_policy.can_speak:
@@ -249,6 +251,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
                 "Sonata is disabled in this channel.",
                 mention_author=False,
             )
+        cprint(f"Sona blocked by channel policy in {message.channel.name}", "yellow")
         return
 
     _guild_name = message.guild.name
@@ -320,9 +323,8 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             message.channel.id, "User", get_full_name(message), message.content
         )
 
-        if message.content is None:
-            return
-
+    if message.content is None:
+        return
     # TODO: Add way to store attachments since can send them in message now
     # Add way to convert stickers into images
     #
@@ -404,7 +406,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # await self.process_commands(message)
         # return
 
-    if VALID_USER and sonata_exp.search(message.content):
+    if VALID_USER and (sonata_exp.search(message.content) or channel_policy.respond_all):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
         if _name in RESPONSES:
