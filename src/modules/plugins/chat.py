@@ -236,19 +236,19 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     channel_policy = Sonata.chat.get_channel_policy(message.channel.id)
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
-    if is_command and not is_command_allowed(channel_policy, command_name):
-        await message.reply(
-            f"`{command_name}` is not allowed in this channel.",
-            mention_author=False,
-        )
-        return
-
     if not channel_policy.can_speak:
         if is_command:
             await message.reply(
                 "Sonata is disabled in this channel.",
                 mention_author=False,
             )
+        return
+
+    if is_command and not is_command_allowed(channel_policy, command_name):
+        await message.reply(
+            f"`{command_name}` is not allowed in this channel.",
+            mention_author=False,
+        )
         return
 
     _guild_name = message.guild.name
