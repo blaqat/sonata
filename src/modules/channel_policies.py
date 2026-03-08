@@ -16,9 +16,9 @@ def default_channel_policy(can_speak=True):
     }
 
 
-def normalize_allowed_commands(commands):
+def normalize_allowed_commands(commands, fallback_to_wildcard=True):
     if commands is None:
-        return ["*"]
+        return ["*"] if fallback_to_wildcard else []
     if not isinstance(commands, (list, tuple, set)):
         commands = [commands]
 
@@ -32,7 +32,9 @@ def normalize_allowed_commands(commands):
         if command and command not in normalized:
             normalized.append(command)
 
-    return normalized or ["*"]
+    if normalized:
+        return normalized
+    return ["*"] if fallback_to_wildcard else []
 
 
 def normalize_channel_policy(policy):
@@ -40,9 +42,11 @@ def normalize_channel_policy(policy):
     if isinstance(policy, dict):
         base["can_speak"] = bool(policy.get("can_speak", base["can_speak"]))
         base["respond_all"] = bool(policy.get("respond_all", base["respond_all"]))
-        base["allowed_commands"] = normalize_allowed_commands(
-            policy.get("allowed_commands", base["allowed_commands"])
-        )
+        if "allowed_commands" in policy:
+            base["allowed_commands"] = normalize_allowed_commands(
+                policy.get("allowed_commands"),
+                fallback_to_wildcard=False,
+            )
     return base
 
 
