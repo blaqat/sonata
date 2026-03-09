@@ -525,7 +525,7 @@ def Gemini(client, prompt, model, config):
     images = config.get("images", False)
     if images:
         # model = "gemini-1.5-flash"
-        images = [Image.open(BytesIO(requests.get(u).content)) for u in images]
+        images = [Image.open(BytesIO(requests.get(u).content)) for u in images if u is not True]
         content = [content]
         content.extend(images)
         # Insert True at begining of images list
