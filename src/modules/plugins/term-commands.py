@@ -16,6 +16,7 @@ from modules.utils import (
     Colors,
     async_cprint as cprint,
     async_print as print,
+    cstrs,
     get_reference_chain,
     setter,
 )
@@ -330,7 +331,7 @@ def _build_help_lines(commands):
     for name in sorted(commands.keys()):
         entry = _normalize_term_entry(commands[name])
         description = entry["description"] or "No description available."
-        lines.append(f"{name}: {description}")
+        lines.append(f"   {cstrs(name, Colors.YELLOW, Colors.BOLD)}: {description}")
     return lines
 
 
