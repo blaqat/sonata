@@ -9,7 +9,7 @@ Depends on: chat
 """
 
 from modules.AI_manager import AI_Manager, Context
-from modules.utils import async_cprint as cprint
+from modules.utils import async_cprint as cprint, async_print
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(lazy=True)
 __plugin_name__ = "ispy"
@@ -83,6 +83,7 @@ def ispy_init(context: Context):
         for i in range(0, len(new_images), batch_size):
             batch = new_images[i : i + batch_size]
             try:
+                async_print(f"Describing images for chat {chat_id} (batch {i//batch_size + 1})...")
                 result = PROMPT_MANAGER.send(
                     "describe_images",
                     config={"images": batch, "instructions": ""},
@@ -90,10 +91,10 @@ def ispy_init(context: Context):
                     model="gemini-2.5-flash",
                 )
                 descriptions.append(result)
-            except Exception:
+            except Exception as e:
                 # If description fails, skip silently — images are still
                 # available for the next AI request via the normal path.
-                cprint("Failed to describe image batch", "red")
+                cprint(f"Failed to describe image batch: {e}", "red")
                 pass
 
         tracked[chat_id] = len(images)
@@ -102,7 +103,7 @@ def ispy_init(context: Context):
         if descriptions:
             attachment_text = "\n".join(descriptions)
             message = (
-                f"{message}\nAttachments ({len(descriptions)}):\n{attachment_text}"
+                f"{message} | Attachments ({len(new_images)}):\n{attachment_text}"
             )
 
             # Update the last entry in chat history so the description persists

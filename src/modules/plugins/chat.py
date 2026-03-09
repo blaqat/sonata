@@ -364,6 +364,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # if attachment:
         #     message.content += f"\nAttachment: {attachment}"
 
+    if VALID_USER:
+        Sonata.chat.send(
+            message.channel.id, "User", get_full_name(message), message.content
+        )
+
     if not should_respond_to_message(
         channel_policy,
         is_command=is_command,
@@ -371,11 +376,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         called_sonata=called_sonata,
     ):
         return
-
-    if VALID_USER:
-        Sonata.chat.send(
-            message.channel.id, "User", get_full_name(message), message.content
-        )
 
     # Pass referenced messages to AI
     if message_reference_id is not None and VALID_USER:
