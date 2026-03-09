@@ -16,6 +16,7 @@ from modules.utils import (
     Colors,
     async_cprint as cprint,
     async_print as print,
+    cstrs,
     get_reference_chain,
     setter,
 )
@@ -306,9 +307,39 @@ class CustomEmoji:
         return new_d
 
 
+def _doc_summary(func):
+    doc = (getattr(func, "__doc__", None) or "").strip()
+    if not doc:
+        return None
+    return doc.splitlines()[0].strip()
+
+
+def _normalize_term_entry(entry):
+    if callable(entry):
+        return {"func": entry, "description": _doc_summary(entry)}
+    if isinstance(entry, dict):
+        func = entry.get("func")
+        description = entry.get("description")
+        if description is None and callable(func):
+            description = _doc_summary(func)
+        return {"func": func, "description": description}
+    return {"func": None, "description": None}
+
+
+def _build_help_lines(commands):
+    lines = []
+    for name in sorted(commands.keys()):
+        entry = _normalize_term_entry(commands[name])
+        description = entry["description"] or "No description available."
+        lines.append(f"   {cstrs(name, Colors.YELLOW, Colors.BOLD)}: {description}")
+    return lines
+
+
 @MANAGER.new_helper("term")
-def term_command(F, name=None):
-    MANAGER.set("termcmd", name or F.__name__, F)
+def term_command(F, name=None, description=None):
+    if description is None:
+        description = _doc_summary(F)
+    MANAGER.set("termcmd", name or F.__name__, F, description)
 
 
 """
@@ -355,7 +386,11 @@ MANAGER.update("emojis")
 # Initalize termcmd plugin
 @MANAGER.mem(
     {},
-    set=lambda M, name, func: setter(M["value"], name, func),
+    set=lambda M, name, func, description=None: setter(
+        M["value"],
+        name,
+        {"func": func, "description": description},
+    ),
     # save=__save_favs,
     # load=__load_favs,
     save=lambda _: MANAGER.MANAGER.save("termcmd", "saved"),
@@ -377,9 +412,14 @@ MANAGER.update("emojis")
     intercept_hook=intercept_reply,
 )
 def run_termcmd(M, name, client, manager):
-    num_required = M["value"][name].__code__.co_argcount
+    entry = _normalize_term_entry(M["value"][name])
+    func = entry["func"]
+    if func is None:
+        cprint(f"Command `{name}` is not callable", "red")
+        raise E
+    num_required = func.__code__.co_argcount
     args = [M, client, manager]
-    if M["value"][name] != retry_prev_command:
+    if func != retry_prev_command:
         M["recents"]["termcmd"] = (name, args[:num_required])
     return run_command(M["value"], name, args[:num_required])
 
@@ -397,41 +437,19 @@ Commands  ----------------------------------------------------------------------
 
 async def run_command(commands, command_name, args):
     """Run a command by name with arguments"""
-    output = await commands[command_name](*args)
+    entry = _normalize_term_entry(commands[command_name])
+    if entry["func"] is None:
+        cprint(f"Command `{command_name}` is not callable", "red")
+        raise E
+    output = await entry["func"](*args)
     return output
 
 
 @MANAGER.term
-async def help(*_):
+async def help(mem):
     """Display a list of available commands"""
-    print(
-        """
-        chn: Set channel
-        reset: Reset channel
-        god: Send message in channel
-        dlr: Delete last message
-        dlm: Delete message
-        dlc: Delete chat memory
-        vc: Join voice channel
-        leave: Leave voice channel
-        react: React to message
-        emosend: Send emoji
-        emoji: Search for emoji
-        favs: Show favs
-        favp: Edit fav person
-        favc: Edit fav channel
-        channels: Manage channel policies
-        dm: Send dm
-        dmr: Send dm reply
-        edit: Edit message
-        reply: Reply to message
-        int: Intercept messages
-        $: Run command
-        cmd: Run command
-        sum: Summarize current chat
-        pchn: Print channel chat history
-        exit: Exit"""
-    )
+    lines = _build_help_lines(mem["value"])
+    print("\n".join(lines))
 
 
 @MANAGER.term("chn")
@@ -442,6 +460,7 @@ async def set_pinned_channel(mem):
 
 @MANAGER.term("channels")
 async def manage_channel_policies(mem, bot, manager):
+    """Manage channel policy overrides and blacklist settings"""
     usage = (
         "channels list\n"
         "channels show <channel_id|<#channel_id>|here>\n"
@@ -1184,6 +1203,7 @@ async def ai_reply(mem, bot, manager):
 
 @MANAGER.term("retry")
 async def retry_prev_command(mem):
+    """Retry the most recent terminal command"""
     if mem["recents"]["termcmd"] is None:
         cprint("No recent command to retry", "red")
         raise E
@@ -1193,4 +1213,5 @@ async def retry_prev_command(mem):
 
 @MANAGER.term
 async def restart(_, __, manager):
+    """Restart the bot process"""
     manager.restart()
