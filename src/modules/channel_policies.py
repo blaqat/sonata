@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 
+from modules.policy_api import EFFECT_ALLOW, EFFECT_DENY, get_or_create_policy_api
+
 
 LEGACY_CHANNEL_BLACKLIST = {
     1175907292072398858,
@@ -61,12 +63,7 @@ def should_respond_to_message(
 ):
     if not policy.can_speak:
         return False
-    return (
-        policy.respond_all
-        or is_command
-        or is_reply_to_sonata
-        or called_sonata
-    )
+    return policy.respond_all or is_command or is_reply_to_sonata or called_sonata
 
 
 @dataclass
@@ -185,6 +182,62 @@ class ChannelPolicies:
         self.sonata = sonata
         self.channels = {}
         self.loaded = False
+        self.policy_api = get_or_create_policy_api(sonata)
+        self._ensure_chat_namespace()
+
+    def _ensure_chat_namespace(self):
+        if self.policy_api.has_namespace("chat"):
+            return
+        self.policy_api.register_namespace(
+            "chat",
+            plugin=True,
+            default_decisions={
+                "chat.can_speak": True,
+                "chat.respond_all": False,
+                "chat.command.*": True,
+            },
+        )
+
+    def _sync_channel_scope(self, channel_id, policy):
+        key = str(channel_id)
+        policy = ChannelPolicy.normalize(policy)
+        self.policy_api.clear_scope("chat", "channel", key)
+
+        if not policy.can_speak:
+            self.policy_api.set_rule(
+                "chat", "channel", key, "chat.can_speak", EFFECT_DENY
+            )
+
+        if policy.respond_all:
+            self.policy_api.set_rule(
+                "chat", "channel", key, "chat.respond_all", EFFECT_ALLOW
+            )
+
+        if policy.command_policy_mode == DENYLIST:
+            for command in policy.commands:
+                self.policy_api.set_rule(
+                    "chat",
+                    "channel",
+                    key,
+                    f"chat.command.{normalize_command_name(command)}",
+                    EFFECT_DENY,
+                )
+        else:
+            self.policy_api.set_rule(
+                "chat", "channel", key, "chat.command.*", EFFECT_DENY
+            )
+            for command in policy.commands:
+                self.policy_api.set_rule(
+                    "chat",
+                    "channel",
+                    key,
+                    f"chat.command.{normalize_command_name(command)}",
+                    EFFECT_ALLOW,
+                )
+
+    def _sync_policy_api(self):
+        for channel_id, policy in self.channels.items():
+            self._sync_channel_scope(channel_id, policy)
 
     def _normalize_channels_map(self, channels):
         if not isinstance(channels, dict):
@@ -196,8 +249,7 @@ class ChannelPolicies:
 
     def _serialize_channels(self):
         return {
-            channel_id: policy.to_dict()
-            for channel_id, policy in self.channels.items()
+            channel_id: policy.to_dict() for channel_id, policy in self.channels.items()
         }
 
     def _persist(self):
@@ -218,6 +270,7 @@ class ChannelPolicies:
         channels.update(self._normalize_channels_map(configured_channels))
         self.channels = channels
         self.loaded = True
+        self._sync_policy_api()
         self._persist()
         return self.channels
 
@@ -225,8 +278,7 @@ class ChannelPolicies:
         if not self.loaded:
             self.init()
         return {
-            channel_id: policy.clone()
-            for channel_id, policy in self.channels.items()
+            channel_id: policy.clone() for channel_id, policy in self.channels.items()
         }
 
     def get_channel_policy(self, channel_id):
@@ -242,6 +294,7 @@ class ChannelPolicies:
         current = self.get_channel_policy(key)
         policy = current.with_updates(**updates)
         self.channels[key] = policy
+        self._sync_channel_scope(key, policy)
         self.loaded = True
         self._persist()
         return policy.clone()
@@ -249,7 +302,9 @@ class ChannelPolicies:
     def remove_channel_policy(self, channel_id):
         if not self.loaded:
             self.init()
-        removed = self.channels.pop(str(channel_id), None)
+        key = str(channel_id)
+        removed = self.channels.pop(key, None)
+        self.policy_api.clear_scope("chat", "channel", key)
         self._persist()
         return removed.clone() if removed is not None else None
 
@@ -262,6 +317,7 @@ class ChannelPolicies:
         key = str(channel_id)
         policy = self.get_channel_policy(key).allow_command(command)
         self.channels[key] = policy
+        self._sync_channel_scope(key, policy)
         self.loaded = True
         self._persist()
         return policy.clone()
@@ -270,6 +326,7 @@ class ChannelPolicies:
         key = str(channel_id)
         policy = self.get_channel_policy(key).deny_command(command)
         self.channels[key] = policy
+        self._sync_channel_scope(key, policy)
         self.loaded = True
         self._persist()
         return policy.clone()
@@ -278,6 +335,7 @@ class ChannelPolicies:
         key = str(channel_id)
         policy = ChannelPolicy.blacklisted()
         self.channels[key] = policy
+        self._sync_channel_scope(key, policy)
         self.loaded = True
         self._persist()
         return policy.clone()
@@ -286,9 +344,43 @@ class ChannelPolicies:
         key = str(channel_id)
         policy = ChannelPolicy.default()
         self.channels[key] = policy
+        self._sync_channel_scope(key, policy)
         self.loaded = True
         self._persist()
         return policy.clone()
+
+    def can_speak(self, guild_id, channel_id, user_id=None):
+        return self.policy_api.evaluate(
+            "chat",
+            "chat.can_speak",
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            default=True,
+        )
+
+    def should_respond_all(self, guild_id, channel_id, user_id=None):
+        return self.policy_api.evaluate(
+            "chat",
+            "chat.respond_all",
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            default=False,
+        )
+
+    def is_command_allowed(self, guild_id, channel_id, command, user_id=None):
+        command_name = normalize_command_name(command)
+        if not command_name:
+            return True
+        return self.policy_api.evaluate(
+            "chat",
+            f"chat.command.{command_name}",
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            default=True,
+        )
 
 
 def default_channel_policy(can_speak=True):
@@ -334,7 +426,9 @@ def format_channel_policy(channel_id, policy):
     return f"`{channel_id}` -> {ChannelPolicy.normalize(policy)}"
 
 
-def resolve_channel_in_guild(guild, raw_channel, current_channel=None, allow_current=False):
+def resolve_channel_in_guild(
+    guild, raw_channel, current_channel=None, allow_current=False
+):
     if guild is None:
         return None, "This command only works in a server."
 

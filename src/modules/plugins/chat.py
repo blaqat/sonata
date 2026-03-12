@@ -25,11 +25,8 @@ from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
     ChannelPolicies,
-    ChannelPolicy,
     get_channel_policy,
-    is_command_allowed,
     get_command_name,
-    should_respond_to_message,
 )
 from modules.utils import (
     censor_message,
@@ -234,12 +231,15 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
-    channel_policy: ChannelPolicy = Sonata.chat.policy_manager.get_channel_policy(
-        message.channel.id
-    )
+    policy_manager = Sonata.chat.policy_manager
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
-    if not channel_policy.can_speak:
+    can_speak = policy_manager.can_speak(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+    )
+    if not can_speak:
         if is_command:
             await message.reply(
                 "Sonata is disabled in this channel.",
@@ -248,7 +248,12 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         cprint(f"Sona blocked by channel policy in {message.channel.name}", "yellow")
         return
 
-    if is_command and not is_command_allowed(channel_policy, command_name):
+    if is_command and not policy_manager.is_command_allowed(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+        command=command_name,
+    ):
         await message.reply(
             f"`{command_name}` is not allowed in this channel.",
             mention_author=False,
@@ -258,6 +263,12 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             "yellow",
         )
         return
+
+    respond_all = policy_manager.should_respond_all(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+    )
 
     _guild_name = message.guild.name
     _channel_name = message.channel.name
@@ -369,11 +380,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             message.channel.id, "User", get_full_name(message), message.content
         )
 
-    if not should_respond_to_message(
-        channel_policy,
-        is_command=is_command,
-        is_reply_to_sonata=message_reference_id == self.user.id,
-        called_sonata=called_sonata,
+    if not (
+        respond_all
+        or is_command
+        or message_reference_id == self.user.id
+        or called_sonata
     ):
         return
 
@@ -405,9 +416,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         # await self.process_commands(message)
         # return
 
-    if VALID_USER and (
-        sonata_exp.search(message.content) or channel_policy.respond_all
-    ):
+    if VALID_USER and (sonata_exp.search(message.content) or respond_all):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
         if _name in RESPONSES:
@@ -732,9 +741,7 @@ def chat(sona: AI_Manager):
 
 
 def Summarize(M, id, config):
-    config[
-        "instructions"
-    ] = f"""Summarize the chat log in as little tokens as possible.
+    config["instructions"] = f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:
 - Mention people by name, not nickname.
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
@@ -765,8 +772,8 @@ Use the following guidelines:
     r=lambda M, chat_id: setter(M["value"], chat_id, copy.deepcopy(M["default_value"])),
     request=lambda _, *args, **kwargs: PROMPT_MANAGER.send(*args, **kwargs),
     summarize=Summarize,
-    validate=lambda M, id: not get_channel_policy(MANAGER.MANAGER.config, id).get(
-        "can_speak", True
+    validate=lambda M, id: (
+        not get_channel_policy(MANAGER.MANAGER.config, id).get("can_speak", True)
     ),
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,
