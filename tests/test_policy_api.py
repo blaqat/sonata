@@ -113,6 +113,83 @@ class PolicyApiTests(unittest.TestCase):
         api.unload_namespace("chat")
         self.assertTrue(api.evaluate("chat", "chat.command.help", channel_id=11))
 
+    def test_manual_group_resolution_and_group_rule_eval(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.upsert_group("chat", "mods", members=["7"])
+        api.set_group_rule("chat", "mods", "chat.command.ban", "allow")
+
+        groups = api.resolve_groups("chat", user_id=7)
+        self.assertEqual(groups, ["chat:mods"])
+        self.assertTrue(
+            api.evaluate(
+                "chat",
+                "chat.command.ban",
+                user_id=7,
+            )
+        )
+
+    def test_role_derived_group_resolution(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.bind_group_role("chat", "admins", "role-admin")
+        api.set_group_rule("chat", "admins", "chat.command.shutdown", "allow")
+
+        groups = api.resolve_groups("chat", user_id=9, role_ids=["role-admin"])
+        self.assertEqual(groups, ["chat:admins"])
+        self.assertTrue(
+            api.evaluate(
+                "chat",
+                "chat.command.shutdown",
+                user_id=9,
+                role_ids=["role-admin"],
+            )
+        )
+
+    def test_mixed_group_membership_is_deterministic_with_deny_wins(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.upsert_group("chat", "mods", members=["7"])
+        api.upsert_group("chat", "muted", members=["7"])
+        api.set_group_rule("chat", "mods", "chat.command.kick", "allow")
+        api.set_group_rule("chat", "muted", "chat.command.kick", "deny")
+
+        self.assertFalse(api.evaluate("chat", "chat.command.kick", user_id=7))
+
+    def test_group_lookup_is_namespace_safe(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.register_namespace("beacon", plugin=True)
+        api.upsert_group("chat", "staff", members=["1"])
+        api.upsert_group("beacon", "staff", members=["2"])
+
+        self.assertEqual(api.resolve_groups("chat", user_id=1), ["chat:staff"])
+        self.assertEqual(api.resolve_groups("beacon", user_id=2), ["beacon:staff"])
+        self.assertEqual(api.resolve_groups("chat", user_id=2), [])
+
+    def test_role_lookup_failures_fail_closed(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.bind_group_role("chat", "admins", "role-admin")
+        api.set_group_rule("chat", "admins", "chat.command.shutdown", "allow")
+
+        def broken_resolver(namespace, user_id):
+            raise RuntimeError("role provider timeout")
+
+        api.set_role_resolver(broken_resolver)
+        self.assertFalse(api.evaluate("chat", "chat.command.shutdown", user_id=9))
+
+    def test_group_runtime_resolution_sanity(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.upsert_group("chat", "g1", members=["7"])
+        api.upsert_group("chat", "g2", members=["7"])
+        api.upsert_group("chat", "g3", role_ids=["role3"])
+
+        for _ in range(200):
+            groups = api.resolve_groups("chat", user_id=7, role_ids=["role3"])
+            self.assertEqual(groups, ["chat:g1", "chat:g2", "chat:g3"])
+
     def test_channel_policy_behavior_migrates_via_policy_api(self):
         sonata = FakeSonata()
         policies = ChannelPolicies(sonata)

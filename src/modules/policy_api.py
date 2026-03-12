@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
-SCOPES = ("guild", "channel", "user")
-EVAL_PRECEDENCE = ("user", "channel", "guild")
+SCOPES = ("guild", "channel", "group", "user")
+EVAL_PRECEDENCE = ("user", "group", "channel", "guild")
 EFFECT_ALLOW = "allow"
 EFFECT_DENY = "deny"
 
@@ -29,6 +29,9 @@ class PolicyAPI:
     def __init__(self):
         self._namespaces: dict[str, PolicyNamespace] = {}
         self._rules: dict[str, dict[str, dict[str, list[PolicyRule]]]] = {}
+        self._groups: dict[str, dict[str, set[str]]] = {}
+        self._group_roles: dict[str, dict[str, set[str]]] = {}
+        self._role_resolver = None
         self.register_namespace("core", plugin=False)
 
     def register_namespace(
@@ -50,6 +53,8 @@ class PolicyAPI:
         )
         self._namespaces[key] = ns
         self._rules[key] = {scope: {} for scope in SCOPES}
+        self._groups[key] = {}
+        self._group_roles[key] = {}
         return ns
 
     def has_namespace(self, namespace: str) -> bool:
@@ -69,6 +74,149 @@ class PolicyAPI:
         key = self._normalize_namespace(namespace)
         ns = self._require_namespace(key)
         ns.active = True
+
+    def set_role_resolver(self, resolver):
+        self._role_resolver = resolver
+
+    def normalize_group_id(self, namespace: str, group_name: str) -> str:
+        ns = self._normalize_namespace(namespace)
+        name = str(group_name or "").strip().lower()
+        if not name:
+            raise ValueError("Group name is required")
+        return f"{ns}:{name}"
+
+    def upsert_group(
+        self,
+        namespace: str,
+        group_name: str,
+        *,
+        members=None,
+        role_ids=None,
+    ) -> str:
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+        group_id = self.normalize_group_id(key, group_name)
+
+        entry = self._groups[key].setdefault(group_id, set())
+        if members is not None:
+            entry.clear()
+            entry.update(self._normalize_identifier_set(members))
+
+        roles = self._group_roles[key].setdefault(group_id, set())
+        if role_ids is not None:
+            roles.clear()
+            roles.update(self._normalize_identifier_set(role_ids))
+
+        return group_id
+
+    def remove_group(self, namespace: str, group_name: str) -> bool:
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+        group_id = self.normalize_group_id(key, group_name)
+        removed = False
+
+        if group_id in self._groups[key]:
+            self._groups[key].pop(group_id, None)
+            removed = True
+        if group_id in self._group_roles[key]:
+            self._group_roles[key].pop(group_id, None)
+            removed = True
+
+        self._rules[key]["group"].pop(group_id, None)
+        return removed
+
+    def add_group_member(self, namespace: str, group_name: str, user_id) -> str:
+        key = self._normalize_namespace(namespace)
+        group_id = self.upsert_group(key, group_name)
+        self._groups[key][group_id].add(self._normalize_scope_id(user_id))
+        return group_id
+
+    def remove_group_member(self, namespace: str, group_name: str, user_id) -> bool:
+        key = self._normalize_namespace(namespace)
+        group_id = self.normalize_group_id(key, group_name)
+        members = self._groups.get(key, {}).get(group_id)
+        if not members:
+            return False
+        user_key = self._normalize_scope_id(user_id)
+        if user_key not in members:
+            return False
+        members.remove(user_key)
+        return True
+
+    def bind_group_role(self, namespace: str, group_name: str, role_id) -> str:
+        key = self._normalize_namespace(namespace)
+        group_id = self.upsert_group(key, group_name)
+        self._group_roles[key][group_id].add(self._normalize_scope_id(role_id))
+        return group_id
+
+    def unbind_group_role(self, namespace: str, group_name: str, role_id) -> bool:
+        key = self._normalize_namespace(namespace)
+        group_id = self.normalize_group_id(key, group_name)
+        roles = self._group_roles.get(key, {}).get(group_id)
+        if not roles:
+            return False
+        role_key = self._normalize_scope_id(role_id)
+        if role_key not in roles:
+            return False
+        roles.remove(role_key)
+        return True
+
+    def list_groups(self, namespace: str) -> list[str]:
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+        return sorted(self._groups[key].keys())
+
+    def get_group(self, namespace: str, group_name: str) -> dict[str, list[str]] | None:
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+        group_id = self.normalize_group_id(key, group_name)
+        members = self._groups[key].get(group_id)
+        roles = self._group_roles[key].get(group_id)
+        if members is None and roles is None:
+            return None
+        return {
+            "id": group_id,
+            "members": sorted(members or []),
+            "roles": sorted(roles or []),
+        }
+
+    def set_group_rule(
+        self,
+        namespace: str,
+        group_name: str,
+        action: str,
+        effect: str,
+    ) -> PolicyRule:
+        key = self._normalize_namespace(namespace)
+        group_id = self.normalize_group_id(key, group_name)
+        self.upsert_group(key, group_name)
+        return self.set_rule(key, "group", group_id, action, effect)
+
+    def resolve_groups(
+        self,
+        namespace: str,
+        *,
+        user_id=None,
+        role_ids=None,
+    ) -> list[str]:
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+
+        normalized_user = self._optional_scope_id(user_id)
+        resolved = set()
+
+        if normalized_user is not None:
+            for group_id, members in self._groups[key].items():
+                if normalized_user in members:
+                    resolved.add(group_id)
+
+        roles = self._resolve_runtime_roles(key, normalized_user, role_ids)
+        if roles:
+            for group_id, mapped_roles in self._group_roles[key].items():
+                if mapped_roles.intersection(roles):
+                    resolved.add(group_id)
+
+        return sorted(resolved)
 
     def set_rule(
         self,
@@ -137,6 +285,8 @@ class PolicyAPI:
         guild_id=None,
         channel_id=None,
         user_id=None,
+        group_ids=None,
+        role_ids=None,
         default: bool | None = None,
     ) -> bool:
         key = self._normalize_namespace(namespace)
@@ -150,15 +300,24 @@ class PolicyAPI:
             "guild": self._optional_scope_id(guild_id),
             "channel": self._optional_scope_id(channel_id),
             "user": self._optional_scope_id(user_id),
+            "group": self._resolve_group_scope_ids(
+                key,
+                group_ids=group_ids,
+                user_id=user_id,
+                role_ids=role_ids,
+            ),
         }
 
         seen_allow = False
         for scope in EVAL_PRECEDENCE:
-            scope_id_key = scope_ids[scope]
-            if scope_id_key is None:
+            ids = scope_ids[scope]
+            if ids is None:
                 continue
 
-            decision = self._evaluate_scope(key, scope, scope_id_key, action_key)
+            if isinstance(ids, str):
+                ids = [ids]
+
+            decision = self._evaluate_scope_ids(key, scope, ids, action_key)
             if decision == EFFECT_DENY:
                 return False
             if decision == EFFECT_ALLOW:
@@ -168,6 +327,27 @@ class PolicyAPI:
             return True
 
         return self._resolve_default(ns, action_key, default)
+
+    def _evaluate_scope_ids(
+        self,
+        namespace: str,
+        scope: str,
+        scope_ids: list[str],
+        action: str,
+    ) -> str | None:
+        saw_allow = False
+        for scope_id_key in scope_ids:
+            if scope_id_key is None:
+                continue
+
+            decision = self._evaluate_scope(namespace, scope, scope_id_key, action)
+            if decision == EFFECT_DENY:
+                return EFFECT_DENY
+            if decision == EFFECT_ALLOW:
+                saw_allow = True
+        if saw_allow:
+            return EFFECT_ALLOW
+        return None
 
     def _evaluate_scope(
         self,
@@ -251,6 +431,61 @@ class PolicyAPI:
             return None
         key = str(scope_id).strip()
         return key or None
+
+    def _normalize_identifier_set(self, values) -> set[str]:
+        if values is None:
+            return set()
+        if not isinstance(values, (list, tuple, set)):
+            values = [values]
+        normalized = set()
+        for value in values:
+            key = self._optional_scope_id(value)
+            if key is not None:
+                normalized.add(key)
+        return normalized
+
+    def _resolve_runtime_roles(
+        self, namespace: str, user_id: str | None, role_ids
+    ) -> set[str]:
+        role_set = self._normalize_identifier_set(role_ids)
+        if role_set:
+            return role_set
+
+        if self._role_resolver is None:
+            return set()
+        if user_id is None:
+            return set()
+
+        try:
+            resolved = self._role_resolver(namespace, user_id)
+        except Exception:
+            return set()
+        return self._normalize_identifier_set(resolved)
+
+    def _resolve_group_scope_ids(
+        self,
+        namespace: str,
+        *,
+        group_ids,
+        user_id,
+        role_ids,
+    ) -> list[str]:
+        if group_ids is not None:
+            if not isinstance(group_ids, (list, tuple, set)):
+                group_ids = [group_ids]
+            normalized = set()
+            for group_id in group_ids:
+                if group_id is None:
+                    continue
+                group_key = str(group_id).strip().lower()
+                if not group_key:
+                    continue
+                if not group_key.startswith(f"{namespace}:"):
+                    group_key = self.normalize_group_id(namespace, group_key)
+                normalized.add(group_key)
+            return sorted(normalized)
+
+        return self.resolve_groups(namespace, user_id=user_id, role_ids=role_ids)
 
     def _normalize_action(self, action: str) -> str:
         key = str(action or "").strip().lower()
