@@ -180,6 +180,7 @@ class ChannelPolicy:
 class ChannelPolicies:
     def __init__(self, sonata):
         self.sonata = sonata
+        self.guilds = {}
         self.channels = {}
         self.loaded = False
         self.policy_api = get_or_create_policy_api(sonata)
@@ -200,44 +201,61 @@ class ChannelPolicies:
 
     def _sync_channel_scope(self, channel_id, policy):
         key = str(channel_id)
+        self._sync_scope("channel", key, policy)
+
+    def _sync_guild_scope(self, guild_id, policy):
+        key = str(guild_id)
+        self._sync_scope("guild", key, policy)
+
+    def _sync_scope(self, scope, scope_id, policy):
         policy = ChannelPolicy.normalize(policy)
-        self.policy_api.clear_scope("chat", "channel", key)
+        self.policy_api.clear_scope("chat", scope, scope_id)
 
         if not policy.can_speak:
             self.policy_api.set_rule(
-                "chat", "channel", key, "chat.can_speak", EFFECT_DENY
+                "chat", scope, scope_id, "chat.can_speak", EFFECT_DENY
             )
 
         if policy.respond_all:
             self.policy_api.set_rule(
-                "chat", "channel", key, "chat.respond_all", EFFECT_ALLOW
+                "chat", scope, scope_id, "chat.respond_all", EFFECT_ALLOW
             )
 
         if policy.command_policy_mode == DENYLIST:
             for command in policy.commands:
                 self.policy_api.set_rule(
                     "chat",
-                    "channel",
-                    key,
+                    scope,
+                    scope_id,
                     f"chat.command.{normalize_command_name(command)}",
                     EFFECT_DENY,
                 )
         else:
             self.policy_api.set_rule(
-                "chat", "channel", key, "chat.command.*", EFFECT_DENY
+                "chat", scope, scope_id, "chat.command.*", EFFECT_DENY
             )
             for command in policy.commands:
                 self.policy_api.set_rule(
                     "chat",
-                    "channel",
-                    key,
+                    scope,
+                    scope_id,
                     f"chat.command.{normalize_command_name(command)}",
                     EFFECT_ALLOW,
                 )
 
     def _sync_policy_api(self):
+        for guild_id, policy in self.guilds.items():
+            self._sync_guild_scope(guild_id, policy)
         for channel_id, policy in self.channels.items():
             self._sync_channel_scope(channel_id, policy)
+
+    def _normalize_guilds_map(self, guilds):
+        if not isinstance(guilds, dict):
+            return {}
+        return {
+            str(guild_id): ChannelPolicy.normalize(policy)
+            for guild_id, policy in guilds.items()
+        }
 
     def _normalize_channels_map(self, channels):
         if not isinstance(channels, dict):
@@ -252,27 +270,98 @@ class ChannelPolicies:
             channel_id: policy.to_dict() for channel_id, policy in self.channels.items()
         }
 
+    def _serialize_guilds(self):
+        return {guild_id: policy.to_dict() for guild_id, policy in self.guilds.items()}
+
     def _persist(self):
-        serialized = self._serialize_channels()
-        self.sonata.config.set(channels=serialized)
+        serialized_channels = self._serialize_channels()
+        serialized_guilds = self._serialize_guilds()
+        self.sonata.config.set(channels=serialized_channels, guilds=serialized_guilds)
         if hasattr(self.sonata, "beacon"):
-            self.sonata.beacon.branch("policies").illuminate("channels", serialized)
+            beacon_policies = self.sonata.beacon.branch("policies")
+            beacon_policies.illuminate("channels", serialized_channels)
+            beacon_policies.illuminate("guilds", serialized_guilds)
 
     def init(self):
         beacon_channels = {}
+        beacon_guilds = {}
         if hasattr(self.sonata, "beacon"):
-            beacon_channels = (
-                self.sonata.beacon.branch("policies").discover("channels") or {}
-            )
+            beacon_policies = self.sonata.beacon.branch("policies")
+            beacon_channels = beacon_policies.discover("channels") or {}
+            beacon_guilds = beacon_policies.discover("guilds") or {}
+
         configured_channels = self.sonata.config.get("channels", {})
+        configured_guilds = self.sonata.config.get("guilds", {})
+
+        guilds = {}
+        guilds.update(self._normalize_guilds_map(beacon_guilds))
+        guilds.update(self._normalize_guilds_map(configured_guilds))
+
         channels = {}
         channels.update(self._normalize_channels_map(beacon_channels))
         channels.update(self._normalize_channels_map(configured_channels))
+
+        self.guilds = guilds
         self.channels = channels
         self.loaded = True
         self._sync_policy_api()
         self._persist()
         return self.channels
+
+    def get_guilds(self):
+        if not self.loaded:
+            self.init()
+        return {guild_id: policy.clone() for guild_id, policy in self.guilds.items()}
+
+    def get_guild_policy(self, guild_id):
+        if not self.loaded:
+            self.init()
+        policy = self.guilds.get(str(guild_id))
+        if policy is None:
+            return ChannelPolicy.default()
+        return policy.clone()
+
+    def set_guild_policy(self, guild_id, **updates):
+        key = str(guild_id)
+        current = self.get_guild_policy(key)
+        policy = current.with_updates(**updates)
+        self.guilds[key] = policy
+        self._sync_guild_scope(key, policy)
+        self.loaded = True
+        self._persist()
+        return policy.clone()
+
+    def remove_guild_policy(self, guild_id):
+        if not self.loaded:
+            self.init()
+        key = str(guild_id)
+        removed = self.guilds.pop(key, None)
+        self.policy_api.clear_scope("chat", "guild", key)
+        self._persist()
+        return removed.clone() if removed is not None else None
+
+    def set_guild_flag(self, guild_id, key, value):
+        if key not in {"can_speak", "respond_all"}:
+            raise ValueError("Guild flag must be can_speak or respond_all")
+        return self.set_guild_policy(guild_id, **{key: bool(value)})
+
+    def allow_guild_command(self, guild_id, command):
+        key = str(guild_id)
+        policy = self.get_guild_policy(key).allow_command(command)
+        self.guilds[key] = policy
+        self._sync_guild_scope(key, policy)
+        self.loaded = True
+        self._persist()
+        return policy.clone()
+
+    def deny_guild_command(self, guild_id, command):
+        key = str(guild_id)
+        policy = self.get_guild_policy(key).deny_command(command)
+        self.guilds[key] = policy
+        self._sync_guild_scope(key, policy)
+        self.loaded = True
+        self._persist()
+        return policy.clone()
 
     def get_channels(self):
         if not self.loaded:
