@@ -234,10 +234,12 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     policy_manager = Sonata.chat.policy_manager
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
+    role_ids = [str(role.id) for role in getattr(message.author, "roles", [])]
     can_speak = policy_manager.can_speak(
         guild_id=message.guild.id,
         channel_id=message.channel.id,
         user_id=message.author.id,
+        role_ids=role_ids,
     )
     if not can_speak:
         if is_command:
@@ -253,6 +255,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         channel_id=message.channel.id,
         user_id=message.author.id,
         command=command_name,
+        role_ids=role_ids,
     ):
         await message.reply(
             f"`{command_name}` is not allowed in this channel.",
@@ -268,6 +271,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         guild_id=message.guild.id,
         channel_id=message.channel.id,
         user_id=message.author.id,
+        role_ids=role_ids,
     )
 
     _guild_name = message.guild.name

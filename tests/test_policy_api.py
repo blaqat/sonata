@@ -190,6 +190,75 @@ class PolicyApiTests(unittest.TestCase):
             groups = api.resolve_groups("chat", user_id=7, role_ids=["role3"])
             self.assertEqual(groups, ["chat:g1", "chat:g2", "chat:g3"])
 
+    def test_direct_user_allow_deny(self):
+        policies = ChannelPolicies(FakeSonata())
+        policies.set_user_flag(5, "can_speak", False)
+        self.assertFalse(policies.can_speak(guild_id=1, channel_id=10, user_id=5))
+
+        policies.set_user_flag(5, "can_speak", True)
+        self.assertTrue(policies.can_speak(guild_id=1, channel_id=10, user_id=5))
+
+    def test_group_targeted_user_effects_apply(self):
+        policies = ChannelPolicies(FakeSonata())
+        policies.upsert_user_group("mods", members=["7"])
+        policies.deny_group_command("mods", "ban")
+
+        self.assertFalse(
+            policies.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=7,
+                command="ban",
+            )
+        )
+        self.assertTrue(
+            policies.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=8,
+                command="ban",
+            )
+        )
+
+    def test_user_rule_interacts_with_group_and_deny_wins(self):
+        policies = ChannelPolicies(FakeSonata())
+        policies.upsert_user_group("mods", members=["7"])
+        policies.deny_group_command("mods", "ban")
+        policies.allow_user_command(7, "ban")
+
+        self.assertFalse(
+            policies.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=7,
+                command="ban",
+            )
+        )
+
+    def test_precedence_user_channel_guild_and_namespace_isolation(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.register_namespace("beacon", plugin=True)
+
+        api.set_rule("chat", "guild", 1, "chat.command.ping", "allow")
+        api.set_rule("chat", "channel", 2, "chat.command.ping", "allow")
+        api.set_rule("chat", "user", 3, "chat.command.ping", "deny")
+
+        self.assertFalse(
+            api.evaluate(
+                "chat", "chat.command.ping", guild_id=1, channel_id=2, user_id=3
+            )
+        )
+        self.assertFalse(
+            api.evaluate(
+                "beacon",
+                "chat.command.ping",
+                guild_id=1,
+                channel_id=2,
+                user_id=3,
+            )
+        )
+
     def test_channel_policy_behavior_migrates_via_policy_api(self):
         sonata = FakeSonata()
         policies = ChannelPolicies(sonata)

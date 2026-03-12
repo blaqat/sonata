@@ -180,6 +180,7 @@ class ChannelPolicy:
 class ChannelPolicies:
     def __init__(self, sonata):
         self.sonata = sonata
+        self.users = {}
         self.channels = {}
         self.loaded = False
         self.policy_api = get_or_create_policy_api(sonata)
@@ -200,44 +201,61 @@ class ChannelPolicies:
 
     def _sync_channel_scope(self, channel_id, policy):
         key = str(channel_id)
+        self._sync_scope("channel", key, policy)
+
+    def _sync_user_scope(self, user_id, policy):
+        key = str(user_id)
+        self._sync_scope("user", key, policy)
+
+    def _sync_scope(self, scope, scope_id, policy):
         policy = ChannelPolicy.normalize(policy)
-        self.policy_api.clear_scope("chat", "channel", key)
+        self.policy_api.clear_scope("chat", scope, scope_id)
 
         if not policy.can_speak:
             self.policy_api.set_rule(
-                "chat", "channel", key, "chat.can_speak", EFFECT_DENY
+                "chat", scope, scope_id, "chat.can_speak", EFFECT_DENY
             )
 
         if policy.respond_all:
             self.policy_api.set_rule(
-                "chat", "channel", key, "chat.respond_all", EFFECT_ALLOW
+                "chat", scope, scope_id, "chat.respond_all", EFFECT_ALLOW
             )
 
         if policy.command_policy_mode == DENYLIST:
             for command in policy.commands:
                 self.policy_api.set_rule(
                     "chat",
-                    "channel",
-                    key,
+                    scope,
+                    scope_id,
                     f"chat.command.{normalize_command_name(command)}",
                     EFFECT_DENY,
                 )
         else:
             self.policy_api.set_rule(
-                "chat", "channel", key, "chat.command.*", EFFECT_DENY
+                "chat", scope, scope_id, "chat.command.*", EFFECT_DENY
             )
             for command in policy.commands:
                 self.policy_api.set_rule(
                     "chat",
-                    "channel",
-                    key,
+                    scope,
+                    scope_id,
                     f"chat.command.{normalize_command_name(command)}",
                     EFFECT_ALLOW,
                 )
 
     def _sync_policy_api(self):
+        for user_id, policy in self.users.items():
+            self._sync_user_scope(user_id, policy)
         for channel_id, policy in self.channels.items():
             self._sync_channel_scope(channel_id, policy)
+
+    def _normalize_users_map(self, users):
+        if not isinstance(users, dict):
+            return {}
+        return {
+            str(user_id): ChannelPolicy.normalize(policy)
+            for user_id, policy in users.items()
+        }
 
     def _normalize_channels_map(self, channels):
         if not isinstance(channels, dict):
@@ -252,27 +270,141 @@ class ChannelPolicies:
             channel_id: policy.to_dict() for channel_id, policy in self.channels.items()
         }
 
+    def _serialize_users(self):
+        return {user_id: policy.to_dict() for user_id, policy in self.users.items()}
+
     def _persist(self):
-        serialized = self._serialize_channels()
-        self.sonata.config.set(channels=serialized)
+        serialized_channels = self._serialize_channels()
+        serialized_users = self._serialize_users()
+        self.sonata.config.set(channels=serialized_channels, users=serialized_users)
         if hasattr(self.sonata, "beacon"):
-            self.sonata.beacon.branch("policies").illuminate("channels", serialized)
+            policies_branch = self.sonata.beacon.branch("policies")
+            policies_branch.illuminate("channels", serialized_channels)
+            policies_branch.illuminate("users", serialized_users)
 
     def init(self):
         beacon_channels = {}
+        beacon_users = {}
         if hasattr(self.sonata, "beacon"):
-            beacon_channels = (
-                self.sonata.beacon.branch("policies").discover("channels") or {}
-            )
+            policies_branch = self.sonata.beacon.branch("policies")
+            beacon_channels = policies_branch.discover("channels") or {}
+            beacon_users = policies_branch.discover("users") or {}
+
         configured_channels = self.sonata.config.get("channels", {})
+        configured_users = self.sonata.config.get("users", {})
+
+        users = {}
+        users.update(self._normalize_users_map(beacon_users))
+        users.update(self._normalize_users_map(configured_users))
+
         channels = {}
         channels.update(self._normalize_channels_map(beacon_channels))
         channels.update(self._normalize_channels_map(configured_channels))
+
+        self.users = users
         self.channels = channels
         self.loaded = True
         self._sync_policy_api()
         self._persist()
         return self.channels
+
+    def get_users(self):
+        if not self.loaded:
+            self.init()
+        return {user_id: policy.clone() for user_id, policy in self.users.items()}
+
+    def get_user_policy(self, user_id):
+        if not self.loaded:
+            self.init()
+        policy = self.users.get(str(user_id))
+        if policy is None:
+            return ChannelPolicy.default()
+        return policy.clone()
+
+    def set_user_policy(self, user_id, **updates):
+        key = str(user_id)
+        current = self.get_user_policy(key)
+        policy = current.with_updates(**updates)
+        self.users[key] = policy
+        self._sync_user_scope(key, policy)
+        self.loaded = True
+        self._persist()
+        return policy.clone()
+
+    def remove_user_policy(self, user_id):
+        if not self.loaded:
+            self.init()
+        key = str(user_id)
+        removed = self.users.pop(key, None)
+        self.policy_api.clear_scope("chat", "user", key)
+        self._persist()
+        return removed.clone() if removed is not None else None
+
+    def set_user_flag(self, user_id, key, value):
+        if key not in {"can_speak", "respond_all"}:
+            raise ValueError("User flag must be can_speak or respond_all")
+        return self.set_user_policy(user_id, **{key: bool(value)})
+
+    def allow_user_command(self, user_id, command):
+        key = str(user_id)
+        policy = self.get_user_policy(key).allow_command(command)
+        self.users[key] = policy
+        self._sync_user_scope(key, policy)
+        self.loaded = True
+        self._persist()
+        return policy.clone()
+
+    def deny_user_command(self, user_id, command):
+        key = str(user_id)
+        policy = self.get_user_policy(key).deny_command(command)
+        self.users[key] = policy
+        self._sync_user_scope(key, policy)
+        self.loaded = True
+        self._persist()
+        return policy.clone()
+
+    def upsert_user_group(self, name, *, members=None, role_ids=None):
+        return self.policy_api.upsert_group(
+            "chat",
+            name,
+            members=members,
+            role_ids=role_ids,
+        )
+
+    def remove_user_group(self, name):
+        return self.policy_api.remove_group("chat", name)
+
+    def allow_group_command(self, group_name, command):
+        command_name = normalize_command_name(command)
+        if not command_name:
+            return None
+        return self.policy_api.set_group_rule(
+            "chat", group_name, f"chat.command.{command_name}", EFFECT_ALLOW
+        )
+
+    def deny_group_command(self, group_name, command):
+        command_name = normalize_command_name(command)
+        if not command_name:
+            return None
+        return self.policy_api.set_group_rule(
+            "chat", group_name, f"chat.command.{command_name}", EFFECT_DENY
+        )
+
+    def allow_group_feature(self, group_name, action):
+        action_name = str(action or "").strip().lower()
+        if not action_name:
+            return None
+        return self.policy_api.set_group_rule(
+            "chat", group_name, action_name, EFFECT_ALLOW
+        )
+
+    def deny_group_feature(self, group_name, action):
+        action_name = str(action or "").strip().lower()
+        if not action_name:
+            return None
+        return self.policy_api.set_group_rule(
+            "chat", group_name, action_name, EFFECT_DENY
+        )
 
     def get_channels(self):
         if not self.loaded:
@@ -349,27 +481,48 @@ class ChannelPolicies:
         self._persist()
         return policy.clone()
 
-    def can_speak(self, guild_id, channel_id, user_id=None):
+    def can_speak(
+        self, guild_id, channel_id, user_id=None, role_ids=None, group_ids=None
+    ):
         return self.policy_api.evaluate(
             "chat",
             "chat.can_speak",
             guild_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,
+            role_ids=role_ids,
+            group_ids=group_ids,
             default=True,
         )
 
-    def should_respond_all(self, guild_id, channel_id, user_id=None):
+    def should_respond_all(
+        self,
+        guild_id,
+        channel_id,
+        user_id=None,
+        role_ids=None,
+        group_ids=None,
+    ):
         return self.policy_api.evaluate(
             "chat",
             "chat.respond_all",
             guild_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,
+            role_ids=role_ids,
+            group_ids=group_ids,
             default=False,
         )
 
-    def is_command_allowed(self, guild_id, channel_id, command, user_id=None):
+    def is_command_allowed(
+        self,
+        guild_id,
+        channel_id,
+        command,
+        user_id=None,
+        role_ids=None,
+        group_ids=None,
+    ):
         command_name = normalize_command_name(command)
         if not command_name:
             return True
@@ -379,6 +532,8 @@ class ChannelPolicies:
             guild_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,
+            role_ids=role_ids,
+            group_ids=group_ids,
             default=True,
         )
 
