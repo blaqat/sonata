@@ -93,7 +93,8 @@ nest_asyncio.apply()
 if not discord.opus.is_loaded():
     # The 'libopus.so' path might need to be adjusted based on your installation
     # discord.opus.load_opus("/usr/lib/x86_64-linux-gnu/libopus.so")
-    discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.6.1/lib/libopus.0.dylib")
+    # discord.opus.load_opus("/opt/homebrew/Cellar/opus/1.6.1/lib/libopus.0.dylib")
+    pass
 
 
 PROMPT = """
@@ -337,7 +338,7 @@ def Grok(client: XAIClient, prompt, model, config):
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-5-mini-2025-08-07",
+    model="gpt-5.4-mini",
     # model="gpt-5.2-2025-12-11",
 )
 def OpenAI(client, prompt, model, config):
@@ -345,8 +346,6 @@ def OpenAI(client, prompt, model, config):
     images = config.get("images", False)
 
     if images:
-        # if model != "gpt-4o":
-        #     model = "gpt-4-vision-preview"
         images = [
             {"type": "image_url", "image_url": {"url": url}}
             for url in images
