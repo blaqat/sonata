@@ -16,7 +16,7 @@ async def process_commands(
     If the message author is a bot and not in the whitelist, it will not process the commands
     Otherwise, it will process the commands as normal
     """
-    if message.author.bot and message.author.name not in bot_whitelist:
+    if message.author.bot and (not bot_whitelist or message.author.name not in bot_whitelist):
         return
 
     ctx = await self.get_context(message)
