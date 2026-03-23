@@ -6,6 +6,7 @@ Additionally, you can set favorite channels and users to easily interact with th
 """
 
 import asyncio
+import hashlib
 import os
 import sys
 import discord
@@ -97,6 +98,99 @@ class LocalTerminalIO(TerminalIO):
 
 
 LOCAL_IO = LocalTerminalIO()
+
+CHAT_NAME_PALETTE = (
+    (255, 129, 182),
+    (127, 73, 255),
+    (121, 192, 255),
+    (126, 231, 135),
+    (242, 204, 96),
+    (118, 227, 234),
+    (255, 161, 152),
+    (188, 140, 255),
+)
+CHAT_ROLE_COLORS = {
+    "Bot": (127, 73, 255),
+    "System": (242, 204, 96),
+}
+
+
+def _ansi(text: str, *codes) -> str:
+    if not codes:
+        return text
+    return f"\033[{';'.join(str(code) for code in codes)}m{text}\033[0m"
+
+
+def _display_name(author) -> str:
+    return (
+        getattr(author, "display_name", None)
+        or getattr(author, "name", None)
+        or str(author)
+    )
+
+
+def _reply_details(replying_to) -> tuple[str | None, str]:
+    if replying_to is None:
+        return None, ""
+    if isinstance(replying_to, tuple):
+        author = replying_to[0] if len(replying_to) > 0 else None
+        content = replying_to[1] if len(replying_to) > 1 else ""
+        return (str(author) if author is not None else None), str(content or "")
+    reply_author = getattr(replying_to, "author", None)
+    return _display_name(reply_author), str(getattr(replying_to, "content", "") or "")
+
+
+def _name_rgb(author, author_name: str) -> tuple[int, int, int]:
+    color = getattr(author, "color", None)
+    if color is not None and hasattr(color, "to_rgb"):
+        rgb = tuple(color.to_rgb())
+        if any(rgb):
+            return rgb
+    digest = hashlib.sha1(author_name.encode("utf-8")).digest()
+    return CHAT_NAME_PALETTE[digest[0] % len(CHAT_NAME_PALETTE)]
+
+
+def _color_name(author, author_name: str) -> str:
+    return _ansi(author_name, 1, 38, 2, *_name_rgb(author, author_name))
+
+
+def _indent_message(text: str, indent: str = "    ") -> str:
+    return text.replace("\n", "\n" + indent)
+
+
+def _reply_preview(text: str, limit: int = 120) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= limit:
+        return single_line
+    return single_line[: limit - 3] + "..."
+
+
+def format_term_console_chat_line(
+    chat_id, message_type, author, message, replying_to=None
+) -> str:
+    author_name = _display_name(author)
+    scope = _ansi(f"[chat:{chat_id}]", 2, 38, 2, 129, 102, 109)
+    role = ""
+    if message_type in CHAT_ROLE_COLORS:
+        role = _ansi(
+            f"[{message_type.lower()}]",
+            1,
+            38,
+            2,
+            *CHAT_ROLE_COLORS[message_type],
+        ) + " "
+    body = _indent_message("" if message is None else str(message))
+    line = f"{scope} {role}{_color_name(author, author_name)}: {body}"
+    reply_author, reply_content = _reply_details(replying_to)
+    if reply_author is not None:
+        line += (
+            "\n"
+            + _ansi("  ↪ ", 2, 38, 2, 129, 102, 109)
+            + _color_name(reply_author, reply_author)
+            + ": "
+            + _ansi(_reply_preview(reply_content), 2, 38, 2, 129, 102, 109)
+        )
+    return line
 
 
 def _stdin_available():
@@ -358,15 +452,13 @@ def save_recent_message(_, chat_id, message_type, author, message, replying_to=N
 @MANAGER.effect("chat", "set", prepend=False)
 def mirror_chat_to_term_console(_, chat_id, message_type, author, message, replying_to=None):
     """Mirror chat activity into the term console output feed."""
-    author_name = getattr(author, "display_name", None) or getattr(author, "name", None)
-    author_name = author_name or str(author)
-    preview = "" if message is None else str(message)
-    if replying_to is not None:
-        reply_author = getattr(replying_to.author, "display_name", None) or getattr(
-            replying_to.author, "name", None
-        )
-        preview = f"↪ @{reply_author or replying_to.author}: {preview}"
-    line = f"[chat:{chat_id}] {message_type} {author_name}: {preview}"
+    line = format_term_console_chat_line(
+        chat_id,
+        message_type,
+        author,
+        message,
+        replying_to=replying_to,
+    )
     try:
         loop = asyncio.get_running_loop()
         loop.create_task(TERM_CONSOLE.emit_output(line, stream="chat"))

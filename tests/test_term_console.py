@@ -1,4 +1,5 @@
 import asyncio
+import importlib.util
 import pathlib
 import sys
 import unittest
@@ -9,6 +10,15 @@ if str(repo_root / "src") not in sys.path:
     sys.path.insert(0, str(repo_root / "src"))
 
 from modules.term_console import TerminalConsole, _trim_base_path
+
+
+def _load_term_commands_module():
+    module_path = repo_root / "src" / "modules" / "plugins" / "term-commands.py"
+    spec = importlib.util.spec_from_file_location("term_commands_plugin", module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 class TerminalConsoleTests(unittest.IsolatedAsyncioTestCase):
@@ -70,6 +80,35 @@ class TermConsoleRouteTests(unittest.TestCase):
             "/api/session",
         )
         self.assertIsNone(_trim_base_path("/other", "/term-console"))
+
+
+class TermConsoleChatFormattingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.term_commands = _load_term_commands_module()
+
+    def test_chat_line_uses_ansi_name_colors(self):
+        line = self.term_commands.format_term_console_chat_line(
+            42,
+            "User",
+            "Alice",
+            "hello world",
+        )
+        self.assertIn("[chat:42]", line)
+        self.assertIn("\033[1;38;2;", line)
+        self.assertIn("Alice", line)
+
+    def test_chat_line_includes_reply_context(self):
+        line = self.term_commands.format_term_console_chat_line(
+            42,
+            "Bot",
+            "sonata",
+            "reply body",
+            replying_to=("Bob", "previous message that should be previewed"),
+        )
+        self.assertIn("[bot]", line)
+        self.assertIn("↪", line)
+        self.assertIn("Bob", line)
 
 
 if __name__ == "__main__":

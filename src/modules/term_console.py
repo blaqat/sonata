@@ -761,6 +761,10 @@ def _html_page(base_path: str) -> str:
       font-size: 12px;
       line-height: 1.45;
     }
+    .hint.error {
+      color: #bb314a;
+      font-weight: 700;
+    }
     .footer-row {
       display: flex;
       justify-content: space-between;
@@ -889,6 +893,7 @@ def _html_page(base_path: str) -> str:
       <div class="console">
         <div id="loginCard" class="stack">
           <div class="hint">Authenticate with the shared secret to access the live console.</div>
+          <div class="hint hidden" id="authMessage"></div>
           <form id="loginForm">
             <input id="secret" type="password" placeholder="Shared secret" autocomplete="current-password">
             <button class="sendbtn" type="submit">Sign In</button>
@@ -917,6 +922,7 @@ def _html_page(base_path: str) -> str:
     const actionBar = document.getElementById('actionBar');
     const loginCard = document.getElementById('loginCard');
     const consoleCard = document.getElementById('consoleCard');
+    const authMessage = document.getElementById('authMessage');
     const loginForm = document.getElementById('loginForm');
     const secretInput = document.getElementById('secret');
     const logEl = document.getElementById('log');
@@ -930,10 +936,31 @@ def _html_page(base_path: str) -> str:
     const reverseToggle = document.getElementById('reverseToggle');
     const runButton = document.getElementById('runButton');
     let eventSource = null;
-    let state = { authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] };
+    const blankState = () => ({ authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] });
+    let state = blankState();
 
-    function setMessage(text) {
-      if (!text || !state.authenticated) return;
+    function setAuthMessage(text, tone='info') {
+      authMessage.textContent = text || '';
+      authMessage.classList.toggle('hidden', !text);
+      authMessage.classList.toggle('error', tone === 'error');
+    }
+
+    function resetClientState(message='') {
+      if (eventSource) eventSource.close();
+      eventSource = null;
+      state = blankState();
+      logEl.innerHTML = '';
+      commandInput.value = '';
+      setAuthMessage(message, message ? 'error' : 'info');
+      syncUi();
+    }
+
+    function setMessage(text, tone='info') {
+      if (!text) return;
+      if (!state.authenticated) {
+        setAuthMessage(text, tone);
+        return;
+      }
       appendLine(`[status] ${text}`, 'meta');
     }
 
@@ -985,6 +1012,27 @@ def _html_page(base_path: str) -> str:
       return colors[code] || null;
     }
 
+    function ansi256Color(code) {
+      if (code < 0 || code > 255) return null;
+      const system = {
+        0: '#000000', 1: '#800000', 2: '#008000', 3: '#808000',
+        4: '#000080', 5: '#800080', 6: '#008080', 7: '#c0c0c0',
+        8: '#808080', 9: '#ff0000', 10: '#00ff00', 11: '#ffff00',
+        12: '#0000ff', 13: '#ff00ff', 14: '#00ffff', 15: '#ffffff',
+      };
+      if (code in system) return system[code];
+      if (code >= 232) {
+        const channel = 8 + (code - 232) * 10;
+        return `rgb(${channel}, ${channel}, ${channel})`;
+      }
+      const index = code - 16;
+      const steps = [0, 95, 135, 175, 215, 255];
+      const r = steps[Math.floor(index / 36) % 6];
+      const g = steps[Math.floor(index / 6) % 6];
+      const b = steps[index % 6];
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
     function applyAnsiCode(style, code) {
       if (code === 0) return resetStyle();
       const next = cloneStyle(style);
@@ -1002,8 +1050,34 @@ def _html_page(base_path: str) -> str:
       return next;
     }
 
+    function applyAnsiCodes(style, codes) {
+      let next = cloneStyle(style);
+      for (let index = 0; index < codes.length; index += 1) {
+        const code = codes[index];
+        if ((code === 38 || code === 48) && index + 1 < codes.length) {
+          const target = code === 38 ? 'color' : 'background';
+          const mode = codes[index + 1];
+          if (mode === 2 && index + 4 < codes.length) {
+            const r = codes[index + 2];
+            const g = codes[index + 3];
+            const b = codes[index + 4];
+            next[target] = `rgb(${r}, ${g}, ${b})`;
+            index += 4;
+            continue;
+          }
+          if (mode === 5 && index + 2 < codes.length) {
+            next[target] = ansi256Color(codes[index + 2]);
+            index += 2;
+            continue;
+          }
+        }
+        next = applyAnsiCode(next, code);
+      }
+      return next;
+    }
+
     function ansiToHtml(text) {
-      const pattern = /\x1b\[([0-9;]*)m/g;
+      const pattern = /\x1b\\[([0-9;]*)m/g;
       let style = resetStyle();
       let rendered = '';
       let lastIndex = 0;
@@ -1016,7 +1090,7 @@ def _html_page(base_path: str) -> str:
           rendered += `<span${classes ? ` class="${classes}"` : ''}${css ? ` style="${css}"` : ''}>${escapeHtml(chunk)}</span>`;
         }
         const codes = (match[1] || '0').split(';').filter(Boolean).map(Number);
-        for (const code of (codes.length ? codes : [0])) style = applyAnsiCode(style, code);
+        style = applyAnsiCodes(style, codes.length ? codes : [0]);
         lastIndex = pattern.lastIndex;
       }
       const tail = text.slice(lastIndex);
@@ -1052,15 +1126,18 @@ def _html_page(base_path: str) -> str:
       loginCard.classList.toggle('hidden', signedIn);
       consoleCard.classList.toggle('hidden', !signedIn);
       actionBar.classList.toggle('hidden', !signedIn);
+      controllerStatus.classList.toggle('hidden', !signedIn);
       connectionStatus.textContent = signedIn
         ? (eventSource ? 'Connected' : 'Reconnecting...')
         : 'Signed out';
       controllerStatus.textContent = state.is_controller ? 'You own control' : (state.controller_id ? 'Another session owns control' : 'No control');
       controllerStatus.className = 'status-pill ' + (state.is_controller ? 'ok' : 'warn');
+      controllerStatus.classList.toggle('hidden', !signedIn);
       const blocked = !signedIn || !state.is_controller || (state.busy && !state.pending_prompt);
       runButton.disabled = blocked;
       commandInput.disabled = blocked;
       takeoverBtn.disabled = !signedIn;
+      if (signedIn) setAuthMessage('');
       if (state.pending_prompt) {
         commandForm.classList.add('prompting');
         commandInput.placeholder = state.pending_prompt.text || 'Enter follow-up input...';
@@ -1137,35 +1214,40 @@ def _html_page(base_path: str) -> str:
     }
 
     async function loadSession() {
-      let data = await api('/api/session', { method: 'GET' });
-      state = { ...state, ...data, authenticated: true };
-      if (!state.is_controller) {
-        try {
-          await ensureControl();
-          data = await api('/api/session', { method: 'GET' });
-          state = { ...state, ...data, authenticated: true };
-        } catch (err) {
-          setMessage(err.message);
+      try {
+        let data = await api('/api/session', { method: 'GET' });
+        state = { ...state, ...data, authenticated: true };
+        if (!state.is_controller) {
+          try {
+            await ensureControl();
+            data = await api('/api/session', { method: 'GET' });
+            state = { ...state, ...data, authenticated: true };
+          } catch (err) {
+            setMessage(err.message, 'error');
+          }
         }
+        resetLog(state.history || []);
+        connectEvents();
+        syncUi();
+        setMessage(state.is_controller ? 'Connected and in control.' : 'Connected, but another session currently owns control.');
+      } catch (err) {
+        resetClientState(err.message === 'Authentication required.' ? '' : err.message);
+        throw err;
       }
-      resetLog(state.history || []);
-      connectEvents();
-      syncUi();
-      setMessage(state.is_controller ? 'Connected and in control.' : 'Connected, but another session currently owns control.');
     }
 
     loginForm.addEventListener('submit', async (event) => {
       event.preventDefault();
+      setAuthMessage('');
       try {
         await api('/api/login', {
           method: 'POST',
           body: JSON.stringify({ secret: secretInput.value }),
         });
         secretInput.value = '';
-        state.authenticated = true;
         await loadSession();
       } catch (err) {
-        setMessage(err.message);
+        setMessage(err.message, 'error');
       }
     });
 
@@ -1187,7 +1269,14 @@ def _html_page(base_path: str) -> str:
         commandInput.value = '';
         setMessage(result.message || (state.pending_prompt ? 'Prompt submitted.' : 'Command sent.'));
       } catch (err) {
-        setMessage(err.message);
+        setMessage(err.message, 'error');
+      }
+    });
+
+    commandInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
+        event.preventDefault();
+        commandForm.requestSubmit();
       }
     });
 
@@ -1197,27 +1286,21 @@ def _html_page(base_path: str) -> str:
         setMessage(result.message);
         await loadSession();
       } catch (err) {
-        setMessage(err.message);
+        setMessage(err.message, 'error');
       }
     });
 
     logoutBtn.addEventListener('click', async () => {
       try { await api('/api/logout', { method: 'POST', body: JSON.stringify({}) }); } catch (_err) {}
-      if (eventSource) eventSource.close();
-      eventSource = null;
-      state = { authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] };
-      syncUi();
+      resetClientState();
     });
 
     clearBtn.addEventListener('click', async () => {
       try {
-        const result = await api('/api/debug/clear-sessions', { method: 'POST', body: JSON.stringify({}) });
-        if (eventSource) eventSource.close();
-        eventSource = null;
-        state = { authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] };
-        syncUi();
+        await api('/api/debug/clear-sessions', { method: 'POST', body: JSON.stringify({}) });
+        resetClientState();
       } catch (err) {
-        setMessage(err.message);
+        setMessage(err.message, 'error');
       }
     });
 
@@ -1225,7 +1308,8 @@ def _html_page(base_path: str) -> str:
       resetLog(state.history || []);
     });
 
-    loadSession().catch(() => syncUi());
+    resetClientState();
+    loadSession().catch(() => {});
   </script>
 </body>
 </html>""".replace("__BASE_PATH__", json.dumps(safe_base))
