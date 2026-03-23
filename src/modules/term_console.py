@@ -1117,8 +1117,7 @@ def _html_page(base_path: str) -> str:
 
     function resetLog(history) {
       logEl.innerHTML = '';
-      const ordered = reverseToggle.checked ? [...history].reverse() : history;
-      ordered.forEach((event) => handleEvent(event, true));
+      history.forEach((event) => handleEvent(event, true));
     }
 
     function syncUi() {
