@@ -1,5 +1,6 @@
 import importlib.util
 import pathlib
+import re
 import sys
 import types
 import unittest
@@ -102,6 +103,7 @@ def load_term_commands_module():
 
 
 term_commands = load_term_commands_module()
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class TermCommandRegistryTests(unittest.TestCase):
@@ -138,8 +140,8 @@ class TermCommandRegistryTests(unittest.TestCase):
             "a": {"func": nodesc, "description": None},
         }
         lines = term_commands._build_help_lines(commands)
-        self.assertEqual(lines[0], "a: No description available.")
-        self.assertEqual(lines[1], "b: No description available.")
+        self.assertEqual(ANSI_RE.sub("", lines[0]).strip(), "a: No description available.")
+        self.assertEqual(ANSI_RE.sub("", lines[1]).strip(), "b: No description available.")
 
 
 if __name__ == "__main__":
