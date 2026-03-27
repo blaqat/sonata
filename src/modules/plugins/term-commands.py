@@ -8,12 +8,16 @@ Additionally, you can set favorite channels and users to easily interact with th
 import asyncio
 import hashlib
 import os
+import re
 import sys
+from random import randint
+
 import discord
+
 from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
-    parse_bool,
     format_channel_policy,
+    parse_bool,
     parse_channel_reference,
 )
 from modules.term_console import (
@@ -26,19 +30,24 @@ from modules.term_console import (
 )
 from modules.utils import (
     Colors,
+    E,
     cstrs,
     get_reference_chain,
     setter,
-    async_cprint as base_cprint,
-    async_print as base_print,
-    prompt as terminal_prompt,
-    editable_prompt as terminal_editable_prompt,
-    E,
     settings,
 )
-from random import randint
-import re
-
+from modules.utils import (
+    async_cprint as base_cprint,
+)
+from modules.utils import (
+    async_print as base_print,
+)
+from modules.utils import (
+    editable_prompt as terminal_editable_prompt,
+)
+from modules.utils import (
+    prompt as terminal_prompt,
+)
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
@@ -172,13 +181,16 @@ def format_term_console_chat_line(
     scope = _ansi(f"[chat:{chat_id}]", 2, 38, 2, 129, 102, 109)
     role = ""
     if message_type in CHAT_ROLE_COLORS:
-        role = _ansi(
-            f"[{message_type.lower()}]",
-            1,
-            38,
-            2,
-            *CHAT_ROLE_COLORS[message_type],
-        ) + " "
+        role = (
+            _ansi(
+                f"[{message_type.lower()}]",
+                1,
+                38,
+                2,
+                *CHAT_ROLE_COLORS[message_type],
+            )
+            + " "
+        )
     body = _indent_message("" if message is None else str(message))
     line = f"{scope} {role}{_color_name(author, author_name)}: {body}"
     reply_author, reply_content = _reply_details(replying_to)
@@ -338,6 +350,7 @@ async def _ensure_term_web_server(client, manager):
         "yellow",
     )
 
+
 """
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
@@ -376,9 +389,8 @@ async def term_handler(Data_Manager: AI_Manager, client):
             if type(old_instructions) == str:
                 instructions = old_instructions + emoji_instructions
             else:
-                instructions = (
-                    lambda *args, **kwargs: old_instructions(*args, **kwargs)
-                    + emoji_instructions
+                instructions = lambda *args, **kwargs: (
+                    old_instructions(*args, **kwargs) + emoji_instructions
                 )
 
             Data_Manager.prompt_manager.set_instructions(
@@ -451,7 +463,9 @@ def save_recent_message(_, chat_id, message_type, author, message, replying_to=N
 
 
 @MANAGER.effect("chat", "set", prepend=False)
-def mirror_chat_to_term_console(_, chat_id, message_type, author, message, replying_to=None):
+def mirror_chat_to_term_console(
+    _, chat_id, message_type, author, message, replying_to=None
+):
     """Mirror chat activity into the term console output feed."""
     line = format_term_console_chat_line(
         chat_id,
@@ -701,8 +715,9 @@ MANAGER.remember(
         else M["value"]
     ),
     add=lambda M, emoji: M["value"].append(emoji),
-    list_id=lambda M: "EmojiIndex: "
-    + ", ".join([str(e.id if e.id else e.e) for e in M["value"]]),
+    list_id=lambda M: (
+        "EmojiIndex: " + ", ".join([str(e.id if e.id else e.e) for e in M["value"]])
+    ),
     list_name=lambda M: "EmojiIndex: " + ", ".join([e.name for e in M["value"]]),
     list=lambda M: "EmojiIndex: " + ", ".join(get_emojis(M["value"])),
 )
@@ -834,7 +849,12 @@ async def manage_channel_policies(mem, bot, manager):
         if error:
             cprint(error, "red")
             return
-        cprint(format_channel_policy(channel.id, chat.policy_manager.get_channel_policy(channel.id)), "yellow")
+        cprint(
+            format_channel_policy(
+                channel.id, chat.policy_manager.get_channel_policy(channel.id)
+            ),
+            "yellow",
+        )
         return
 
     if action == "remove":
@@ -1103,8 +1123,10 @@ async def ai():
     """Set the AI type for the bot"""
     ai = await prompt(
         "Enter AI name: ",
-        exit_if=lambda x: x
-        not in ("OpenAI", "Claude", "Mistral", "Assistant", "Gemini", "Perplexity"),
+        exit_if=lambda x: (
+            x
+            not in ("OpenAI", "Claude", "Mistral", "Assistant", "Gemini", "Perplexity")
+        ),
         exit_msg="Invalid AI",
     )
 
@@ -1415,7 +1437,7 @@ async def print_channel_history(mem, bot, manager):
 @MANAGER.term("sc")
 async def save_chat():
     """Save the current chat state"""
-    MANAGER.MANAGER.chat.save("chat", "value", module=True)
+    MANAGER.MANAGER.save("chat", "value", module=True)
 
 
 @MANAGER.term("cmd")

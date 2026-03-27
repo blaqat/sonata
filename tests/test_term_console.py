@@ -90,6 +90,22 @@ class TerminalConsoleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snapshot["history"][-1]["stream"], "stderr")
         self.assertEqual(snapshot["history"][-1]["text"], "Invalid conversion")
 
+    async def test_editable_prompt_payload_includes_current_text(self):
+        console = TerminalConsole()
+        await console.set_controller("alpha")
+
+        waiter = asyncio.create_task(
+            console.request_prompt("alpha", "Edit message:", editable=True, current="hello world")
+        )
+        await asyncio.sleep(0)
+        snapshot = console.snapshot_for("alpha")
+        self.assertTrue(snapshot["pending_prompt"]["editable"])
+        self.assertEqual(snapshot["pending_prompt"]["current"], "hello world")
+
+        pending = console.pending_prompts["alpha"]
+        await console.submit_prompt_response("alpha", pending.prompt_id, "edited")
+        await waiter
+
 
 class TermConsoleRouteTests(unittest.TestCase):
     def test_trim_base_path(self):
@@ -118,11 +134,25 @@ class TermConsoleRouteTests(unittest.TestCase):
         self.assertIn("commandInput.dataset.promptId !== state.pending_prompt.prompt_id", page)
         self.assertIn("commandInput.value = state.pending_prompt.current ?? '';", page)
 
+    def test_html_styles_editable_prompts_green(self):
+        page = _html_page("/")
+        self.assertIn(".composer.editable-prompt textarea {", page)
+        self.assertIn("border-color: #4cb782;", page)
+        self.assertIn("commandForm.classList.toggle('editable-prompt', isEditablePrompt);", page)
+
+    def test_html_selects_existing_text_for_editable_prompts(self):
+        page = _html_page("/")
+        self.assertIn("if (event.prompt.editable) {", page)
+        self.assertIn("commandInput.setSelectionRange(0, commandInput.value.length);", page)
+
     def test_html_submits_raw_textarea_value(self):
         page = _html_page("/")
         self.assertIn("const rawValue = commandInput.value;", page)
+        self.assertIn("const submittedPromptId = state.pending_prompt ? state.pending_prompt.prompt_id : null;", page)
         self.assertIn("if (!rawValue.trim()) return;", page)
         self.assertIn('JSON.stringify({ prompt_id: state.pending_prompt.prompt_id, value: rawValue })', page)
+        self.assertIn("const pendingPromptChanged = state.pending_prompt && state.pending_prompt.prompt_id !== submittedPromptId;", page)
+        self.assertIn("if (!pendingPromptChanged) {", page)
 
 
 class TermConsoleChatFormattingTests(unittest.TestCase):

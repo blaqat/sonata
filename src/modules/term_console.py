@@ -850,6 +850,10 @@ def _html_page(base_path: str) -> str:
       background: #fff0fb;
       border-color: var(--purple);
     }
+    .composer.editable-prompt textarea {
+      background: #f2fff1;
+      border-color: #4cb782;
+    }
     .sendbtn {
       appearance: none;
       border: 3px solid var(--line);
@@ -1132,6 +1136,7 @@ def _html_page(base_path: str) -> str:
 
     function syncUi() {
       const signedIn = !!state.authenticated;
+      const isEditablePrompt = !!(state.pending_prompt && state.pending_prompt.editable);
       loginCard.classList.toggle('hidden', signedIn);
       consoleCard.classList.toggle('hidden', !signedIn);
       actionBar.classList.toggle('hidden', !signedIn);
@@ -1149,6 +1154,7 @@ def _html_page(base_path: str) -> str:
       if (signedIn) setAuthMessage('');
       if (state.pending_prompt) {
         commandForm.classList.add('prompting');
+        commandForm.classList.toggle('editable-prompt', isEditablePrompt);
         commandInput.placeholder = state.pending_prompt.text || 'Enter follow-up input...';
         runButton.textContent = 'Reply';
         if (commandInput.dataset.promptId !== state.pending_prompt.prompt_id) {
@@ -1157,6 +1163,7 @@ def _html_page(base_path: str) -> str:
         }
       } else {
         commandForm.classList.remove('prompting');
+        commandForm.classList.remove('editable-prompt');
         commandInput.placeholder = 'Send a term-command...';
         runButton.textContent = 'Send';
         delete commandInput.dataset.promptId;
@@ -1218,7 +1225,11 @@ def _html_page(base_path: str) -> str:
         setTimeout(() => {
           commandInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
           commandInput.focus();
-          commandInput.setSelectionRange(commandInput.value.length, commandInput.value.length);
+          if (event.prompt.editable) {
+            commandInput.setSelectionRange(0, commandInput.value.length);
+          } else {
+            commandInput.setSelectionRange(commandInput.value.length, commandInput.value.length);
+          }
         }, 0);
       }
       if (event.type === 'prompt_resolved') {
@@ -1269,6 +1280,7 @@ def _html_page(base_path: str) -> str:
     commandForm.addEventListener('submit', async (event) => {
       event.preventDefault();
       const rawValue = commandInput.value;
+      const submittedPromptId = state.pending_prompt ? state.pending_prompt.prompt_id : null;
       if (!rawValue.trim()) return;
       try {
         await ensureControl();
@@ -1281,7 +1293,10 @@ def _html_page(base_path: str) -> str:
               method: 'POST',
               body: JSON.stringify({ command: rawValue }),
             });
-        commandInput.value = '';
+        const pendingPromptChanged = state.pending_prompt && state.pending_prompt.prompt_id !== submittedPromptId;
+        if (!pendingPromptChanged) {
+          commandInput.value = '';
+        }
         setMessage(result.message || (state.pending_prompt ? 'Prompt submitted.' : 'Command sent.'));
       } catch (err) {
         setMessage(err.message, 'error');
