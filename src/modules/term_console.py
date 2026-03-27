@@ -277,6 +277,16 @@ class WebTerminalIO(TerminalIO):
 def _apply_prompt_rules(value, convert, exit_if, exit_msg, exit_callback):
     from modules.utils import E, async_cprint
 
+    def _emit_prompt_error(message: str):
+        async_cprint(message, "red")
+        io = CURRENT_IO.get()
+        if isinstance(io, WebTerminalIO):
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(io.console.emit_output(message, stream="stderr"))
+            except RuntimeError:
+                pass
+
     if value == "exit":
         if exit_callback is not None:
             exit_callback()
@@ -284,11 +294,11 @@ def _apply_prompt_rules(value, convert, exit_if, exit_msg, exit_callback):
     if convert is not None:
         value = convert(value)
         if value is None:
-            async_cprint(exit_msg or "Invalid conversion", "red")
+            _emit_prompt_error(exit_msg or "Invalid conversion")
             raise E
     if exit_if is not None and exit_if(value):
         if exit_msg is not None:
-            async_cprint(exit_msg, "red")
+            _emit_prompt_error(exit_msg)
         raise E
     return value
 
@@ -908,7 +918,7 @@ def _html_page(base_path: str) -> str:
           <div class="footer-row">
             <div class="hint">Chat activity is mirrored here too so the terminal feed feels closer to the local experience.</div>
             <label class="toggle">
-              <input type="checkbox" id="reverseToggle">
+              <input type="checkbox" id="reverseToggle" checked>
               Newest first
             </label>
           </div>
@@ -1141,10 +1151,15 @@ def _html_page(base_path: str) -> str:
         commandForm.classList.add('prompting');
         commandInput.placeholder = state.pending_prompt.text || 'Enter follow-up input...';
         runButton.textContent = 'Reply';
+        if (commandInput.dataset.promptId !== state.pending_prompt.prompt_id) {
+          commandInput.dataset.promptId = state.pending_prompt.prompt_id;
+          commandInput.value = state.pending_prompt.current ?? '';
+        }
       } else {
         commandForm.classList.remove('prompting');
         commandInput.placeholder = 'Send a term-command...';
         runButton.textContent = 'Send';
+        delete commandInput.dataset.promptId;
       }
     }
 
@@ -1198,7 +1213,8 @@ def _html_page(base_path: str) -> str:
       if (event.type === 'prompt') {
         state.pending_prompt = event.prompt;
         appendLine(`[prompt] ${event.prompt.text || 'Follow-up input required.'}`, 'meta');
-        commandInput.value = event.prompt.current || '';
+        commandInput.dataset.promptId = event.prompt.prompt_id;
+        commandInput.value = event.prompt.current ?? '';
         setTimeout(() => {
           commandInput.scrollIntoView({ behavior: 'smooth', block: 'center' });
           commandInput.focus();
@@ -1252,18 +1268,18 @@ def _html_page(base_path: str) -> str:
 
     commandForm.addEventListener('submit', async (event) => {
       event.preventDefault();
-      const value = commandInput.value.trim();
-      if (!value) return;
+      const rawValue = commandInput.value;
+      if (!rawValue.trim()) return;
       try {
         await ensureControl();
         const result = state.pending_prompt
           ? await api('/api/prompt', {
               method: 'POST',
-              body: JSON.stringify({ prompt_id: state.pending_prompt.prompt_id, value }),
+              body: JSON.stringify({ prompt_id: state.pending_prompt.prompt_id, value: rawValue }),
             })
           : await api('/api/command', {
               method: 'POST',
-              body: JSON.stringify({ command: value }),
+              body: JSON.stringify({ command: rawValue }),
             });
         commandInput.value = '';
         setMessage(result.message || (state.pending_prompt ? 'Prompt submitted.' : 'Command sent.'));
@@ -1273,7 +1289,7 @@ def _html_page(base_path: str) -> str:
     });
 
     commandInput.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && event.shiftKey && !event.isComposing) {
+      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         commandForm.requestSubmit();
       }

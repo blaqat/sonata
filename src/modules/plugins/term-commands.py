@@ -210,10 +210,11 @@ def _console_print(text: str):
 
 
 def _console_cprint(text: str, *styles: str):
+    styled = cstrs(str(text), *styles)
     base_cprint(text, *styles)
     try:
         loop = asyncio.get_running_loop()
-        loop.create_task(TERM_CONSOLE.emit_output(str(text), stream="stdout"))
+        loop.create_task(TERM_CONSOLE.emit_output(styled, stream="stdout"))
     except RuntimeError:
         pass
 

@@ -9,7 +9,15 @@ repo_root = pathlib.Path(__file__).resolve().parents[1]
 if str(repo_root / "src") not in sys.path:
     sys.path.insert(0, str(repo_root / "src"))
 
-from modules.term_console import TerminalConsole, _trim_base_path
+from modules.term_console import (
+    TerminalConsole,
+    WebTerminalIO,
+    _apply_prompt_rules,
+    _html_page,
+    _trim_base_path,
+    bind_terminal_io,
+)
+from modules.utils import E
 
 
 def _load_term_commands_module():
@@ -69,6 +77,19 @@ class TerminalConsoleTests(unittest.IsolatedAsyncioTestCase):
         snapshot = console.snapshot_for("alpha")
         self.assertEqual(snapshot["history"][0]["text"], "hello")
 
+    async def test_prompt_validation_errors_emit_to_web_console(self):
+        console = TerminalConsole()
+        io = WebTerminalIO(console, "alpha")
+
+        with self.assertRaises(E):
+            async with bind_terminal_io(io):
+                _apply_prompt_rules("bad", lambda _: None, None, None, None)
+
+        await asyncio.sleep(0)
+        snapshot = console.snapshot_for("alpha")
+        self.assertEqual(snapshot["history"][-1]["stream"], "stderr")
+        self.assertEqual(snapshot["history"][-1]["text"], "Invalid conversion")
+
 
 class TermConsoleRouteTests(unittest.TestCase):
     def test_trim_base_path(self):
@@ -80,6 +101,28 @@ class TermConsoleRouteTests(unittest.TestCase):
             "/api/session",
         )
         self.assertIsNone(_trim_base_path("/other", "/term-console"))
+
+    def test_html_defaults_to_newest_first(self):
+        page = _html_page("/")
+        self.assertIn('<input type="checkbox" id="reverseToggle" checked>', page)
+
+    def test_html_uses_enter_to_submit_and_shift_enter_for_newline(self):
+        page = _html_page("/")
+        self.assertIn(
+            "if (event.key === 'Enter' && !event.shiftKey && !event.isComposing)",
+            page,
+        )
+
+    def test_html_initializes_edit_prompt_text_from_pending_prompt(self):
+        page = _html_page("/")
+        self.assertIn("commandInput.dataset.promptId !== state.pending_prompt.prompt_id", page)
+        self.assertIn("commandInput.value = state.pending_prompt.current ?? '';", page)
+
+    def test_html_submits_raw_textarea_value(self):
+        page = _html_page("/")
+        self.assertIn("const rawValue = commandInput.value;", page)
+        self.assertIn("if (!rawValue.trim()) return;", page)
+        self.assertIn('JSON.stringify({ prompt_id: state.pending_prompt.prompt_id, value: rawValue })', page)
 
 
 class TermConsoleChatFormattingTests(unittest.TestCase):
