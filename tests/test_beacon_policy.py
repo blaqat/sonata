@@ -168,6 +168,29 @@ class BeaconPolicyTests(unittest.TestCase):
             payload,
         )
 
+    def test_beacon_reactivates_namespace_on_reuse(self):
+        action = self.beacon._path_action(f"{self.beacon.home}/secret")
+        self.beacon.policy_api.set_rule(
+            "beacon",
+            "guild",
+            self.beacon_module.GLOBAL_POLICY_SCOPE_ID,
+            action,
+            "allow",
+        )
+        self.beacon.policy_api.unload_namespace("beacon")
+
+        beacon_class = self.beacon_module.beacon(self.sonata)
+        second_folder = f"beacon-policy-test-{uuid.uuid4().hex}"
+        reloaded = beacon_class(path=second_folder, key=b"test-key")
+        self.addCleanup(shutil.rmtree, reloaded.home, True)
+
+        self.assertTrue(
+            reloaded._resolve_encryption(
+                False,
+                f"{self.beacon.home}/secret",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

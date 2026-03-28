@@ -78,7 +78,9 @@ def beacon(sonata: AI_Manager):
             """Initialize the Beacon with a home folder and optional encryption key"""
             self.key = key
             self.policy_api = get_or_create_policy_api(sonata)
-            if not self.policy_api.has_namespace("beacon"):
+            if self.policy_api.has_namespace("beacon"):
+                self.policy_api.activate_namespace("beacon")
+            else:
                 self.policy_api.register_namespace("beacon", plugin=True)
             self.light_house(path, True)
 
