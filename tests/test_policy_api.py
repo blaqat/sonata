@@ -119,6 +119,177 @@ class PolicyApiTests(unittest.TestCase):
         self.assertTrue(api.evaluate("core", "core.feature.chat", guild_id=1))
         self.assertFalse(api.evaluate("core", "core.feature.chat", guild_id=2))
 
+    def test_manual_group_resolution_and_group_rule_eval(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.upsert_group("chat", "mods", members=["7"])
+        api.set_group_rule("chat", "mods", "chat.command.ban", "allow")
+
+        groups = api.resolve_groups("chat", user_id=7)
+        self.assertEqual(groups, ["chat:mods"])
+        self.assertTrue(
+            api.evaluate(
+                "chat",
+                "chat.command.ban",
+                user_id=7,
+            )
+        )
+
+    def test_role_derived_group_resolution(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.bind_group_role("chat", "admins", "role-admin")
+        api.set_group_rule("chat", "admins", "chat.command.shutdown", "allow")
+
+        groups = api.resolve_groups("chat", user_id=9, role_ids=["role-admin"])
+        self.assertEqual(groups, ["chat:admins"])
+        self.assertTrue(
+            api.evaluate(
+                "chat",
+                "chat.command.shutdown",
+                user_id=9,
+                role_ids=["role-admin"],
+            )
+        )
+
+    def test_mixed_group_membership_is_deterministic_with_deny_wins(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.upsert_group("chat", "mods", members=["7"])
+        api.upsert_group("chat", "muted", members=["7"])
+        api.set_group_rule("chat", "mods", "chat.command.kick", "allow")
+        api.set_group_rule("chat", "muted", "chat.command.kick", "deny")
+
+        self.assertFalse(api.evaluate("chat", "chat.command.kick", user_id=7))
+
+    def test_group_lookup_is_namespace_safe(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.register_namespace("beacon", plugin=True)
+        api.upsert_group("chat", "staff", members=["1"])
+        api.upsert_group("beacon", "staff", members=["2"])
+
+        self.assertEqual(api.resolve_groups("chat", user_id=1), ["chat:staff"])
+        self.assertEqual(api.resolve_groups("beacon", user_id=2), ["beacon:staff"])
+        self.assertEqual(api.resolve_groups("chat", user_id=2), [])
+
+    def test_role_lookup_failures_fail_closed(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.bind_group_role("chat", "admins", "role-admin")
+        api.set_group_rule("chat", "admins", "chat.command.shutdown", "allow")
+
+        def broken_resolver(namespace, user_id):
+            raise RuntimeError("role provider timeout")
+
+        api.set_role_resolver(broken_resolver)
+        self.assertFalse(api.evaluate("chat", "chat.command.shutdown", user_id=9))
+
+    def test_group_runtime_resolution_sanity(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.upsert_group("chat", "g1", members=["7"])
+        api.upsert_group("chat", "g2", members=["7"])
+        api.upsert_group("chat", "g3", role_ids=["role3"])
+
+        for _ in range(200):
+            groups = api.resolve_groups("chat", user_id=7, role_ids=["role3"])
+            self.assertEqual(groups, ["chat:g1", "chat:g2", "chat:g3"])
+
+    def test_direct_user_allow_deny(self):
+        policies = ChannelPolicies(FakeSonata())
+        policies.set_user_flag(5, "can_speak", False)
+        self.assertFalse(policies.can_speak(guild_id=1, channel_id=10, user_id=5))
+
+        policies.set_user_flag(5, "can_speak", True)
+        self.assertTrue(policies.can_speak(guild_id=1, channel_id=10, user_id=5))
+
+    def test_group_targeted_user_effects_apply(self):
+        policies = ChannelPolicies(FakeSonata())
+        policies.upsert_user_group("mods", members=["7"])
+        policies.deny_group_command("mods", "ban")
+
+        self.assertFalse(
+            policies.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=7,
+                command="ban",
+            )
+        )
+        self.assertTrue(
+            policies.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=8,
+                command="ban",
+            )
+        )
+
+    def test_user_rule_interacts_with_group_and_deny_wins(self):
+        policies = ChannelPolicies(FakeSonata())
+        policies.upsert_user_group("mods", members=["7"])
+        policies.deny_group_command("mods", "ban")
+        policies.allow_user_command(7, "ban")
+
+        self.assertFalse(
+            policies.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=7,
+                command="ban",
+            )
+        )
+
+    def test_group_state_persists_across_channel_policies_reload(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+        policies.upsert_user_group("mods", members=["7"], role_ids=["role-admin"])
+        policies.deny_group_command("mods", "ban")
+
+        sonata.policy_api = None
+        reloaded = ChannelPolicies(sonata)
+        self.assertEqual(
+            reloaded.policy_api.get_group("chat", "mods"),
+            {
+                "id": "chat:mods",
+                "members": ["7"],
+                "roles": ["role-admin"],
+            },
+        )
+        self.assertFalse(
+            reloaded.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=7,
+                command="ban",
+            )
+        )
+
+    def test_precedence_user_channel_guild_and_namespace_isolation(self):
+        api = PolicyAPI()
+        api.register_namespace("chat", plugin=True)
+        api.register_namespace("beacon", plugin=True)
+
+        api.set_rule("chat", "guild", 1, "chat.command.ping", "allow")
+        api.set_rule("chat", "channel", 2, "chat.command.ping", "allow")
+        api.set_rule("chat", "user", 3, "chat.command.ping", "deny")
+
+        self.assertFalse(
+            api.evaluate(
+                "chat", "chat.command.ping", guild_id=1, channel_id=2, user_id=3
+            )
+        )
+        self.assertFalse(
+            api.evaluate(
+                "beacon",
+                "chat.command.ping",
+                guild_id=1,
+                channel_id=2,
+                user_id=3,
+            )
+        )
+
     def test_channel_policy_behavior_migrates_via_policy_api(self):
         sonata = FakeSonata()
         policies = ChannelPolicies(sonata)
