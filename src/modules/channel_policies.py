@@ -182,6 +182,7 @@ class ChannelPolicies:
         self.sonata = sonata
         self.users = {}
         self.channels = {}
+        self.groups = {}
         self.loaded = False
         self.policy_api = get_or_create_policy_api(sonata)
         self._ensure_chat_namespace()
@@ -248,6 +249,8 @@ class ChannelPolicies:
             self._sync_user_scope(user_id, policy)
         for channel_id, policy in self.channels.items():
             self._sync_channel_scope(channel_id, policy)
+        for group_id, data in self.groups.items():
+            self._sync_group(group_id, data)
 
     def _normalize_users_map(self, users):
         if not isinstance(users, dict):
@@ -273,25 +276,104 @@ class ChannelPolicies:
     def _serialize_users(self):
         return {user_id: policy.to_dict() for user_id, policy in self.users.items()}
 
+    def _normalize_groups_map(self, groups):
+        if not isinstance(groups, dict):
+            return {}
+
+        normalized = {}
+        for group_id, data in groups.items():
+            group_key = str(group_id or "").strip().lower()
+            if not group_key:
+                continue
+            if not isinstance(data, dict):
+                data = {}
+            rules = []
+            for rule in data.get("rules", []):
+                if not isinstance(rule, dict):
+                    continue
+                action = str(rule.get("action") or "").strip().lower()
+                effect = str(rule.get("effect") or "").strip().lower()
+                if not action or effect not in {EFFECT_ALLOW, EFFECT_DENY}:
+                    continue
+                rules.append({"action": action, "effect": effect})
+            normalized[group_key] = {
+                "members": sorted(
+                    {str(member).strip() for member in data.get("members", []) if str(member).strip()}
+                ),
+                "roles": sorted(
+                    {str(role_id).strip() for role_id in data.get("roles", []) if str(role_id).strip()}
+                ),
+                "rules": rules,
+            }
+        return normalized
+
+    def _serialize_groups(self):
+        serialized = {}
+        for group_id in self.policy_api.list_groups("chat"):
+            group_name = self._group_name_from_id(group_id)
+            group_data = self.policy_api.get_group("chat", group_name) or {}
+            group_rules = self.policy_api.get_scope_rules("chat", "group", group_id)
+            serialized[group_id] = {
+                "members": group_data.get("members", []),
+                "roles": group_data.get("roles", []),
+                "rules": [
+                    {"action": rule.action, "effect": rule.effect}
+                    for rule in group_rules
+                ],
+            }
+        return serialized
+
+    def _group_name_from_id(self, group_id):
+        group_key = str(group_id or "").strip().lower()
+        if ":" in group_key:
+            return group_key.split(":", 1)[1]
+        return group_key
+
+    def _sync_group(self, group_id, data):
+        group_name = self._group_name_from_id(group_id)
+        self.policy_api.upsert_group(
+            "chat",
+            group_name,
+            members=data.get("members", []),
+            role_ids=data.get("roles", []),
+        )
+        self.policy_api.clear_scope("chat", "group", group_id)
+        for rule in data.get("rules", []):
+            self.policy_api.set_group_rule(
+                "chat",
+                group_name,
+                rule["action"],
+                rule["effect"],
+            )
+
     def _persist(self):
         serialized_channels = self._serialize_channels()
         serialized_users = self._serialize_users()
-        self.sonata.config.set(channels=serialized_channels, users=serialized_users)
+        serialized_groups = self._serialize_groups()
+        self.sonata.config.set(
+            channels=serialized_channels,
+            users=serialized_users,
+            groups=serialized_groups,
+        )
         if hasattr(self.sonata, "beacon"):
             policies_branch = self.sonata.beacon.branch("policies")
             policies_branch.illuminate("channels", serialized_channels)
             policies_branch.illuminate("users", serialized_users)
+            policies_branch.illuminate("groups", serialized_groups)
 
     def init(self):
         beacon_channels = {}
         beacon_users = {}
+        beacon_groups = {}
         if hasattr(self.sonata, "beacon"):
             policies_branch = self.sonata.beacon.branch("policies")
             beacon_channels = policies_branch.discover("channels") or {}
             beacon_users = policies_branch.discover("users") or {}
+            beacon_groups = policies_branch.discover("groups") or {}
 
         configured_channels = self.sonata.config.get("channels", {})
         configured_users = self.sonata.config.get("users", {})
+        configured_groups = self.sonata.config.get("groups", {})
 
         users = {}
         users.update(self._normalize_users_map(beacon_users))
@@ -301,8 +383,13 @@ class ChannelPolicies:
         channels.update(self._normalize_channels_map(beacon_channels))
         channels.update(self._normalize_channels_map(configured_channels))
 
+        groups = {}
+        groups.update(self._normalize_groups_map(beacon_groups))
+        groups.update(self._normalize_groups_map(configured_groups))
+
         self.users = users
         self.channels = channels
+        self.groups = groups
         self.loaded = True
         self._sync_policy_api()
         self._persist()
@@ -364,47 +451,65 @@ class ChannelPolicies:
         return policy.clone()
 
     def upsert_user_group(self, name, *, members=None, role_ids=None):
-        return self.policy_api.upsert_group(
+        group_id = self.policy_api.upsert_group(
             "chat",
             name,
             members=members,
             role_ids=role_ids,
         )
+        self.loaded = True
+        self._persist()
+        return group_id
 
     def remove_user_group(self, name):
-        return self.policy_api.remove_group("chat", name)
+        removed = self.policy_api.remove_group("chat", name)
+        self.loaded = True
+        self._persist()
+        return removed
 
     def allow_group_command(self, group_name, command):
         command_name = normalize_command_name(command)
         if not command_name:
             return None
-        return self.policy_api.set_group_rule(
+        rule = self.policy_api.set_group_rule(
             "chat", group_name, f"chat.command.{command_name}", EFFECT_ALLOW
         )
+        self.loaded = True
+        self._persist()
+        return rule
 
     def deny_group_command(self, group_name, command):
         command_name = normalize_command_name(command)
         if not command_name:
             return None
-        return self.policy_api.set_group_rule(
+        rule = self.policy_api.set_group_rule(
             "chat", group_name, f"chat.command.{command_name}", EFFECT_DENY
         )
+        self.loaded = True
+        self._persist()
+        return rule
 
     def allow_group_feature(self, group_name, action):
         action_name = str(action or "").strip().lower()
         if not action_name:
             return None
-        return self.policy_api.set_group_rule(
+        rule = self.policy_api.set_group_rule(
             "chat", group_name, action_name, EFFECT_ALLOW
         )
+        self.loaded = True
+        self._persist()
+        return rule
 
     def deny_group_feature(self, group_name, action):
         action_name = str(action or "").strip().lower()
         if not action_name:
             return None
-        return self.policy_api.set_group_rule(
+        rule = self.policy_api.set_group_rule(
             "chat", group_name, action_name, EFFECT_DENY
         )
+        self.loaded = True
+        self._persist()
+        return rule
 
     def get_channels(self):
         if not self.loaded:

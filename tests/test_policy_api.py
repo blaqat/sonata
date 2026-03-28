@@ -235,6 +235,31 @@ class PolicyApiTests(unittest.TestCase):
             )
         )
 
+    def test_group_state_persists_across_channel_policies_reload(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+        policies.upsert_user_group("mods", members=["7"], role_ids=["role-admin"])
+        policies.deny_group_command("mods", "ban")
+
+        sonata.policy_api = None
+        reloaded = ChannelPolicies(sonata)
+        self.assertEqual(
+            reloaded.policy_api.get_group("chat", "mods"),
+            {
+                "id": "chat:mods",
+                "members": ["7"],
+                "roles": ["role-admin"],
+            },
+        )
+        self.assertFalse(
+            reloaded.is_command_allowed(
+                guild_id=1,
+                channel_id=10,
+                user_id=7,
+                command="ban",
+            )
+        )
+
     def test_precedence_user_channel_guild_and_namespace_isolation(self):
         api = PolicyAPI()
         api.register_namespace("chat", plugin=True)
