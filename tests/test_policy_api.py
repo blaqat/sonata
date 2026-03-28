@@ -113,6 +113,12 @@ class PolicyApiTests(unittest.TestCase):
         api.unload_namespace("chat")
         self.assertTrue(api.evaluate("chat", "chat.command.help", channel_id=11))
 
+    def test_core_namespace_guild_rules_work_without_plugins(self):
+        api = PolicyAPI()
+        api.set_rule("core", "guild", 1, "core.feature.chat", "allow")
+        self.assertTrue(api.evaluate("core", "core.feature.chat", guild_id=1))
+        self.assertFalse(api.evaluate("core", "core.feature.chat", guild_id=2))
+
     def test_channel_policy_behavior_migrates_via_policy_api(self):
         sonata = FakeSonata()
         policies = ChannelPolicies(sonata)
@@ -193,6 +199,38 @@ class PolicyApiTests(unittest.TestCase):
                 user_id=7,
                 command="help",
             )
+        )
+
+    def test_guild_baseline_policy_applies_without_higher_scopes(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+
+        policies.set_guild_flag(1, "can_speak", False)
+        self.assertFalse(policies.can_speak(guild_id=1, channel_id=900, user_id=7))
+
+        policies.set_guild_flag(2, "respond_all", True)
+        self.assertTrue(
+            policies.should_respond_all(guild_id=2, channel_id=901, user_id=8)
+        )
+
+    def test_guild_deny_wins_over_higher_scope_allow(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+
+        policies.set_guild_flag(1, "can_speak", False)
+        policies.set_channel_flag(100, "can_speak", True)
+        self.assertFalse(policies.can_speak(guild_id=1, channel_id=100, user_id=7))
+
+    def test_guild_isolation_has_no_cross_guild_bleed(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+
+        policies.set_guild_flag(1, "respond_all", True)
+        self.assertTrue(
+            policies.should_respond_all(guild_id=1, channel_id=10, user_id=1)
+        )
+        self.assertFalse(
+            policies.should_respond_all(guild_id=2, channel_id=10, user_id=1)
         )
 
 
