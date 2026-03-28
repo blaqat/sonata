@@ -178,6 +178,23 @@ class PolicyApiTests(unittest.TestCase):
             )
         )
 
+    def test_channel_policies_reactivate_chat_namespace_on_reuse(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+        policies.deny_command(100, "help")
+
+        policies.policy_api.unload_namespace("chat")
+
+        reloaded = ChannelPolicies(sonata)
+        self.assertFalse(
+            reloaded.is_command_allowed(
+                guild_id=1,
+                channel_id=100,
+                user_id=7,
+                command="help",
+            )
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

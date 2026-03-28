@@ -187,6 +187,7 @@ class ChannelPolicies:
 
     def _ensure_chat_namespace(self):
         if self.policy_api.has_namespace("chat"):
+            self.policy_api.activate_namespace("chat")
             return
         self.policy_api.register_namespace(
             "chat",
