@@ -5,25 +5,49 @@ This plugin allows you to interact with the bot through the terminal. You can se
 Additionally, you can set favorite channels and users to easily interact with them.
 """
 
+import asyncio
+import hashlib
+import os
+import re
+import sys
+from random import randint
+
 import discord
+
 from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
-    parse_bool,
     format_channel_policy,
+    parse_bool,
     parse_channel_reference,
+)
+from modules.term_console import (
+    CURRENT_IO,
+    TermConsoleServer,
+    TerminalConsole,
+    TerminalIO,
+    WebTerminalIO,
+    bind_terminal_io,
 )
 from modules.utils import (
     Colors,
-    async_cprint as cprint,
-    async_print as print,
+    E,
     cstrs,
     get_reference_chain,
     setter,
+    settings,
 )
-import asyncio
-from random import randint
-import re
-from modules.utils import prompt, editable_prompt, E
+from modules.utils import (
+    async_cprint as base_cprint,
+)
+from modules.utils import (
+    async_print as base_print,
+)
+from modules.utils import (
+    editable_prompt as terminal_editable_prompt,
+)
+from modules.utils import (
+    prompt as terminal_prompt,
+)
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
@@ -34,6 +58,299 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
 __plugin_name__ = "term_commands"
 __dependencies__ = ["beacon", "chat"]
 
+TERM_CONSOLE = TerminalConsole()
+TERM_WEB_SERVER = None
+TERM_WEB_STARTED = False
+
+
+class LocalTerminalIO(TerminalIO):
+    session_id = "local-terminal"
+    label = "local-terminal"
+
+    async def prompt(
+        self,
+        text,
+        convert=None,
+        exit_if=None,
+        exit_msg=None,
+        color=None,
+        exit_callback=None,
+    ):
+        return await terminal_prompt(
+            text,
+            convert=convert,
+            exit_if=exit_if,
+            exit_msg=exit_msg,
+            color=color,
+            exit_callback=exit_callback,
+        )
+
+    async def editable_prompt(
+        self,
+        text: str,
+        current: str,
+        convert=None,
+        exit_if=None,
+        exit_msg=None,
+        color=None,
+        exit_callback=None,
+    ):
+        return await terminal_editable_prompt(
+            text,
+            current,
+            convert=convert,
+            exit_if=exit_if,
+            exit_msg=exit_msg,
+            color=color,
+            exit_callback=exit_callback,
+        )
+
+
+LOCAL_IO = LocalTerminalIO()
+
+CHAT_NAME_PALETTE = (
+    (255, 129, 182),
+    (127, 73, 255),
+    (121, 192, 255),
+    (126, 231, 135),
+    (242, 204, 96),
+    (118, 227, 234),
+    (255, 161, 152),
+    (188, 140, 255),
+)
+CHAT_ROLE_COLORS = {
+    "Bot": (127, 73, 255),
+    "System": (242, 204, 96),
+}
+
+
+def _ansi(text: str, *codes) -> str:
+    if not codes:
+        return text
+    return f"\033[{';'.join(str(code) for code in codes)}m{text}\033[0m"
+
+
+def _display_name(author) -> str:
+    return (
+        getattr(author, "display_name", None)
+        or getattr(author, "name", None)
+        or str(author)
+    )
+
+
+def _reply_details(replying_to) -> tuple[str | None, str]:
+    if replying_to is None:
+        return None, ""
+    if isinstance(replying_to, tuple):
+        author = replying_to[0] if len(replying_to) > 0 else None
+        content = replying_to[1] if len(replying_to) > 1 else ""
+        return (str(author) if author is not None else None), str(content or "")
+    reply_author = getattr(replying_to, "author", None)
+    return _display_name(reply_author), str(getattr(replying_to, "content", "") or "")
+
+
+def _name_rgb(author, author_name: str) -> tuple[int, int, int]:
+    color = getattr(author, "color", None)
+    if color is not None and hasattr(color, "to_rgb"):
+        rgb = tuple(color.to_rgb())
+        if any(rgb):
+            return rgb
+    digest = hashlib.sha1(author_name.encode("utf-8")).digest()
+    return CHAT_NAME_PALETTE[digest[0] % len(CHAT_NAME_PALETTE)]
+
+
+def _color_name(author, author_name: str) -> str:
+    return _ansi(author_name, 1, 38, 2, *_name_rgb(author, author_name))
+
+
+def _indent_message(text: str, indent: str = "    ") -> str:
+    return text.replace("\n", "\n" + indent)
+
+
+def _reply_preview(text: str, limit: int = 120) -> str:
+    single_line = " ".join(text.split())
+    if len(single_line) <= limit:
+        return single_line
+    return single_line[: limit - 3] + "..."
+
+
+def format_term_console_chat_line(
+    chat_id, message_type, author, message, replying_to=None
+) -> str:
+    author_name = _display_name(author)
+    scope = _ansi(f"[chat:{chat_id}]", 2, 38, 2, 129, 102, 109)
+    role = ""
+    if message_type in CHAT_ROLE_COLORS:
+        role = (
+            _ansi(
+                f"[{message_type.lower()}]",
+                1,
+                38,
+                2,
+                *CHAT_ROLE_COLORS[message_type],
+            )
+            + " "
+        )
+    body = _indent_message("" if message is None else str(message))
+    line = f"{scope} {role}{_color_name(author, author_name)}: {body}"
+    reply_author, reply_content = _reply_details(replying_to)
+    if reply_author is not None:
+        line += (
+            "\n"
+            + _ansi("  ↪ ", 2, 38, 2, 129, 102, 109)
+            + _color_name(reply_author, reply_author)
+            + ": "
+            + _ansi(_reply_preview(reply_content), 2, 38, 2, 129, 102, 109)
+        )
+    return line
+
+
+def _stdin_available():
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:
+        return False
+
+
+def _console_print(text: str):
+    base_print(text)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(TERM_CONSOLE.emit_output(text))
+    except RuntimeError:
+        pass
+
+
+def _console_cprint(text: str, *styles: str):
+    styled = cstrs(str(text), *styles)
+    base_cprint(text, *styles)
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(TERM_CONSOLE.emit_output(styled, stream="stdout"))
+    except RuntimeError:
+        pass
+
+
+def print(*args, sep=" ", **kwargs):
+    _console_print(sep.join(str(arg) for arg in args))
+
+
+def cprint(text: str, *styles: str, **kwargs):
+    _console_cprint(str(text), *styles)
+
+
+async def _emit_prompt_line(text: str, response: str | None = None):
+    label = str(text)
+    if label:
+        await TERM_CONSOLE.emit_output(label, stream="meta")
+    if response is not None:
+        await TERM_CONSOLE.emit_output(response, stream="meta")
+
+
+async def prompt(
+    text,
+    convert=None,
+    exit_if=None,
+    exit_msg=None,
+    color=None,
+    exit_callback=None,
+):
+    io = CURRENT_IO.get()
+    if io is None:
+        io = LOCAL_IO
+    value = await io.prompt(
+        text,
+        convert=convert,
+        exit_if=exit_if,
+        exit_msg=exit_msg,
+        color=color,
+        exit_callback=exit_callback,
+    )
+    await _emit_prompt_line(str(text), str(value))
+    return value
+
+
+async def editable_prompt(
+    text: str,
+    current: str,
+    convert=None,
+    exit_if=None,
+    exit_msg=None,
+    color=None,
+    exit_callback=None,
+):
+    io = CURRENT_IO.get()
+    if io is None:
+        io = LOCAL_IO
+    value = await io.editable_prompt(
+        text,
+        current,
+        convert=convert,
+        exit_if=exit_if,
+        exit_msg=exit_msg,
+        color=color,
+        exit_callback=exit_callback,
+    )
+    await _emit_prompt_line(str(text), str(value))
+    return value
+
+
+def _term_web_config():
+    secret = settings.TERM_WEB_SECRET
+    enabled = settings.TERM_WEB_ENABLED
+    if enabled is not None and enabled.lower() in {"0", "false", "no"}:
+        return None
+    if not secret:
+        return None
+    port = settings.TERM_WEB_PORT or settings.PORT or "8080"
+    return {
+        "secret": secret,
+        "host": settings.TERM_WEB_HOST or "0.0.0.0",
+        "port": int(port),
+        "base_path": settings.TERM_WEB_PATH or "/",
+    }
+
+
+async def _run_term_command(command_name: str, client, manager, io: TerminalIO | None):
+    async with bind_terminal_io(io):
+        try:
+            await manager.do("termcmd", "run", command_name, client, manager)
+        except Exception as e:
+            cprint(e, "red")
+
+
+async def _ensure_term_web_server(client, manager):
+    global TERM_WEB_SERVER, TERM_WEB_STARTED
+    if TERM_WEB_STARTED:
+        return
+    TERM_WEB_STARTED = True
+    config = _term_web_config()
+    if config is None:
+        return
+
+    async def command_handler(session_id: str, command: str):
+        io = WebTerminalIO(TERM_CONSOLE, session_id)
+        return await TERM_CONSOLE.run_command(
+            session_id,
+            command,
+            lambda: _run_term_command(command, client, manager, io),
+        )
+
+    TERM_WEB_SERVER = TermConsoleServer(
+        TERM_CONSOLE,
+        command_handler,
+        secret=config["secret"],
+        host=config["host"],
+        port=config["port"],
+        base_path=config["base_path"],
+    )
+    await TERM_WEB_SERVER.start()
+    cprint(
+        f"Term web console listening on {config['host']}:{config['port']}{config['base_path']}",
+        "yellow",
+    )
+
+
 """
 Hooks    -----------------------------------------------------------------------------------------------------------------------------------------------------------
 """
@@ -41,6 +358,7 @@ Hooks    -----------------------------------------------------------------------
 
 async def term_handler(Data_Manager: AI_Manager, client):
     """Main loop for handling terminal commands"""
+    await _ensure_term_web_server(client, Data_Manager)
     print("Type 'help' for a list of commands")
     INJECT_EMOJIS = MANAGER.MANAGER.config.get("inject_emojis", False)
 
@@ -71,9 +389,8 @@ async def term_handler(Data_Manager: AI_Manager, client):
             if type(old_instructions) == str:
                 instructions = old_instructions + emoji_instructions
             else:
-                instructions = (
-                    lambda *args, **kwargs: old_instructions(*args, **kwargs)
-                    + emoji_instructions
+                instructions = lambda *args, **kwargs: (
+                    old_instructions(*args, **kwargs) + emoji_instructions
                 )
 
             Data_Manager.prompt_manager.set_instructions(
@@ -83,23 +400,28 @@ async def term_handler(Data_Manager: AI_Manager, client):
 
         reload_emojis()
 
+    if not _stdin_available():
+        cprint(
+            "stdin terminal disabled; waiting for authenticated web console sessions",
+            "yellow",
+        )
+        while True:
+            await asyncio.sleep(3600)
+
     while True:
         if INJECT_EMOJIS and randint(1, 100) > 90:
             reload_emojis()
-        # If intercepting, wait
         if Data_Manager.get("termcmd", "intercepting", default=False):
             await asyncio.sleep(1)
             continue
         try:
-            user_input = await prompt("❯ ", color="purple")
+            async with bind_terminal_io(LOCAL_IO):
+                user_input = await prompt("❯ ", color="purple")
         except KeyboardInterrupt:
             await client.close()
         except E:
             return
-        try:
-            await Data_Manager.do("termcmd", "run", user_input, client, Data_Manager)
-        except Exception as e:
-            cprint(e, "red")
+        await _run_term_command(user_input, client, Data_Manager, LOCAL_IO)
 
 
 async def intercept_reply(response: str, Data_Manager: AI_Manager) -> str:
@@ -137,6 +459,26 @@ def save_recent_message(_, chat_id, message_type, author, message, replying_to=N
     RECENTS["channel"] = chat_id
     if message_type == "Bot":
         RECENTS["self_msg"] = chat_id
+    return (chat_id, message_type, author, message, replying_to)
+
+
+@MANAGER.effect("chat", "set", prepend=False)
+def mirror_chat_to_term_console(
+    _, chat_id, message_type, author, message, replying_to=None
+):
+    """Mirror chat activity into the term console output feed."""
+    line = format_term_console_chat_line(
+        chat_id,
+        message_type,
+        author,
+        message,
+        replying_to=replying_to,
+    )
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(TERM_CONSOLE.emit_output(line, stream="chat"))
+    except RuntimeError:
+        pass
     return (chat_id, message_type, author, message, replying_to)
 
 
@@ -209,7 +551,7 @@ def get_emojis(emojis):
     """Convert emoji objects to their string representations"""
     return [
         (
-            f"<{e.animated and "a" or ""}:{e.name}:{e.id}>"
+            f"<{'a' if e.animated else ''}:{e.name}:{e.id}>"
             if not isinstance(e, CustomEmoji)
             else f"{e.e}"
         )
@@ -373,9 +715,11 @@ MANAGER.remember(
         else M["value"]
     ),
     add=lambda M, emoji: M["value"].append(emoji),
-    list_id=lambda M: f"EmojiIndex: {", ".join([str(e.id if e.id else e.e) for e in M["value"]])}",
-    list_name=lambda M: f"EmojiIndex: {", ".join([e.name for e in M["value"]])}",
-    list=lambda M: f"EmojiIndex: {", ".join(get_emojis(M["value"]))}",
+    list_id=lambda M: (
+        "EmojiIndex: " + ", ".join([str(e.id if e.id else e.e) for e in M["value"]])
+    ),
+    list_name=lambda M: "EmojiIndex: " + ", ".join([e.name for e in M["value"]]),
+    list=lambda M: "EmojiIndex: " + ", ".join(get_emojis(M["value"])),
 )
 
 
@@ -505,7 +849,12 @@ async def manage_channel_policies(mem, bot, manager):
         if error:
             cprint(error, "red")
             return
-        cprint(format_channel_policy(channel.id, chat.policy_manager.get_channel_policy(channel.id)), "yellow")
+        cprint(
+            format_channel_policy(
+                channel.id, chat.policy_manager.get_channel_policy(channel.id)
+            ),
+            "yellow",
+        )
         return
 
     if action == "remove":
@@ -774,8 +1123,10 @@ async def ai():
     """Set the AI type for the bot"""
     ai = await prompt(
         "Enter AI name: ",
-        exit_if=lambda x: x
-        not in ("OpenAI", "Claude", "Mistral", "Assistant", "Gemini", "Perplexity"),
+        exit_if=lambda x: (
+            x
+            not in ("OpenAI", "Claude", "Mistral", "Assistant", "Gemini", "Perplexity")
+        ),
         exit_msg="Invalid AI",
     )
 
@@ -1086,7 +1437,7 @@ async def print_channel_history(mem, bot, manager):
 @MANAGER.term("sc")
 async def save_chat():
     """Save the current chat state"""
-    MANAGER.MANAGER.chat.save("chat", "value", module=True)
+    MANAGER.MANAGER.save("chat", "value", module=True)
 
 
 @MANAGER.term("cmd")

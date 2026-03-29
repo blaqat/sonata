@@ -1,8 +1,11 @@
+import asyncio
 import importlib.util
 import pathlib
+import re
 import sys
 import types
 import unittest
+from unittest import mock
 
 
 def load_term_commands_module():
@@ -102,6 +105,7 @@ def load_term_commands_module():
 
 
 term_commands = load_term_commands_module()
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class TermCommandRegistryTests(unittest.TestCase):
@@ -138,8 +142,32 @@ class TermCommandRegistryTests(unittest.TestCase):
             "a": {"func": nodesc, "description": None},
         }
         lines = term_commands._build_help_lines(commands)
-        self.assertEqual(lines[0], "a: No description available.")
-        self.assertEqual(lines[1], "b: No description available.")
+        self.assertEqual(ANSI_RE.sub("", lines[0]).strip(), "a: No description available.")
+        self.assertEqual(ANSI_RE.sub("", lines[1]).strip(), "b: No description available.")
+
+
+class TermConsolePrintTests(unittest.IsolatedAsyncioTestCase):
+    async def test_console_cprint_emits_ansi_styled_output(self):
+        styled_text = "\x1b[31mhello\x1b[0m"
+
+        class _Loop:
+            def create_task(self, coro):
+                return asyncio.create_task(coro)
+
+        with (
+            mock.patch.object(term_commands, "base_cprint") as base_cprint,
+            mock.patch.object(term_commands, "cstrs", return_value=styled_text) as cstrs,
+            mock.patch.object(term_commands.asyncio, "get_running_loop", return_value=_Loop()),
+        ):
+            await term_commands.TERM_CONSOLE.clear_all_sessions()
+            term_commands._console_cprint("hello", "red")
+            await asyncio.sleep(0)
+
+        base_cprint.assert_called_once_with("hello", "red")
+        cstrs.assert_called_once_with("hello", "red")
+        history = term_commands.TERM_CONSOLE.snapshot_for("alpha")["history"]
+        self.assertEqual(history[-1]["text"], styled_text)
+        self.assertEqual(history[-1]["stream"], "stdout")
 
 
 if __name__ == "__main__":

@@ -35,6 +35,10 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(lazy=True)
 __plugin_name__ = "beacon"
 dir_path = os.path.dirname(os.path.realpath(__file__))
 
+# On Railway a volume is mounted at /beacon for persistent storage.
+# Locally we keep data inside the plugin directory (beacon-mainland).
+BEACON_HOME = "/beacon" if os.getenv("RAILWAY_ENVIRONMENT_NAME") else "beacon-mainland"
+
 SaveType = Literal["m", "c", None]
 GLOBAL_POLICY_SCOPE_ID = "__global__"
 
@@ -74,7 +78,7 @@ def beacon(sonata: AI_Manager):
         home: str  # The home folder where things are saved
         key: bytes | None
 
-        def __init__(self, path: str = "beacon-mainland", key: bytes | None = None):
+        def __init__(self, path: str = BEACON_HOME, key: bytes | None = None):
             """Initialize the Beacon with a home folder and optional encryption key"""
             self.key = key
             self.policy_api = get_or_create_policy_api(sonata)
@@ -133,7 +137,12 @@ def beacon(sonata: AI_Manager):
 
         def light_house(self, path: str, home=False):
             """Set the home folder"""
-            self.home = (f"{dir_path}/" if home else "") + path
+            # Absolute paths (e.g. /beacon on Railway) are used as-is;
+            # relative paths are anchored to the plugin directory.
+            if os.path.isabs(path):
+                self.home = path
+            else:
+                self.home = (f"{dir_path}/" if home else "") + path
             if not os.path.exists(self.home):
                 os.makedirs(self.home, exist_ok=True)
             return self
@@ -339,6 +348,7 @@ def beacon(sonata: AI_Manager):
 
             dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
             dir = dir.replace(dir_path, "home")
+            dir = dir.replace("/beacon", "mainland")
             flash = self.island(f"beacon-flashes", home=True).branch(dir)
 
             if save:
@@ -358,6 +368,7 @@ def beacon(sonata: AI_Manager):
             if flash is None:
                 dir = self.home.replace(dir_path + "/beacon-mainland", "mainland")
                 dir = dir.replace(dir_path, "home")
+                dir = dir.replace("/beacon", "mainland")
                 flash = self.island(f"beacon-flashes", home=True).branch(dir)
             for file in flash.scan():
                 if os.path.isdir(f"{flash.home}/{file}"):

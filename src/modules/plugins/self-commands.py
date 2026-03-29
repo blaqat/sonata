@@ -6,26 +6,30 @@ Inspired by the assistants functions from Openai Assistants endpoint.
 Also provides web access to the bot.
 """
 
-from modules.utils import (
-    async_cprint as cprint,
-    async_print as print,
-    settings,
-    setter,
-)
-import requests
-from modules.AI_manager import AI_Manager
 import json
-from urllib import parse, request
 import random
-from youtubesearchpython import VideosSearch
+import re
+import time
+from typing import Any, Dict, List, Optional
+from urllib import parse, request
+
+import requests
+from google_images_search import GoogleImagesSearch
 from googleapiclient.discovery import build
 from nuvem_de_som import SoundCloud as sc
-from google_images_search import GoogleImagesSearch
-import re
-from typing import Dict, Any, List, Optional
-import json
-import time
+from youtubesearchpython import VideosSearch
 
+from modules.AI_manager import AI_Manager
+from modules.utils import (
+    async_cprint as cprint,
+)
+from modules.utils import (
+    async_print as print,
+)
+from modules.utils import (
+    setter,
+    settings,
+)
 
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
@@ -298,7 +302,9 @@ Setup    -----------------------------------------------------------------------
     ),
     validate=lambda M, command: command in M["value"],
     names=lambda M: list(M["value"].keys()),
-    str=lambda M, command, cobj=None: f"{command} - {(cobj or M['value'][command])['usage']} - {(cobj or M['value'][command])['desc']}",
+    str=lambda M, command, cobj=None: (
+        f"{command} - {(cobj or M['value'][command])['usage']} - {(cobj or M['value'][command])['desc']}"
+    ),
     list=lambda M: "; ".join(M["str"](M, k, c) for k, c in M["value"].items()),
 )
 def use_command(M, command, *args):
@@ -858,7 +864,6 @@ IMPORTANT:
 
             # Parse the JSON response
             try:
-
                 # Remove markdown code blocks if present
                 clean_response = re.sub(r"```(?:json)?\s*", "", response).strip()
                 clean_response = re.sub(r"\s*```", "", clean_response)
@@ -1023,7 +1028,8 @@ ATTRIBUTES = """Attributes:
 - Likes: music, cats, violin, rage baiting
 - Dislikes: corny jokes, being told what to do, pointless conversations
 - Hates: furries, loud music, people asking you to do dumb stuff (alot)
-- Has a sister named auris (auri for short), short black hair, and blue eyes
+- Has a sister named auris (auri for short)
+- Appearance: cotton pink hair with straight cut bangs, bright green eyes, green hoodie, stylish, black headphones with small heart accents
 """
 
 CHAT_HISTORY = """Each message in the chat log is stored as (Responding to message: (MessageType, Author, MessageText, Message They are Replying To)
