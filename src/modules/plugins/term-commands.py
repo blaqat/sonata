@@ -801,7 +801,7 @@ async def set_pinned_channel(mem):
     """Set the current channel"""
     await set_channel(mem, ret=False)
 
-
+# TODO: Use the prompt/edit prompt system for all these commands instead of raw input, but also allow for args to passed in all at once if i know the options
 @MANAGER.term("channels")
 async def manage_channel_policies(mem, bot, manager):
     """Manage channel policy overrides and blacklist settings"""

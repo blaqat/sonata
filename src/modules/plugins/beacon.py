@@ -22,10 +22,12 @@ from modules.utils import (
     settings,
 )
 from modules.AI_manager import AI_Manager
+from modules.policy_api import get_or_create_policy_api
 from typing import Literal
 
 import pickle
 import os
+import re
 import shutil
 from cryptography.fernet import Fernet
 
@@ -38,6 +40,7 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 BEACON_HOME = "/beacon" if os.getenv("RAILWAY_ENVIRONMENT_NAME") else "beacon-mainland"
 
 SaveType = Literal["m", "c", None]
+GLOBAL_POLICY_SCOPE_ID = "__global__"
 
 
 def can_delete_folder(folder_path):
@@ -78,7 +81,35 @@ def beacon(sonata: AI_Manager):
         def __init__(self, path: str = BEACON_HOME, key: bytes | None = None):
             """Initialize the Beacon with a home folder and optional encryption key"""
             self.key = key
+            self.policy_api = get_or_create_policy_api(sonata)
+            if self.policy_api.has_namespace("beacon"):
+                self.policy_api.activate_namespace("beacon")
+            else:
+                self.policy_api.register_namespace("beacon", plugin=True)
             self.light_house(path, True)
+
+        def _normalize_policy_path(self, path: str) -> str:
+            normalized = str(path or "").strip().replace("\\", "/")
+            normalized = re.sub(r"/+", "/", normalized)
+            normalized = normalized.strip("/").lower()
+            return normalized
+
+        def _path_action(self, path: str) -> str:
+            normalized_path = self._normalize_policy_path(path)
+            return f"beacon.encrypt.path.{normalized_path}"
+
+        def _resolve_encryption(
+            self, encrypted: bool, encrypted_path: str | None
+        ) -> bool:
+            if encrypted_path is None:
+                return bool(encrypted)
+            action = self._path_action(encrypted_path)
+            return self.policy_api.evaluate(
+                "beacon",
+                action,
+                guild_id=GLOBAL_POLICY_SCOPE_ID,
+                default=bool(encrypted),
+            )
 
         def _get_fernet(self):
             if not self.key:
@@ -126,6 +157,7 @@ def beacon(sonata: AI_Manager):
             data: any = None,
             remember: SaveType = None,
             encrypted: bool = False,
+            encrypted_path: str | None = None,
         ):
             """Save data to a file"""
             if remember != None:
@@ -137,7 +169,11 @@ def beacon(sonata: AI_Manager):
 
             with open(f"{self.home}/{name}.p", "wb") as f:
                 pickled_data = pickle.dumps(data)
-                if encrypted:
+                should_encrypt = self._resolve_encryption(
+                    encrypted,
+                    encrypted_path or f"{self.home}/{name}",
+                )
+                if should_encrypt:
                     fernet = self._get_fernet()
                     pickled_data = fernet.encrypt(pickled_data)
                 f.write(pickled_data)
@@ -150,6 +186,7 @@ def beacon(sonata: AI_Manager):
             data: dict,
             remember: SaveType = None,
             encrypted: bool = False,
+            encrypted_path: str | None = None,
         ):
             """Save module to a file"""
             if remember != None:
@@ -174,16 +211,31 @@ def beacon(sonata: AI_Manager):
                 else:
                     t = "s"
 
-                lamp_post.guide(f"{t}{key}", value, encrypted=encrypted)
+                path = encrypted_path or f"{self.home}/{module_name}/{t}{key}"
+                lamp_post.guide(
+                    f"{t}{key}",
+                    value,
+                    encrypted=encrypted,
+                    encrypted_path=path,
+                )
 
             return self
 
-        def locate(self, name: str, encrypted: bool = False):
+        def locate(
+            self,
+            name: str,
+            encrypted: bool = False,
+            encrypted_path: str | None = None,
+        ):
             """Load data from a file"""
             try:
                 with open(f"{self.home}/{name}.p", "rb") as f:
                     data = f.read()
-                    if encrypted:
+                    should_encrypt = self._resolve_encryption(
+                        encrypted,
+                        encrypted_path or f"{self.home}/{name}",
+                    )
+                    if should_encrypt:
                         fernet = self._get_fernet()
                         data = fernet.decrypt(data)
                     return pickle.loads(data)
@@ -194,7 +246,12 @@ def beacon(sonata: AI_Manager):
                 )
                 return
 
-        def discover(self, module_name: str, encrypted: bool = False):
+        def discover(
+            self,
+            module_name: str,
+            encrypted: bool = False,
+            encrypted_path: str | None = None,
+        ):
             """Load module from a file"""
             lamp_post = self.branch(module_name)
             data = {}
@@ -210,7 +267,12 @@ def beacon(sonata: AI_Manager):
                         key = bool(key[1:])
                     case "s":
                         key = str(key[1:])
-                data[key] = lamp_post.locate(i, encrypted=encrypted)
+                path = encrypted_path or f"{self.home}/{module_name}/{i}"
+                data[key] = lamp_post.locate(
+                    i,
+                    encrypted=encrypted,
+                    encrypted_path=path,
+                )
             return data
 
         def reflect(
