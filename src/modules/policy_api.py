@@ -1,9 +1,35 @@
 from __future__ import annotations
 
+"""
+Runtime policy engine for allow/deny decisions keyed by namespace, scope, and action.
+
+**Namespaces** isolate rule sets (e.g. ``chat`` for the chat plugin). Each namespace has
+``default_decisions``: action patterns (supports a trailing ``*`` wildcard) mapped to
+booleans when no rule matches.
+
+**Scopes** are ``guild``, ``channel``, ``group``, and ``user``. Rules are stored per
+``(scope, scope_id)`` with an **action** string (e.g. ``chat.can_speak``,
+``chat.command.roll``) and effect ``allow`` or ``deny``.
+
+**Evaluation** (``evaluate``): scopes are visited in order **user → group → channel →
+guild** (see ``EVAL_PRECEDENCE``). **Deny** at any scope returns ``False`` immediately.
+**Allow** at a scope is recorded; after all scopes, if any allow was seen and no deny
+occurred, the result is ``True``; otherwise ``default`` or ``default_decisions`` apply.
+
+**Groups** map member user ids and optional role ids to an id ``"{namespace}:{name}"``;
+``set_group_rule`` sets allow/deny for actions on that group.
+
+Obtain the process-wide instance with ``get_or_create_policy_api(sonata)``. The chat
+plugin's ``ChannelPolicies`` registers the ``chat`` namespace and mirrors persisted
+policies into this API.
+"""
+
 from dataclasses import dataclass, field
 
 
+# Valid scope keys for rule storage (order here is not evaluation order).
 SCOPES = ("guild", "channel", "group", "user")
+# Outer loop in evaluate(): earlier scopes can deny before later ones are consulted.
 EVAL_PRECEDENCE = ("user", "group", "channel", "guild")
 EFFECT_ALLOW = "allow"
 EFFECT_DENY = "deny"
@@ -28,9 +54,13 @@ class PolicyNamespace:
 class PolicyAPI:
     def __init__(self):
         self._namespaces: dict[str, PolicyNamespace] = {}
+        # namespace -> scope kind -> scope_id -> rules for that id
         self._rules: dict[str, dict[str, dict[str, list[PolicyRule]]]] = {}
+        # Named groups: members by user id (string) per group_id "ns:name"
         self._groups: dict[str, dict[str, set[str]]] = {}
+        # Optional role ids that also imply group membership
         self._group_roles: dict[str, dict[str, set[str]]] = {}
+        # Optional callback(namespace, user_id) -> role ids when role_ids not passed in
         self._role_resolver = None
         self.register_namespace("core", plugin=False)
 
@@ -205,6 +235,7 @@ class PolicyAPI:
         normalized_user = self._optional_scope_id(user_id)
         resolved = set()
 
+        # Direct membership, then any group whose bound role overlaps runtime roles
         if normalized_user is not None:
             for group_id, members in self._groups[key].items():
                 if normalized_user in members:
@@ -234,6 +265,7 @@ class PolicyAPI:
 
         self._require_namespace(key)
         rules = self._rules[key][scope_key].setdefault(scope_id_key, [])
+        # At most one rule per action on a scope id; new write replaces old
         rules = [rule for rule in rules if rule.action != action_key]
         new_rule = PolicyRule(
             scope=scope_key,
@@ -293,6 +325,7 @@ class PolicyAPI:
         action_key = self._normalize_action(action)
         ns = self._namespaces.get(key)
 
+        # Unloaded / missing namespace: caller default only (no rules apply)
         if ns is None or not ns.active:
             return self._resolve_default(ns, action_key, default)
 
@@ -309,6 +342,7 @@ class PolicyAPI:
         }
 
         seen_allow = False
+        # Deny short-circuits; allow is sticky until defaults if nothing allows
         for scope in EVAL_PRECEDENCE:
             ids = scope_ids[scope]
             if ids is None:
@@ -335,6 +369,7 @@ class PolicyAPI:
         scope_ids: list[str],
         action: str,
     ) -> str | None:
+        # Multiple ids (e.g. several groups): one deny on any id loses for this scope
         saw_allow = False
         for scope_id_key in scope_ids:
             if scope_id_key is None:
@@ -360,6 +395,7 @@ class PolicyAPI:
         if not rules:
             return None
 
+        # Longest matching pattern wins; if tied, deny beats allow
         matched: list[tuple[int, PolicyRule]] = []
         for rule in rules:
             if self._matches(rule.action, action):
@@ -398,6 +434,7 @@ class PolicyAPI:
 
         highest = max(score for score, _ in matched)
         candidates = [decision for score, decision in matched if score == highest]
+        # Tied patterns: any default False makes the outcome False
         if any(not decision for decision in candidates):
             return False
         return True
@@ -480,11 +517,13 @@ class PolicyAPI:
                 group_key = str(group_id).strip().lower()
                 if not group_key:
                     continue
+                # Accept bare name or full "namespace:name" id
                 if not group_key.startswith(f"{namespace}:"):
                     group_key = self.normalize_group_id(namespace, group_key)
                 normalized.add(group_key)
             return sorted(normalized)
 
+        # Infer groups from membership + role bindings when caller did not pass ids
         return self.resolve_groups(namespace, user_id=user_id, role_ids=role_ids)
 
     def _normalize_action(self, action: str) -> str:
@@ -513,15 +552,18 @@ class PolicyAPI:
     def _matches(self, pattern: str, action: str) -> bool:
         if pattern == action:
             return True
+        # Trailing * is prefix match (e.g. chat.command.* matches chat.command.roll)
         if pattern.endswith("*"):
             return action.startswith(pattern[:-1])
         return False
 
     def _specificity(self, pattern: str) -> int:
+        # Longer pattern = more specific; used to pick among multiple matches
         return len(pattern[:-1]) if pattern.endswith("*") else len(pattern)
 
 
 def get_or_create_policy_api(sonata) -> PolicyAPI:
+    """Single PolicyAPI per bot instance (shared by ChannelPolicies and other users)."""
     api = getattr(sonata, "policy_api", None)
     if isinstance(api, PolicyAPI):
         return api

@@ -1081,3 +1081,7 @@ class AI_Manager:
             new_function = new_function_post
 
         self.add(key, event_name, new_function)
+
+    def has(self, key):
+        """Check if a memory key exists."""
+        return key in self.memory

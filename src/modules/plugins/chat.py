@@ -4,6 +4,16 @@ Chat
 This plugin is responsible for handling chat messages and processing them through the AI model.
 In addition, it provides a way to store and retrieve chat logs for summarization and other purposes.
 Also, it provides a way to send messages to a specific channel or user.
+
+**Chat policy (guild text channels)**
+
+``chat_hook`` consults ``Sonata.chat.policy_manager`` (a ``ChannelPolicies`` instance)
+before running commands or AI flows: **can_speak**, per-command allow/deny (see
+``command_policy_mode`` in ``channel_policies``), then **respond_all** for whether
+proactive replies are allowed. DMs are not gated by channel policy.
+
+Configure overrides via ``$channels`` (Discord) or ``channels`` (terminal); see
+``channel_policies`` module docstring.
 """
 
 # TODO: Make  message class
@@ -197,7 +207,7 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
 
 
 async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
-    """Handle messages sent in guild channels"""
+    """Handle messages sent in guild channels; enforces chat policy then command routing."""
     AI = Sonata.config.get("auto")
     CENSOR = Sonata.config.get("censor", True)
     USE_REPLY_REF = Sonata.config.get("view_replies")
@@ -551,7 +561,10 @@ BANNED_WORDS = {
 @MANAGER.builder
 def chat(sona: AI_Manager):
     """
-    Chat plugin for handling messages and interactions
+    Chat plugin for handling messages and interactions.
+
+    ``policy_manager`` is ``ChannelPolicies`` (``channel_policies``): use for
+    programmatic policy updates; ``init`` runs at build time.
     """
     prompt_manager = sona.prompt_manager
     policy_manager = ChannelPolicies(sona)
