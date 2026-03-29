@@ -106,6 +106,19 @@ class TerminalConsoleTests(unittest.IsolatedAsyncioTestCase):
         await console.submit_prompt_response("alpha", pending.prompt_id, "edited")
         await waiter
 
+    async def test_cancel_prompt_resolves_with_exit(self):
+        console = TerminalConsole()
+        await console.set_controller("alpha")
+
+        waiter = asyncio.create_task(console.request_prompt("alpha", "Enter value"))
+        await asyncio.sleep(0)
+        pending = console.pending_prompts["alpha"]
+        ok, message = await console.cancel_prompt("alpha", pending.prompt_id)
+
+        self.assertTrue(ok)
+        self.assertEqual(message, "Prompt exited.")
+        self.assertEqual(await waiter, "exit")
+
 
 class TermConsoleRouteTests(unittest.TestCase):
     def test_trim_base_path(self):
@@ -153,6 +166,22 @@ class TermConsoleRouteTests(unittest.TestCase):
         self.assertIn('JSON.stringify({ prompt_id: state.pending_prompt.prompt_id, value: rawValue })', page)
         self.assertIn("const pendingPromptChanged = state.pending_prompt && state.pending_prompt.prompt_id !== submittedPromptId;", page)
         self.assertIn("if (!pendingPromptChanged) {", page)
+
+    def test_html_includes_prompt_exit_button_and_recovery(self):
+        page = _html_page("/")
+        self.assertIn('id="exitPromptButton"', page)
+        self.assertIn("api('/api/prompt/exit'", page)
+        self.assertIn("err.data && err.data.prompt_active === false", page)
+        self.assertIn(
+            "Prompt expired. Your text is still here; send it again if you still want to run it.",
+            page,
+        )
+
+    def test_html_reconnects_event_stream(self):
+        page = _html_page("/")
+        self.assertIn("let reconnectTimer = null;", page)
+        self.assertIn("setTimeout(async () => {", page)
+        self.assertIn("setMessage('Reconnected.');", page)
 
 
 class TermConsoleChatFormattingTests(unittest.TestCase):
