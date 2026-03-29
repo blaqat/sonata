@@ -12,6 +12,7 @@ from modules.channel_policies import (
     format_channel_policy,
     parse_channel_reference,
 )
+from modules.policy_admin import PolicyAdminError, get_or_create_policy_admin
 from modules.utils import (
     Colors,
     async_cprint as cprint,
@@ -457,21 +458,24 @@ async def set_pinned_channel(mem):
     """Set the current channel"""
     await set_channel(mem, ret=False)
 
-# TODO: Use the prompt/edit prompt system for all these commands instead of raw input, but also allow for args to passed in all at once if i know the options
-@MANAGER.term("channels")
-async def manage_channel_policies(mem, bot, manager):
-    """Manage channel policy overrides and blacklist settings"""
+@MANAGER.term("policy")
+async def manage_policies(mem, bot, manager):
+    """Manage policy rules across namespaces and scopes"""
     usage = (
-        "channels list\n"
-        "channels show <channel_id|<#channel_id>|here>\n"
-        "channels set <channel> <can_speak|respond_all> <true|false>\n"
-        "channels allow <channel> <command>\n"
-        "channels deny <channel> <command>\n"
-        "channels blacklist <add|remove> <channel>\n"
-        "channels remove <channel>"
+        "policy namespaces\n"
+        "policy show <namespace> <scope> <target>\n"
+        "policy set <namespace> <scope> <target> <action> <allow|deny>\n"
+        "policy remove <namespace> <scope> <target> <action>\n"
+        "policy clear <namespace> <scope> <target>\n"
+        "policy groups list <namespace>\n"
+        "policy groups show <namespace> <group>\n"
+        "policy groups upsert <namespace> <group> [members_csv|-] [roles_csv|-]\n"
+        "policy groups remove <namespace> <group>\n"
+        "policy groups member <add|remove> <namespace> <group> <user_id>\n"
+        "policy groups role <add|remove> <namespace> <group> <role_id>"
     )
 
-    raw = await prompt("Enter channels command: ")
+    raw = await prompt("Enter policy command: ")
     parts = [p for p in raw.strip().split(" ") if p] if raw else []
     if not parts:
         cprint(usage, "yellow")
@@ -479,114 +483,126 @@ async def manage_channel_policies(mem, bot, manager):
 
     action = parts[0].lower()
     args = parts[1:]
-    chat = manager.chat
+    admin = get_or_create_policy_admin(manager)
 
     if action in {"help", "h"}:
         cprint(usage, "yellow")
         return
 
-    if action == "list":
-        channel_map = chat.policy_manager.get_channels()
-        if not channel_map:
-            cprint("No channel overrides are configured.", "yellow")
+    try:
+        result = await _handle_term_policy(mem, bot, admin, action, args, usage)
+        if result is not None:
+            cprint(result, "yellow")
             return
-        lines = [
-            format_channel_policy(channel_id, channel_map[channel_id])
-            for channel_id in sorted(channel_map.keys())
-        ]
-        cprint("\n".join(lines[:50]), "yellow")
-        return
-
-    if action == "show":
-        if len(args) < 1:
-            cprint(usage, "yellow")
-            return
-        channel, error = await resolve_term_text_channel(mem, bot, args[0])
-        if error:
-            cprint(error, "red")
-            return
-        cprint(format_channel_policy(channel.id, chat.policy_manager.get_channel_policy(channel.id)), "yellow")
-        return
-
-    if action == "remove":
-        if len(args) < 1:
-            cprint(usage, "yellow")
-            return
-        channel, error = await resolve_term_text_channel(mem, bot, args[0])
-        if error:
-            cprint(error, "red")
-            return
-        removed = chat.policy_manager.remove_channel_policy(channel.id)
-        if removed is None:
-            cprint(f"No override existed for `{channel.id}`.", "yellow")
-            return
-        cprint(f"Removed override for `{channel.id}`.", "yellow")
-        return
-
-    if action == "blacklist":
-        if len(args) < 2:
-            cprint(usage, "yellow")
-            return
-        sub_action = args[0].lower()
-        channel, error = await resolve_term_text_channel(mem, bot, args[1])
-        if error:
-            cprint(error, "red")
-            return
-        if sub_action == "add":
-            policy = chat.policy_manager.blacklist_add(channel.id)
-            cprint(
-                f"Blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
-                "yellow",
-            )
-            return
-        if sub_action == "remove":
-            policy = chat.policy_manager.blacklist_remove(channel.id)
-            cprint(
-                f"Un-blacklisted `{channel.id}`\n{format_channel_policy(channel.id, policy)}",
-                "yellow",
-            )
-            return
-        cprint(usage, "yellow")
-        return
-
-    if action in {"set", "allow", "deny"}:
-        if len(args) < 2:
-            cprint(usage, "yellow")
-            return
-        channel, error = await resolve_term_text_channel(mem, bot, args[0])
-        if error:
-            cprint(error, "red")
-            return
-
-        if action == "set":
-            if len(args) < 3:
-                cprint(usage, "yellow")
-                return
-            field = args[1].lower().strip()
-            if field not in {"can_speak", "respond_all"}:
-                cprint("Field must be can_speak or respond_all.", "red")
-                return
-            try:
-                value = parse_bool(args[2])
-            except ValueError:
-                cprint("Value must be true/false.", "red")
-                return
-            policy = chat.policy_manager.set_channel_flag(channel.id, field, value)
-            cprint(format_channel_policy(channel.id, policy), "yellow")
-            return
-
-        command_name = args[1].lower().strip().lstrip("$")
-        if not command_name:
-            cprint("Command cannot be empty.", "red")
-            return
-        if action == "allow":
-            policy = chat.policy_manager.allow_command(channel.id, command_name)
-        else:
-            policy = chat.policy_manager.deny_command(channel.id, command_name)
-        cprint(format_channel_policy(channel.id, policy), "yellow")
+    except PolicyAdminError as e:
+        cprint(str(e), "red")
         return
 
     cprint(usage, "yellow")
+
+
+async def _handle_term_policy(mem, bot, admin, action, args, usage):
+    if action == "namespaces":
+        ns_list = admin.list_namespaces()
+        return "Namespaces: " + ", ".join(ns_list)
+
+    if action == "show":
+        if len(args) < 3:
+            return usage
+        namespace, scope, raw_target = args[0], args[1], args[2]
+        target = await _resolve_term_target(mem, bot, scope, raw_target)
+        return admin.show_rules(namespace, scope, target)
+
+    if action == "set":
+        if len(args) < 5:
+            return usage
+        namespace, scope, raw_target, act, effect = args[0], args[1], args[2], args[3], args[4]
+        target = await _resolve_term_target(mem, bot, scope, raw_target)
+        return admin.set_rule(namespace, scope, target, act, effect)
+
+    if action == "remove":
+        if len(args) < 4:
+            return usage
+        namespace, scope, raw_target, act = args[0], args[1], args[2], args[3]
+        target = await _resolve_term_target(mem, bot, scope, raw_target)
+        return admin.remove_rule(namespace, scope, target, act)
+
+    if action == "clear":
+        if len(args) < 3:
+            return usage
+        namespace, scope, raw_target = args[0], args[1], args[2]
+        target = await _resolve_term_target(mem, bot, scope, raw_target)
+        return admin.clear_scope(namespace, scope, target)
+
+    if action == "groups":
+        return _handle_term_policy_groups(admin, args, usage)
+
+    return None
+
+
+def _handle_term_policy_groups(admin, args, usage):
+    if len(args) < 2:
+        return usage
+    sub = args[0].lower()
+
+    if sub == "list":
+        return admin.list_groups(args[1])
+
+    if sub == "show":
+        if len(args) < 3:
+            return usage
+        return admin.show_group(args[1], args[2])
+
+    if sub == "upsert":
+        if len(args) < 3:
+            return usage
+        namespace, group = args[1], args[2]
+        members = args[3] if len(args) > 3 else None
+        roles = args[4] if len(args) > 4 else None
+        return admin.upsert_group(namespace, group, members=members, role_ids=roles)
+
+    if sub == "remove":
+        if len(args) < 3:
+            return usage
+        return admin.remove_group(args[1], args[2])
+
+    if sub == "member":
+        if len(args) < 5:
+            return usage
+        op, namespace, group, user_id = args[1], args[2], args[3], args[4]
+        if op == "add":
+            return admin.add_group_member(namespace, group, user_id)
+        if op == "remove":
+            return admin.remove_group_member(namespace, group, user_id)
+        return usage
+
+    if sub == "role":
+        if len(args) < 5:
+            return usage
+        op, namespace, group, role_id = args[1], args[2], args[3], args[4]
+        if op == "add":
+            return admin.add_group_role(namespace, group, role_id)
+        if op == "remove":
+            return admin.remove_group_role(namespace, group, role_id)
+        return usage
+
+    return usage
+
+
+async def _resolve_term_target(mem, bot, scope, raw_target):
+    """Resolve terminal-specific target references like 'here' for channels."""
+    scope_lower = scope.lower()
+    if raw_target.lower() in {"here", "current", "this"} and scope_lower == "channel":
+        channel, error = await resolve_term_text_channel(mem, bot, "here")
+        if error:
+            raise PolicyAdminError(error)
+        return str(channel.id)
+    # Channel reference (numeric or <#id>)
+    if scope_lower == "channel":
+        channel_id = parse_channel_reference(raw_target)
+        if channel_id is not None:
+            return str(channel_id)
+    return raw_target
 
 
 @MANAGER.term

@@ -12,8 +12,9 @@ before running commands or AI flows: **can_speak**, per-command allow/deny (see
 ``command_policy_mode`` in ``channel_policies``), then **respond_all** for whether
 proactive replies are allowed. DMs are not gated by channel policy.
 
-Configure overrides via ``$channels`` (Discord) or ``channels`` (terminal); see
-``channel_policies`` module docstring.
+Configure overrides via ``$policy`` (Discord) or ``policy`` (terminal); see
+``policy_admin`` module docstring. ``$policy`` bypasses channel gating so admins
+can recover access from disabled channels.
 """
 
 # TODO: Make  message class
@@ -245,13 +246,17 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
     role_ids = [str(role.id) for role in getattr(message.author, "roles", [])]
+
+    # $policy bypasses all chat policy gating so admins can recover access
+    is_policy_command = command_name == "policy"
+
     can_speak = policy_manager.can_speak(
         guild_id=message.guild.id,
         channel_id=message.channel.id,
         user_id=message.author.id,
         role_ids=role_ids,
     )
-    if not can_speak:
+    if not can_speak and not is_policy_command:
         if is_command:
             await message.reply(
                 "Sonata is disabled in this channel.",
@@ -260,7 +265,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         cprint(f"Sona blocked by channel policy in {message.channel.name}", "yellow")
         return
 
-    if is_command and not policy_manager.is_command_allowed(
+    if is_command and not is_policy_command and not policy_manager.is_command_allowed(
         guild_id=message.guild.id,
         channel_id=message.channel.id,
         user_id=message.author.id,
@@ -569,6 +574,11 @@ def chat(sona: AI_Manager):
     prompt_manager = sona.prompt_manager
     policy_manager = ChannelPolicies(sona)
     policy_manager.init()
+
+    # Load persisted generic namespace state (core, beacon, etc.) after chat init
+    from modules.policy_admin import get_or_create_policy_admin
+    policy_admin = get_or_create_policy_admin(sona)
+    policy_admin.load_all_namespaces()
 
     # TODO: Make way to translate history into proper chat log format for each AI
     # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645361

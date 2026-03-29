@@ -43,6 +43,7 @@ from modules.channel_policies import (
     has_manage_guild_permission,
     resolve_channel_in_guild,
 )
+from modules.policy_admin import PolicyAdminError, get_or_create_policy_admin
 from modules.plugins import PLUGINS
 from modules.utils import (
     get_full_name,
@@ -1042,115 +1043,180 @@ def _resolve_text_channel(ctx, raw_channel):
     return channel, None
 
 
-@sonata.command(name="channels", description="Manage per-channel chat permissions.")
-async def channels(ctx, action="", *args):
+@sonata.command(name="policy", description="Manage policy rules across namespaces and scopes.")
+async def policy_cmd(ctx, action="", *args):
     action = action.lower().strip()
     if not has_manage_guild_permission(ctx):
         return await ctx_reply(
             ctx, "You need `Manage Server` permission to use this command."
         )
 
+    admin = get_or_create_policy_admin(Sonata)
+
     usage = (
         "Usage:\n"
-        "`$channels list`\n"
-        "`$channels show <channel_id|<#channel_id>>`\n"
-        "`$channels set <channel> <can_speak|respond_all> <true|false>`\n"
-        "`$channels allow <channel> <command>`\n"
-        "`$channels deny <channel> <command>`\n"
-        "`$channels blacklist <add|remove> <channel>`\n"
-        "`$channels remove <channel>`"
+        "`$policy namespaces`\n"
+        "`$policy show <namespace> <scope> <target>`\n"
+        "`$policy set <namespace> <scope> <target> <action> <allow|deny>`\n"
+        "`$policy remove <namespace> <scope> <target> <action>`\n"
+        "`$policy clear <namespace> <scope> <target>`\n"
+        "`$policy groups list <namespace>`\n"
+        "`$policy groups show <namespace> <group>`\n"
+        "`$policy groups upsert <namespace> <group> [members_csv|-] [roles_csv|-]`\n"
+        "`$policy groups remove <namespace> <group>`\n"
+        "`$policy groups member <add|remove> <namespace> <group> <user>`\n"
+        "`$policy groups role <add|remove> <namespace> <group> <role>`"
     )
 
     if action in {"", "help"}:
         return await ctx_reply(ctx, usage)
 
-    if action == "list":
-        channel_map = Sonata.chat.policy_manager.get_channels()
-        if not channel_map:
-            return await ctx_reply(ctx, "No channel overrides are configured.")
-
-        lines = []
-        for channel_id in sorted(channel_map.keys()):
-            lines.append(format_channel_policy(channel_id, channel_map[channel_id]))
-        return await ctx_reply(ctx, "\n".join(lines[:30]))
-
-    if action == "show":
-        if len(args) < 1:
-            return await ctx_reply(ctx, usage)
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-        policy = Sonata.chat.policy_manager.get_channel_policy(channel.id)
-        return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-    if action == "remove":
-        if len(args) < 1:
-            return await ctx_reply(ctx, usage)
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-        removed = Sonata.chat.policy_manager.remove_channel_policy(channel.id)
-        if removed is None:
-            return await ctx_reply(ctx, f"No override existed for `{channel.id}`.")
-        return await ctx_reply(ctx, f"Removed override for `{channel.id}`.")
-
-    if action in {"set", "allow", "deny", "blacklist"}:
-        if action == "blacklist":
-            if len(args) < 2:
-                return await ctx_reply(ctx, usage)
-            sub_action = args[0].lower().strip()
-            channel_arg = args[1]
-            channel, error = _resolve_text_channel(ctx, channel_arg)
-            if error:
-                return await ctx_reply(ctx, error)
-
-            if sub_action == "add":
-                policy = Sonata.chat.policy_manager.blacklist_add(channel.id)
-                return await ctx_reply(
-                    ctx,
-                    f"Blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
-                )
-            if sub_action == "remove":
-                policy = Sonata.chat.policy_manager.blacklist_remove(channel.id)
-                return await ctx_reply(
-                    ctx,
-                    f"Un-blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
-                )
-            return await ctx_reply(ctx, usage)
-
-        if len(args) < 2:
-            return await ctx_reply(ctx, usage)
-
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-
-        if action == "set":
-            if len(args) < 3:
-                return await ctx_reply(ctx, usage)
-            field = args[1].lower().strip()
-            if field not in {"can_speak", "respond_all"}:
-                return await ctx_reply(
-                    ctx, "Field must be `can_speak` or `respond_all`."
-                )
-            try:
-                value = parse_bool(args[2])
-            except ValueError:
-                return await ctx_reply(ctx, "Value must be true/false.")
-            policy = Sonata.chat.policy_manager.set_channel_flag(channel.id, field, value)
-            return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-        command_name = args[1].lower().strip().lstrip("$")
-        if not command_name:
-            return await ctx_reply(ctx, "Command cannot be empty.")
-
-        if action == "allow":
-            policy = Sonata.chat.policy_manager.allow_command(channel.id, command_name)
-        else:
-            policy = Sonata.chat.policy_manager.deny_command(channel.id, command_name)
-        return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
+    try:
+        result = await _handle_policy_action(ctx, admin, action, args, usage)
+        if result is not None:
+            return await ctx_reply(ctx, result)
+    except PolicyAdminError as e:
+        return await ctx_reply(ctx, str(e))
 
     await ctx_reply(ctx, usage)
+
+
+async def _handle_policy_action(ctx, admin, action, args, usage):
+    if action == "namespaces":
+        ns_list = admin.list_namespaces()
+        return "Namespaces: " + ", ".join(f"`{n}`" for n in ns_list)
+
+    if action == "show":
+        if len(args) < 3:
+            return usage
+        namespace, scope, target = args[0], args[1], args[2]
+        target = _resolve_discord_target(ctx, scope, target)
+        return admin.show_rules(namespace, scope, target)
+
+    if action == "set":
+        if len(args) < 5:
+            return usage
+        namespace, scope, target, act, effect = args[0], args[1], args[2], args[3], args[4]
+        target = _resolve_discord_target(ctx, scope, target)
+        return admin.set_rule(namespace, scope, target, act, effect)
+
+    if action == "remove":
+        if len(args) < 4:
+            return usage
+        namespace, scope, target, act = args[0], args[1], args[2], args[3]
+        target = _resolve_discord_target(ctx, scope, target)
+        return admin.remove_rule(namespace, scope, target, act)
+
+    if action == "clear":
+        if len(args) < 3:
+            return usage
+        namespace, scope, target = args[0], args[1], args[2]
+        target = _resolve_discord_target(ctx, scope, target)
+        return admin.clear_scope(namespace, scope, target)
+
+    if action == "groups":
+        return _handle_policy_groups(ctx, admin, args, usage)
+
+    return None
+
+
+def _handle_policy_groups(ctx, admin, args, usage):
+    if len(args) < 2:
+        return usage
+    sub = args[0].lower()
+
+    if sub == "list":
+        return admin.list_groups(args[1])
+
+    if sub == "show":
+        if len(args) < 3:
+            return usage
+        return admin.show_group(args[1], args[2])
+
+    if sub == "upsert":
+        if len(args) < 3:
+            return usage
+        namespace, group = args[1], args[2]
+        members = args[3] if len(args) > 3 else None
+        roles = args[4] if len(args) > 4 else None
+        return admin.upsert_group(namespace, group, members=members, role_ids=roles)
+
+    if sub == "remove":
+        if len(args) < 3:
+            return usage
+        return admin.remove_group(args[1], args[2])
+
+    if sub == "member":
+        if len(args) < 5:
+            return usage
+        op, namespace, group, user = args[1], args[2], args[3], args[4]
+        user_id = _resolve_discord_user_id(user)
+        if op == "add":
+            return admin.add_group_member(namespace, group, user_id)
+        if op == "remove":
+            return admin.remove_group_member(namespace, group, user_id)
+        return usage
+
+    if sub == "role":
+        if len(args) < 5:
+            return usage
+        op, namespace, group, role = args[1], args[2], args[3], args[4]
+        role_id = _resolve_discord_role_id(role)
+        if op == "add":
+            return admin.add_group_role(namespace, group, role_id)
+        if op == "remove":
+            return admin.remove_group_role(namespace, group, role_id)
+        return usage
+
+    return usage
+
+
+def _resolve_discord_target(ctx, scope, raw_target):
+    """Resolve Discord-specific target references like 'here', <#channel>, <@user>."""
+    raw = str(raw_target).strip()
+    scope_lower = scope.lower()
+
+    if raw.lower() == "here" and scope_lower == "channel":
+        return str(ctx.channel.id)
+
+    if raw.lower() == "here" and scope_lower == "guild":
+        guild = getattr(ctx, "guild", None)
+        if guild:
+            return str(guild.id)
+
+    # <#channel_id>
+    if raw.startswith("<#") and raw.endswith(">"):
+        return raw[2:-1]
+
+    # <@user_id> or <@!user_id>
+    if raw.startswith("<@") and raw.endswith(">"):
+        inner = raw[2:-1]
+        if inner.startswith("!"):
+            inner = inner[1:]
+        return inner
+
+    # <@&role_id>
+    if raw.startswith("<@&") and raw.endswith(">"):
+        return raw[3:-1]
+
+    return raw
+
+
+def _resolve_discord_user_id(raw):
+    raw = str(raw).strip()
+    if raw.startswith("<@") and raw.endswith(">"):
+        inner = raw[2:-1]
+        if inner.startswith("!"):
+            inner = inner[1:]
+        return inner
+    return raw
+
+
+def _resolve_discord_role_id(raw):
+    raw = str(raw).strip()
+    if raw.startswith("<@&") and raw.endswith(">"):
+        return raw[3:-1]
+    return raw
 
 
 # TODO: Refactor emoji archiving to a separate util file
