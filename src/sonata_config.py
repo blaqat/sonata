@@ -10,12 +10,25 @@ from __future__ import annotations
 import json
 import os
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from random import randint
 from typing import Any
 
 from modules.plugins import PLUGINS_DICT
+
+
+_DEFAULT_AI_MODELS: dict[str, str] = {
+    "dall_e": "dall-e-3",
+    "assistant": "gpt-4o",
+    "grok_beta": "grok-beta",
+    "grok": "grok-4-1-fast-non-reasoning",
+    "openai": "gpt-5.4-mini",
+    "claude": "claude-sonnet-4-6",
+    "perplexity": "sonar",
+    "gemini": "gemini-2.5-flash",
+    "imagen": "imagen-4.0-fast-generate-001",
+}
 
 
 def _project_root() -> Path:
@@ -40,11 +53,43 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
 
 
 @dataclass
+class AIModels:
+    """Per-provider model id overrides. Empty or missing uses the built-in default for that AI."""
+
+    dall_e: str | None = None
+    assistant: str | None = None
+    grok_beta: str | None = None
+    grok: str | None = None
+    openai: str | None = None
+    claude: str | None = None
+    perplexity: str | None = None
+    gemini: str | None = None
+    imagen: str | None = None
+
+
+@dataclass
 class RuntimeConfig:
     random_config: bool = False
     prompt_reset: bool = False
     vc_recording: bool = False
     vc_speaking: bool = True
+    ai_models: AIModels = field(default_factory=AIModels)
+
+
+def resolve_ai_model(runtime: RuntimeConfig, key: str, builtin_default: str) -> str:
+    """Use runtime.ai_models.<key> when set, else builtin_default (the previous hardcoded value)."""
+    if key not in {f.name for f in fields(AIModels)}:
+        return builtin_default
+    raw = getattr(runtime.ai_models, key, None)
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    return builtin_default
+
+
+def _ai_models_from_merged_runtime(data: dict[str, Any]) -> AIModels:
+    merged = {**_DEFAULT_AI_MODELS, **(data.get("ai_models") or {})}
+    kwargs = {f.name: merged.get(f.name) for f in fields(AIModels)}
+    return AIModels(**kwargs)
 
 
 def _plugin_defaults_from_modules() -> dict[str, Any]:
@@ -107,6 +152,7 @@ def _default_document() -> dict[str, Any]:
             "prompt_reset": False,
             "vc_recording": False,
             "vc_speaking": True,
+            "ai_models": dict(_DEFAULT_AI_MODELS),
         },
         "plugins": deep_merge(_plugin_defaults_from_modules(), _project_plugin_defaults()),
     }
@@ -118,6 +164,7 @@ def _runtime_from_dict(data: dict[str, Any]) -> RuntimeConfig:
         prompt_reset=bool(data.get("prompt_reset", False)),
         vc_recording=bool(data.get("vc_recording", False)),
         vc_speaking=bool(data.get("vc_speaking", True)),
+        ai_models=_ai_models_from_merged_runtime(data),
     )
 
 

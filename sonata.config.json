@@ -3,7 +3,18 @@
     "random_config": false,
     "prompt_reset": false,
     "vc_recording": false,
-    "vc_speaking": true
+    "vc_speaking": true,
+    "ai_models": {
+      "dall_e": "dall-e-3",
+      "assistant": "gpt-4o",
+      "grok_beta": "grok-beta",
+      "grok": "grok-4-1-fast-non-reasoning",
+      "openai": "gpt-5.4-mini",
+      "claude": "claude-sonnet-4-6",
+      "perplexity": "sonar",
+      "gemini": "gemini-2.5-flash",
+      "imagen": "imagen-4.0-fast-generate-001"
+    }
   },
   "plugins": {
     "beacon": {},

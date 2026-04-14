@@ -57,9 +57,13 @@ from modules.utils import (
 from modules.utils import (
     get_reference_chain as get_chain,
 )
-from sonata_config import load_config, rand_runtime
+from sonata_config import load_config, rand_runtime, resolve_ai_model
 
 RUNTIME, _PLUGIN_EXTEND = load_config()
+
+
+def _ai_model(key: str, builtin_default: str) -> str:
+    return resolve_ai_model(RUNTIME, key, builtin_default)
 
 nest_asyncio.apply()
 
@@ -162,7 +166,7 @@ def extend(Sonata: AI_Manager):
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="dall-e-3",
+    model=_ai_model("dall_e", "dall-e-3"),
     # model="dall-e-2",
     # model = "gpt-image-1"
 )
@@ -185,7 +189,7 @@ def DallE(client, prompt, model, config):
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, k: True,
-    model="gpt-4o",
+    model=_ai_model("assistant", "gpt-4o"),
 )
 def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -219,7 +223,7 @@ def Assistant(client, prompt, model, config):
     setup=lambda S, key: setattr(
         S, "client", openai.OpenAI(api_key=key, base_url="https://api.x.ai/v1")
     ),
-    model="grok-beta",
+    model=_ai_model("grok_beta", "grok-beta"),
 )
 def GrokBeta(client, prompt, model, config):
     content = [{"content": prompt, "role": "user"}]
@@ -253,7 +257,7 @@ def GrokBeta(client, prompt, model, config):
     key=settings.X_AI,
     setup=lambda S, key: setattr(S, "client", XAIClient(api_key=key)),
     # model="grok-4-1-fast-reasoning"
-    model="grok-4-1-fast-non-reasoning",
+    model=_ai_model("grok", "grok-4-1-fast-non-reasoning"),
 )
 def Grok(client: XAIClient, prompt, model, config):
     chat = client.chat.create(
@@ -285,7 +289,7 @@ def Grok(client: XAIClient, prompt, model, config):
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-5.4-mini",
+    model=_ai_model("openai", "gpt-5.4-mini"),
     # model="gpt-5.2-2025-12-11",
 )
 def OpenAI(client, prompt, model, config):
@@ -321,7 +325,7 @@ def OpenAI(client, prompt, model, config):
     None,
     key=settings.ANTHROPIC_AI,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
-    model="claude-sonnet-4-6",
+    model=_ai_model("claude", "claude-sonnet-4-6"),
     # model="claude-haiku-4-5",
     default=True,
 )
@@ -415,7 +419,7 @@ def Claude(client, prompt, model, config):
             api_key=key, base_url="https://api.perplexity.ai"
         ).chat.completions,
     ),
-    model="sonar",
+    model=_ai_model("perplexity", "sonar"),
 )
 def Perplexity(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -444,7 +448,7 @@ def Perplexity(client, prompt, model, config):
     setup=lambda _, key: genai.configure(api_key=key),
     # model="gemini-2.0-flash-exp",
     # model="gemini-2.5-pro-exp-03-25",
-    model="gemini-2.5-flash",
+    model=_ai_model("gemini", "gemini-2.5-flash"),
     # model = "gemini-2.5-pro"
 )
 def Gemini(client, prompt, model, config):
@@ -521,7 +525,7 @@ def Gemini(client, prompt, model, config):
     key=settings.GOOGLE_AI,
     setup=lambda S, key: setattr(S, "client", google_genai.Client(api_key=key)),
     # model="imagen-4.0-generate-001",
-    model="imagen-4.0-fast-generate-001",
+    model=_ai_model("imagen", "imagen-4.0-fast-generate-001"),
     # model="imagen-3.0-capability-001",
 )
 def NanoBanana(client, prompt, model, config):
