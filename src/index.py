@@ -1204,6 +1204,8 @@ def _resolve_discord_target(ctx, scope, raw_target):
 
 def _resolve_discord_user_id(raw):
     raw = str(raw).strip()
+    if raw.startswith("<@&") and raw.endswith(">"):
+        return raw
     if raw.startswith("<@") and raw.endswith(">"):
         inner = raw[2:-1]
         if inner.startswith("!"):
