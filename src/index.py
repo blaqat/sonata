@@ -19,6 +19,7 @@ import base64
 import os
 import re
 import sys
+import json
 from io import BytesIO
 import anthropic
 import discord
@@ -1365,6 +1366,28 @@ async def restart_bot(ctx):
         reply=True,
     )
     restart()
+
+
+@sonata.command(name="config", description="Display the current config.")
+async def config(ctx):
+    """
+    Command to display the current config.
+    Only runnable by <@{settings.GOD}>.
+    """
+    if ctx.author.id != settings.GOD:
+        return 
+    s = f"""
+### Runtime
+```json
+{json.dumps(RUNTIME, default=vars, sort_keys=True)}
+```
+
+### Plugins
+```json
+{json.dumps(_PLUGIN_EXTEND, sort_keys=True)}
+```
+"""
+    await ctx_reply(ctx, s)
 
 
 async def main():
