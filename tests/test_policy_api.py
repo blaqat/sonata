@@ -413,12 +413,52 @@ class PolicyApiTests(unittest.TestCase):
             policies.should_respond_all(guild_id=2, channel_id=10, user_id=1)
         )
 
+    def test_protected_channel_sets_chat_and_beacon_rules(self):
+        sonata = FakeSonata()
+        sonata.beacon.home = "Beacon/Home"
+        policies = ChannelPolicies(sonata)
+
+        policies.set_channel_flag(321, "protected", True)
+
+        self.assertTrue(
+            policies.is_protected(guild_id=1, channel_id=321, user_id=7)
+        )
+        self.assertTrue(
+            policies.policy_api.evaluate(
+                "beacon",
+                "beacon.encrypt.path.beacon/home/chat/value/i321",
+                guild_id="__global__",
+                default=False,
+            )
+        )
+
+    def test_unprotect_channel_removes_beacon_rule(self):
+        sonata = FakeSonata()
+        sonata.beacon.home = "Beacon/Home"
+        policies = ChannelPolicies(sonata)
+
+        policies.set_channel_flag(321, "protected", True)
+        policies.set_channel_flag(321, "protected", False)
+
+        self.assertFalse(
+            policies.is_protected(guild_id=1, channel_id=321, user_id=7)
+        )
+        self.assertFalse(
+            policies.policy_api.evaluate(
+                "beacon",
+                "beacon.encrypt.path.beacon/home/chat/value/i321",
+                guild_id="__global__",
+                default=False,
+            )
+        )
+
     def test_refresh_from_policy_api_bridges_unified_chat_rules(self):
         sonata = FakeSonata()
+        sonata.beacon.home = "Beacon/Home"
         policies = ChannelPolicies(sonata)
 
         policies.policy_api.set_rule(
-            "chat", "channel", 444, "chat.can_speak", "deny"
+            "chat", "channel", 444, "chat.protected", "allow"
         )
         policies.policy_api.set_rule(
             "chat", "channel", 444, "chat.command.*", "deny"
@@ -430,9 +470,17 @@ class PolicyApiTests(unittest.TestCase):
         policies.refresh_from_policy_api()
 
         channel_policy = policies.get_channel_policy(444)
-        self.assertFalse(channel_policy.can_speak)
+        self.assertTrue(channel_policy.protected)
         self.assertEqual(channel_policy.command_policy_mode, ALLOWLIST)
         self.assertEqual(channel_policy.commands, ["help"])
+        self.assertTrue(
+            policies.policy_api.evaluate(
+                "beacon",
+                "beacon.encrypt.path.beacon/home/chat/value/i444",
+                guild_id="__global__",
+                default=False,
+            )
+        )
 
     def test_refresh_from_policy_api_preserves_custom_chat_rules(self):
         sonata = FakeSonata()
@@ -532,6 +580,31 @@ class PolicyApiTests(unittest.TestCase):
         self.assertFalse(reloaded.can_speak(guild_id=1, channel_id=555, user_id=7))
         self.assertTrue(
             reloaded.should_respond_all(guild_id=1, channel_id=555, user_id=7)
+        )
+
+    def test_refresh_from_policy_api_preserves_custom_chat_rules(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+
+        policies.policy_api.set_rule(
+            "chat", "channel", 777, "chat.feature.custom", "allow"
+        )
+        policies.policy_api.set_rule(
+            "chat", "channel", 777, "chat.can_speak", "deny"
+        )
+
+        policies.refresh_from_policy_api()
+
+        rules = {
+            (rule.action, rule.effect)
+            for rule in policies.policy_api.get_scope_rules("chat", "channel", 777)
+        }
+        self.assertIn(("chat.feature.custom", "allow"), rules)
+        self.assertIn(("chat.can_speak", "deny"), rules)
+        channel_policy = policies.get_channel_policy(777)
+        self.assertEqual(
+            channel_policy.extra_rules,
+            [{"action": "chat.feature.custom", "effect": "allow"}],
         )
 
 
