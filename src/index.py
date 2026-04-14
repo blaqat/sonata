@@ -66,6 +66,50 @@ RUNTIME, _PLUGIN_EXTEND = load_config()
 def _ai_model(key: str, builtin_default: str) -> str:
     return resolve_ai_model(RUNTIME, key, builtin_default)
 
+
+def _normalize_image_inputs(config):
+    images = config.get("images")
+    if not images:
+        return None
+
+    if isinstance(images, dict):
+        channel_id = config.get("channel_id")
+        images = images.get(channel_id) or images.get(str(channel_id))
+        cprint(
+            f"Normalized dict image payload for channel {channel_id}: {0 if not images else len(images)} items",
+            "yellow",
+        )
+
+    if images is None:
+        return None
+
+    if isinstance(images, (str, bytes)):
+        images = [images]
+    elif not isinstance(images, list):
+        try:
+            images = list(images)
+        except TypeError:
+            cprint(f"Discarding unsupported image payload type: {type(images).__name__}", "red")
+            return None
+
+    valid_images = []
+    invalid_images = []
+    for item in images:
+        if item is True:
+            continue
+        if isinstance(item, str) and re.match(r"^https?://", item):
+            valid_images.append(item)
+        else:
+            invalid_images.append(item)
+
+    if invalid_images:
+        cprint(
+            f"Discarded invalid image payload entries: {invalid_images}",
+            "yellow",
+        )
+
+    return valid_images or None
+
 nest_asyncio.apply()
 
 if not discord.opus.is_loaded():
@@ -194,7 +238,7 @@ def DallE(client, prompt, model, config):
 )
 def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
+    i = _normalize_image_inputs(config)
     if i:
         if model != "gpt-4o":
             model = "gpt-4-vision-preview"
@@ -273,7 +317,7 @@ def Grok(client: XAIClient, prompt, model, config):
 
     content = [prompt]
 
-    if images := config.get("images", False):
+    if images := _normalize_image_inputs(config):
         for url in images:
             if url is True:
                 continue
@@ -295,7 +339,7 @@ def Grok(client: XAIClient, prompt, model, config):
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    images = config.get("images", False)
+    images = _normalize_image_inputs(config)
 
     if images:
         images = [
@@ -332,7 +376,7 @@ def OpenAI(client, prompt, model, config):
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
+    i = _normalize_image_inputs(config)
     instructions = (
         [
             {
@@ -473,7 +517,7 @@ def Gemini(client, prompt, model, config):
         },
     ]
     content = prompt
-    images = config.get("images", False)
+    images = _normalize_image_inputs(config)
     if images:
         # model = "gemini-1.5-flash"
         images = [Image.open(BytesIO(requests.get(u).content)) for u in images if u is not True]
