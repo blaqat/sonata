@@ -1374,7 +1374,8 @@ async def config(ctx):
     Command to display the current config.
     Only runnable by <@{settings.GOD}>.
     """
-    if ctx.author.id != settings.GOD:
+    if ctx.author.id != int(settings.GOD):
+        print(f"Command config run by {ctx.author.id} not {settings.GOD}")
         return 
     s = f"""
 ### Runtime
