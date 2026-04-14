@@ -17,7 +17,6 @@ from typing import Any
 
 from modules.plugins import PLUGINS_DICT
 
-
 _DEFAULT_AI_MODELS: dict[str, str] = {
     "dall_e": "dall-e-3",
     "assistant": "gpt-4o",
