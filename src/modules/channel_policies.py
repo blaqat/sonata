@@ -98,12 +98,14 @@ class ChannelPolicy:
     # Stored shape for one guild/channel/user policy row (mirrored into PolicyAPI "chat" rules).
     can_speak: bool = True
     respond_all: bool = False
+    protected: bool = False
     command_policy_mode: str = DENYLIST
     commands: list[str] | None = None
 
     def __post_init__(self):
         self.can_speak = bool(self.can_speak)
         self.respond_all = bool(self.respond_all)
+        self.protected = bool(self.protected)
         if self.command_policy_mode not in {ALLOWLIST, DENYLIST}:
             self.command_policy_mode = DENYLIST
         self.commands = normalize_commands(self.commands)
@@ -113,6 +115,7 @@ class ChannelPolicy:
         return cls(
             can_speak=True,
             respond_all=False,
+            protected=False,
             command_policy_mode=DENYLIST,
             commands=[],
         )
@@ -133,6 +136,7 @@ class ChannelPolicy:
             return cls(
                 can_speak=policy.can_speak,
                 respond_all=policy.respond_all,
+                protected=policy.protected,
                 command_policy_mode=policy.command_policy_mode,
                 commands=policy.commands,
             )
@@ -143,6 +147,7 @@ class ChannelPolicy:
         return cls(
             can_speak=policy.get("can_speak", True),
             respond_all=policy.get("respond_all", False),
+            protected=policy.get("protected", False),
             command_policy_mode=policy.get("command_policy_mode", DENYLIST),
             commands=policy.get("commands", []),
         )
@@ -151,6 +156,7 @@ class ChannelPolicy:
         return {
             "can_speak": self.can_speak,
             "respond_all": self.respond_all,
+            "protected": self.protected,
             "command_policy_mode": self.command_policy_mode,
             "commands": list(self.commands),
         }
@@ -202,6 +208,7 @@ class ChannelPolicy:
         return (
             f"can_speak={self.can_speak}, "
             f"respond_all={self.respond_all}, "
+            f"protected={self.protected}, "
             f"command_policy_mode={self.command_policy_mode}, "
             f"commands=[{commands}]"
         )
@@ -219,6 +226,8 @@ class ChannelPolicies:
         self.loaded = False
         self.policy_api = get_or_create_policy_api(sonata)
         self._ensure_chat_namespace()
+        self._ensure_beacon_namespace()
+        self.init()
 
     def _ensure_chat_namespace(self):
         if self.policy_api.has_namespace("chat"):
@@ -231,9 +240,116 @@ class ChannelPolicies:
             default_decisions={
                 "chat.can_speak": True,
                 "chat.respond_all": False,
+                "chat.protected": False,
                 "chat.command.*": True,
             },
         )
+
+    def _has_beacon(self):
+        has_method = getattr(self.sonata, "has", None)
+        if callable(has_method):
+            try:
+                return bool(has_method("beacon"))
+            except Exception:
+                return hasattr(self.sonata, "beacon")
+        return hasattr(self.sonata, "beacon")
+
+    def _ensure_beacon_namespace(self):
+        if not self._has_beacon():
+            return
+        if self.policy_api.has_namespace("beacon"):
+            self.policy_api.activate_namespace("beacon")
+            return
+        self.policy_api.register_namespace("beacon", plugin=True)
+
+    def _beacon_chat_history_action(self, channel_id):
+        if not self._has_beacon():
+            return None
+        beacon_home = getattr(getattr(self.sonata, "beacon", None), "home", None)
+        if not beacon_home:
+            return None
+        beacon_home = str(beacon_home)
+        normalized = beacon_home.replace("\\", "/").strip("/").lower()
+        return f"beacon.encrypt.path.{normalized}/chat/value/i{channel_id}"
+
+    def _policy_from_scope_rules(self, scope, scope_id):
+        rules = self.policy_api.get_scope_rules("chat", scope, scope_id)
+        if not rules:
+            return None
+
+        policy = ChannelPolicy.default()
+        allowed_commands = []
+        denied_commands = []
+        allowlist_mode = False
+
+        for rule in rules:
+            if rule.action == "chat.can_speak":
+                policy.can_speak = rule.effect != EFFECT_DENY
+            elif rule.action == "chat.respond_all":
+                policy.respond_all = rule.effect == EFFECT_ALLOW
+            elif rule.action == "chat.protected":
+                policy.protected = rule.effect == EFFECT_ALLOW
+            elif rule.action == "chat.command.*":
+                allowlist_mode = rule.effect == EFFECT_DENY
+            elif rule.action.startswith("chat.command."):
+                command = normalize_command_name(rule.action.removeprefix("chat.command."))
+                if not command:
+                    continue
+                if rule.effect == EFFECT_ALLOW:
+                    allowed_commands.append(command)
+                else:
+                    denied_commands.append(command)
+
+        if allowlist_mode:
+            policy.command_policy_mode = ALLOWLIST
+            policy.commands = normalize_commands(allowed_commands)
+        else:
+            policy.command_policy_mode = DENYLIST
+            policy.commands = normalize_commands(denied_commands)
+
+        return policy
+
+    def refresh_from_policy_api(self):
+        chat_rules = self.policy_api._rules.get("chat", {})
+        old_channel_ids = set(self.channels.keys())
+
+        guilds = {}
+        for scope_id in chat_rules.get("guild", {}):
+            policy = self._policy_from_scope_rules("guild", scope_id)
+            if policy is not None:
+                guilds[str(scope_id)] = policy
+
+        users = {}
+        for scope_id in chat_rules.get("user", {}):
+            policy = self._policy_from_scope_rules("user", scope_id)
+            if policy is not None:
+                users[str(scope_id)] = policy
+
+        channels = {}
+        for scope_id in chat_rules.get("channel", {}):
+            policy = self._policy_from_scope_rules("channel", scope_id)
+            if policy is not None:
+                channels[str(scope_id)] = policy
+
+        self.guilds = guilds
+        self.users = users
+        self.channels = channels
+        self.loaded = True
+
+        if self._has_beacon() and self.policy_api.has_namespace("beacon"):
+            for channel_id in old_channel_ids.union(channels.keys()):
+                beacon_action = self._beacon_chat_history_action(channel_id)
+                if beacon_action is not None:
+                    self.policy_api.remove_rule(
+                        "beacon", "guild", "__global__", beacon_action
+                    )
+
+        for guild_id, policy in self.guilds.items():
+            self._sync_guild_scope(guild_id, policy)
+        for user_id, policy in self.users.items():
+            self._sync_user_scope(user_id, policy)
+        for channel_id, policy in self.channels.items():
+            self._sync_channel_scope(channel_id, policy)
 
     def _sync_channel_scope(self, channel_id, policy):
         key = str(channel_id)
@@ -251,6 +367,11 @@ class ChannelPolicies:
         policy = ChannelPolicy.normalize(policy)
         # Full replace for this scope id so removed commands disappear from PolicyAPI
         self.policy_api.clear_scope("chat", scope, scope_id)
+        beacon_action = None
+        if scope == "channel":
+            beacon_action = self._beacon_chat_history_action(scope_id)
+            if beacon_action is not None and self.policy_api.has_namespace("beacon"):
+                self.policy_api.remove_rule("beacon", "guild", "__global__", beacon_action)
 
         if not policy.can_speak:
             self.policy_api.set_rule(
@@ -262,6 +383,19 @@ class ChannelPolicies:
             self.policy_api.set_rule(
                 "chat", scope, scope_id, "chat.respond_all", EFFECT_ALLOW
             )
+
+        if policy.protected:
+            self.policy_api.set_rule(
+                "chat", scope, scope_id, "chat.protected", EFFECT_ALLOW
+            )
+            if beacon_action is not None and self.policy_api.has_namespace("beacon"):
+                self.policy_api.set_rule(
+                    "beacon",
+                    "guild",
+                    "__global__",
+                    beacon_action,
+                    EFFECT_ALLOW,
+                )
 
         if policy.command_policy_mode == DENYLIST:
             for command in policy.commands:
@@ -414,7 +548,7 @@ class ChannelPolicies:
             users=serialized_users,
             groups=serialized_groups,
         )
-        if self.sonata.has("beacon"):
+        if self._has_beacon():
             policies_branch = self.sonata.beacon.branch("policies")
             policies_branch.illuminate("channels", serialized_channels)
             policies_branch.illuminate("guilds", serialized_guilds)
@@ -422,11 +556,13 @@ class ChannelPolicies:
             policies_branch.illuminate("groups", serialized_groups)
 
     def init(self):
+        if self.loaded:
+            return self.channels
         beacon_channels = {}
         beacon_guilds = {}
         beacon_users = {}
         beacon_groups = {}
-        if self.sonata.has("beacon"):
+        if self._has_beacon():
             policies_branch = self.sonata.beacon.branch("policies")
             beacon_channels = policies_branch.discover("channels") or {}
             beacon_guilds = policies_branch.discover("guilds") or {}
@@ -670,8 +806,8 @@ class ChannelPolicies:
         return removed.clone() if removed is not None else None
 
     def set_channel_flag(self, channel_id, key, value):
-        if key not in {"can_speak", "respond_all"}:
-            raise ValueError("Channel flag must be can_speak or respond_all")
+        if key not in {"can_speak", "respond_all", "protected"}:
+            raise ValueError("Channel flag must be can_speak, respond_all or protected")
         return self.set_channel_policy(channel_id, **{key: bool(value)})
 
     def allow_command(self, channel_id, command):
@@ -737,6 +873,25 @@ class ChannelPolicies:
         return self.policy_api.evaluate(
             "chat",
             "chat.respond_all",
+            guild_id=guild_id,
+            channel_id=channel_id,
+            user_id=user_id,
+            role_ids=role_ids,
+            group_ids=group_ids,
+            default=False,
+        )
+
+    def is_protected(
+        self,
+        guild_id,
+        channel_id,
+        user_id=None,
+        role_ids=None,
+        group_ids=None,
+    ):
+        return self.policy_api.evaluate(
+            "chat",
+            "chat.protected",
             guild_id=guild_id,
             channel_id=channel_id,
             user_id=user_id,

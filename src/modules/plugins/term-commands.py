@@ -130,6 +130,12 @@ async def intercept_reply(response: str, Data_Manager: AI_Manager) -> str:
     return r
 
 
+def _is_channel_protected(manager, channel):
+    guild = getattr(channel, "guild", None)
+    guild_id = getattr(guild, "id", None)
+    return manager.chat.is_protected(guild_id, channel.id)
+
+
 @MANAGER.effect("chat", "set", prepend=False)
 def save_recent_message(_, chat_id, message_type, author, message, replying_to=None):
     """Save the recent message details to the terminal commands manager"""
@@ -1064,7 +1070,11 @@ async def god_cmd(mem, bot):
 @MANAGER.term("sum")
 async def summarize_chat(mem, bot):
     """Summarize the chat history in the current channel"""
-    id = get_channel(mem, bot).id
+    channel = get_channel(mem, bot)
+    if _is_channel_protected(MANAGER.MANAGER, channel):
+        cprint("Access denied: channel history is protected.", "red")
+        return
+    id = channel.id
 
     summary, D = MANAGER.MANAGER.chat.summarize(id)
 
@@ -1093,6 +1103,9 @@ async def summarize_chat(mem, bot):
 async def print_channel_history(mem, bot, manager):
     """Print the chat history in the current channel"""
     c = get_channel(mem, bot)
+    if _is_channel_protected(manager, c):
+        cprint("Access denied: channel history is protected.", "red")
+        return
     messages = manager.chat.get_chat(c.id)
     cprint("Channel chat history:", "yellow")
     messages = [f"{m[1]}: {m[2]}" for m in messages]
@@ -1109,6 +1122,9 @@ async def save_chat():
 async def run_self_cmd(mem, bot, manager):
     """Run a self-command with arguments in the current channel"""
     c = get_channel(mem, bot)
+    if _is_channel_protected(manager, c):
+        cprint("Access denied: channel history is protected.", "red")
+        return
     history = manager.chat.get_history(c.id)
     # ai = client.config.get("AI")
     config = manager.config.copy()

@@ -84,6 +84,7 @@ class ChannelPolicyTests(unittest.TestCase):
         policy = ChannelPolicy.default()
         self.assertTrue(policy.can_speak)
         self.assertFalse(policy.respond_all)
+        self.assertFalse(policy.protected)
         self.assertEqual(policy.command_policy_mode, DENYLIST)
         self.assertEqual(policy.commands, [])
         self.assertTrue(policy.allows_command("help"))
@@ -148,6 +149,11 @@ class ChannelPolicyTests(unittest.TestCase):
             sonata._beacon_store[("policies", "channels")]["123"]["command_policy_mode"],
             DENYLIST,
         )
+
+    def test_policy_round_trip_preserves_protected_flag(self):
+        policy = ChannelPolicy.normalize({"protected": True, "commands": ["help"]})
+        self.assertTrue(policy.protected)
+        self.assertTrue(ChannelPolicy.normalize(policy.to_dict()).protected)
 
     def test_missing_permissions_are_denied(self):
         class Permissions:

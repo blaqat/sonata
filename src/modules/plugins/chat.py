@@ -288,31 +288,38 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         user_id=message.author.id,
         role_ids=role_ids,
     )
+    channel_protected = policy_manager.is_protected(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+        role_ids=role_ids,
+    )
 
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     message_reference = None
 
-    if _guild_name != self.current_guild:
-        cprint("\n" + _guild_name.lower(), "purple", "_")
-        self.current_guild = _guild_name
+    if not channel_protected:
+        if _guild_name != self.current_guild:
+            cprint("\n" + _guild_name.lower(), "purple", "_")
+            self.current_guild = _guild_name
 
-    if _channel_name != self.current_channel:
-        cprint("#" + _channel_name, "green", end=" ")
-        print(f"({message.channel.id})")
-        self.current_channel = _channel_name
+        if _channel_name != self.current_channel:
+            cprint("#" + _channel_name, "green", end=" ")
+            print(f"({message.channel.id})")
+            self.current_channel = _channel_name
 
-    print(
-        "  {0}: {1}".format(
-            cstr(str=get_full_name(message), style=message.author.color),
-            CENSOR
-            and censor_message(
-                message.content.replace("\n", "\n\t"),
-                BANNED_WORDS,
+        print(
+            "  {0}: {1}".format(
+                cstr(str=get_full_name(message), style=message.author.color),
+                CENSOR
+                and censor_message(
+                    message.content.replace("\n", "\n\t"),
+                    BANNED_WORDS,
+                )
+                or message.content.replace("\n", "\n\t"),
             )
-            or message.content.replace("\n", "\n\t"),
         )
-    )
 
     memory_text = message.author.name + (
         f" (Nickname {_name})" if _name != message.author.name else ""
@@ -750,6 +757,15 @@ def chat(sona: AI_Manager):
 
         def set_channel_flag(self, channel_id, key, value):
             return policy_manager.set_channel_flag(channel_id, key, value)
+
+        def is_protected(self, guild_id, channel_id, user_id=None, role_ids=None, group_ids=None):
+            return policy_manager.is_protected(
+                guild_id,
+                channel_id,
+                user_id=user_id,
+                role_ids=role_ids,
+                group_ids=group_ids,
+            )
 
         def allow_command(self, channel_id, command):
             return policy_manager.allow_command(channel_id, command)

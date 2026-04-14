@@ -191,6 +191,28 @@ class BeaconPolicyTests(unittest.TestCase):
             )
         )
 
+    def test_chat_channel_path_rule_encrypts_saved_history(self):
+        action = self.beacon._path_action(f"{self.beacon.home}/chat/value/i123")
+        self.beacon.policy_api.set_rule(
+            "beacon",
+            "guild",
+            self.beacon_module.GLOBAL_POLICY_SCOPE_ID,
+            action,
+            "allow",
+        )
+
+        payload = {123: [("User", "alice", "hello", None)]}
+        self.beacon.branch("chat").illuminate("value", payload, encrypted=False)
+
+        with open(f"{self.beacon.home}/chat/value/i123.p", "rb") as handle:
+            raw_encrypted = handle.read()
+
+        with self.assertRaises(Exception):
+            pickle.loads(raw_encrypted)
+
+        loaded = self.beacon.branch("chat").discover("value", encrypted=False)
+        self.assertEqual(loaded, payload)
+
 
 if __name__ == "__main__":
     unittest.main()

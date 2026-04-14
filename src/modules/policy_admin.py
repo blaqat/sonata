@@ -216,6 +216,7 @@ class PolicyAdmin:
     def _persist(self, namespace):
         # Chat namespace uses ChannelPolicies persistence (legacy path)
         if namespace == "chat" and hasattr(self.sonata, "chat"):
+            self.sonata.chat.policy_manager.refresh_from_policy_api()
             self.sonata.chat.policy_manager._persist()
             return
         # Generic namespace persistence
