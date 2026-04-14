@@ -1,0 +1,67 @@
+{
+  "runtime": {
+    "random_config": false,
+    "prompt_reset": false,
+    "vc_recording": false,
+    "vc_speaking": true
+  },
+  "plugins": {
+    "beacon": {},
+    "chat": {
+      "summarize": true,
+      "max_chats": 30,
+      "auto": "c",
+      "view_replies": true,
+      "ignore": [],
+      "response_map": {
+        "subi": [
+          0.005,
+          "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>"
+        ],
+        "log": [
+          0.005,
+          "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"
+        ],
+        "blaqat": [
+          0.005,
+          "yes master"
+        ],
+        "ans": [
+          0.01,
+          "youre the robot why dont u tell me hmmm?"
+        ]
+      },
+      "bot_whitelist": [
+        "BluBot",
+        1311742291521835048,
+        746799398994051162
+      ],
+      "censor": false
+    },
+    "ispy": {},
+    "openai_assistant": {
+      "using_assistant": true
+    },
+    "self_commands": {
+      "gif_search": "random",
+      "agent_model": "Claude",
+      "agent": false,
+      "agent_retries": 3,
+      "agent_max_steps": 5,
+      "search": {
+        "num_results": 2
+      },
+      "video": {
+        "limit": 1,
+        "max_results": 5
+      },
+      "music": {
+        "num_links": 1,
+        "max_tracks_to_check": 10
+      }
+    },
+    "term_commands": {
+      "inject_emojis": false
+    }
+  }
+}

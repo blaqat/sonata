@@ -20,8 +20,6 @@ import os
 import re
 import sys
 from io import BytesIO
-from random import randint
-
 import anthropic
 import discord
 import google.generativeai as genai
@@ -59,34 +57,9 @@ from modules.utils import (
 from modules.utils import (
     get_reference_chain as get_chain,
 )
+from sonata_config import load_config, rand_runtime
 
-"""
-Test Configuration
-"""
-# TODO: Move configuration to a separate file
-RANDOM_CONFIG = False
-AUTO_MODEL = "c"  # g, o, c, a, m, x
-PROMPT_RESET = False
-VC_RECORDING = False
-VC_SPEAKING = True
-GIF_SEARCH = "random"  # tenor, giphy, google, random
-EMOJIS = False
-AGENT = False  # Removes ability to run single commands other than agent
-IGNORE_LIST = []
-
-
-def rand_config():
-    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS, AGENT
-    models = ["g", "o", "c", "a", "m", "x"]
-    gif_searches = ["tenor", "giphy", "google", "random"]
-    AUTO_MODEL = models[randint(0, len(models) - 1)]
-    PROMPT_RESET = bool(randint(0, 1))
-    VC_RECORDING = bool(randint(0, 1))
-    VC_SPEAKING = bool(randint(0, 1))
-    GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
-    EMOJIS = bool(randint(0, 1))
-    AGENT = bool(randint(0, 1))
-
+RUNTIME, _PLUGIN_EXTEND = load_config()
 
 nest_asyncio.apply()
 
@@ -172,36 +145,10 @@ def extend(Sonata: AI_Manager):
     Extends the Sonata AI_Manager with additional plugins and configurations.
     """
     # Add funny responses with a small chance of being triggered
-    # TODO: Move config to configuration
     Sonata.extend(
         sonata,
         PLUGINS(openai_assistant=False),
-        chat={
-            "summarize": True,
-            "max_chats": 30,
-            "view_replies": True,
-            "auto": AUTO_MODEL,
-            "ignore": [name.lower() for name in IGNORE_LIST],
-            "response_map": {
-                "subi": (
-                    0.005,
-                    "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
-                ),
-                "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
-                "blaqat": (0.005, "yes master"),
-                "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
-            },
-            "bot_whitelist": [
-                "BluBot",
-                1311742291521835048,
-                746799398994051162,
-            ],
-            "censor": False,
-        },
-        self_commands={"gif_search": GIF_SEARCH, "agent": AGENT},
-        term_commands={
-            "inject_emojis": EMOJIS,
-        },
+        **_PLUGIN_EXTEND,
     )
 
 
@@ -632,10 +579,6 @@ sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
 extend(Sonata)
 
-# HACK: This is a hack to DESTROY SONATAS MEMORY
-if PROMPT_RESET:
-    reset_instructions()
-
 # TODO: Move all speaking related things to a separate module
 # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645198
 #
@@ -805,7 +748,7 @@ async def on_voice_state_update(member, before, after):
             print(f"Sonata has joined the voice channel: {after.channel.name}")
             # Start recording audio
             vc = member.guild.voice_client
-            if VC_RECORDING:
+            if RUNTIME.vc_recording:
                 await start_recording(vc, after.channel)
             else:
                 cprint("VC Recording is disabled", "red")
@@ -821,7 +764,7 @@ async def on_voice_state_update(member, before, after):
                 f"Sonata has moved from {before.channel.name} to {after.channel.name}"
             )
             vc = member.guild.voice_client
-            if VC_RECORDING:
+            if RUNTIME.vc_recording:
                 await start_recording(vc, after.channel)
             else:
                 cprint("VC Recording is disabled", "red")
@@ -905,7 +848,7 @@ async def voice(ctx, *voice):
     """
     Changes the voice used for TTS in voice channels.
     """
-    if not VC_SPEAKING:
+    if not RUNTIME.vc_speaking:
         return await ctx.send("soz voice speaking is disabled")
     VALID_OPTIONS = [
         "alloy",
@@ -942,7 +885,7 @@ async def talk(ctx, *message):
     Joins the user's voice channel (if not already connected) and speaks the provided message using TTS.
     """
     global CURRENT_VC
-    if not VC_SPEAKING:
+    if not RUNTIME.vc_speaking:
         return await ctx.send("soz voice speaking is disabled")
 
     if ctx.guild.voice_client is not None:
@@ -1423,15 +1366,22 @@ async def restart_bot(ctx):
 async def main():
     # TODO: Make other run modes like "flash", "view", "absorb"
     # to handle different pre/post memory scenerios
-    if RANDOM_CONFIG:
-        rand_config()
+    if RUNTIME.random_config:
+        rand_runtime(RUNTIME, _PLUGIN_EXTEND)
+    if RUNTIME.prompt_reset:
+        reset_instructions()
     cprint("Initlializing...", "yellow")
     Sonata.beacon.branch("chat").flash()
     cprint("Chat memory flashed", "yellow")
     Sonata.reload("chat", "value", module=True)
     cprint("Chat memory restored", "yellow")
     cprint(
-        f"Using Model: {AUTO_MODEL}\nMemory Reset: {PROMPT_RESET}\nGIF Search: {GIF_SEARCH}\nInjecting Emojis: {EMOJIS}",
+        "Using Model: {0}\nMemory Reset: {1}\nGIF Search: {2}\nInjecting Emojis: {3}".format(
+            _PLUGIN_EXTEND.get("chat", {}).get("auto"),
+            RUNTIME.prompt_reset,
+            _PLUGIN_EXTEND.get("self_commands", {}).get("gif_search"),
+            _PLUGIN_EXTEND.get("term_commands", {}).get("inject_emojis"),
+        ),
         "purple",
     )
     await sonata.start(settings.BOT_TOKEN)
