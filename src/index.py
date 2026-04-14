@@ -1188,16 +1188,16 @@ def _resolve_discord_target(ctx, scope, raw_target):
     if raw.startswith("<#") and raw.endswith(">"):
         return raw[2:-1]
 
+    # <@&role_id>
+    if raw.startswith("<@&") and raw.endswith(">"):
+        return raw[3:-1]
+
     # <@user_id> or <@!user_id>
     if raw.startswith("<@") and raw.endswith(">"):
         inner = raw[2:-1]
         if inner.startswith("!"):
             inner = inner[1:]
         return inner
-
-    # <@&role_id>
-    if raw.startswith("<@&") and raw.endswith(">"):
-        return raw[3:-1]
 
     return raw
 
