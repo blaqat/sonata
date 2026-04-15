@@ -1448,7 +1448,6 @@ async def run_self_cmd(mem, bot, manager):
     # ai = client.config.get("AI")
     config = manager.config.copy()
     image_map = config.get("images") or {}
-    config["channel_id"] = c.id
     config["images"] = image_map.get(c.id) or image_map.get(str(c.id))
     command = await prompt("Enter self-command: ")
     args = await prompt("Enter args: ")

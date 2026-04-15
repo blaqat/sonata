@@ -69,46 +69,18 @@ def _ai_model(key: str, builtin_default: str) -> str:
 
 def _normalize_image_inputs(config):
     images = config.get("images")
-    if not images:
-        return None
-
-    if isinstance(images, dict):
-        channel_id = config.get("channel_id")
-        images = images.get(channel_id) or images.get(str(channel_id))
-        cprint(
-            f"Normalized dict image payload for channel {channel_id}: {0 if not images else len(images)} items",
-            "yellow",
-        )
-
-    if images is None:
+    if not images or images is None:
         return None
 
     if isinstance(images, (str, bytes)):
         images = [images]
-    elif not isinstance(images, list):
-        try:
-            images = list(images)
-        except TypeError:
-            cprint(f"Discarding unsupported image payload type: {type(images).__name__}", "red")
-            return None
 
-    valid_images = []
-    invalid_images = []
-    for item in images:
-        if item is True:
-            continue
-        if isinstance(item, str) and re.match(r"^https?://", item):
-            valid_images.append(item)
-        else:
-            invalid_images.append(item)
+    valid_images = filter(
+        images, 
+        lambda image: isinstance(image, str) and re.match(r"^https?://", image)
+    )
 
-    if invalid_images:
-        cprint(
-            f"Discarded invalid image payload entries: {invalid_images}",
-            "yellow",
-        )
-
-    return valid_images or None
+    return list(valid_images) or None
 
 nest_asyncio.apply()
 
