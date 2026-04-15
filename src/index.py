@@ -76,8 +76,8 @@ def _normalize_image_inputs(config):
         images = [images]
 
     valid_images = filter(
-        images, 
-        lambda image: isinstance(image, str) and re.match(r"^https?://", image)
+        lambda image: isinstance(image, str) and re.match(r"^https?://", image),
+        images
     )
 
     return list(valid_images) or None
