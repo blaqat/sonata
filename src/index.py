@@ -66,6 +66,23 @@ RUNTIME, _PLUGIN_EXTEND = load_config()
 def _ai_model(key: str, builtin_default: str) -> str:
     return resolve_ai_model(RUNTIME, key, builtin_default)
 
+
+def _normalize_image_inputs(config):
+    images = config.get("images")
+    if not images or images is None:
+        return None
+
+    if isinstance(images, str):
+        images = [images]
+
+
+    valid_images = filter(
+        lambda image: isinstance(image, str) and re.match(r"^https?://", image),
+        images
+    )
+
+    return list(valid_images) or None
+
 nest_asyncio.apply()
 
 if not discord.opus.is_loaded():
@@ -194,7 +211,7 @@ def DallE(client, prompt, model, config):
 )
 def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
+    i = _normalize_image_inputs(config)
     if i:
         if model != "gpt-4o":
             model = "gpt-4-vision-preview"
@@ -273,7 +290,7 @@ def Grok(client: XAIClient, prompt, model, config):
 
     content = [prompt]
 
-    if images := config.get("images", False):
+    if images := _normalize_image_inputs(config):
         for url in images:
             if url is True:
                 continue
@@ -295,7 +312,7 @@ def Grok(client: XAIClient, prompt, model, config):
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    images = config.get("images", False)
+    images = _normalize_image_inputs(config)
 
     if images:
         images = [
@@ -332,7 +349,7 @@ def OpenAI(client, prompt, model, config):
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
+    i = _normalize_image_inputs(config)
     instructions = (
         [
             {
@@ -473,7 +490,7 @@ def Gemini(client, prompt, model, config):
         },
     ]
     content = prompt
-    images = config.get("images", False)
+    images = _normalize_image_inputs(config)
     if images:
         # model = "gemini-1.5-flash"
         images = [Image.open(BytesIO(requests.get(u).content)) for u in images if u is not True]
