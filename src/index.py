@@ -72,8 +72,9 @@ def _normalize_image_inputs(config):
     if not images or images is None:
         return None
 
-    if isinstance(images, (str, bytes)):
+    if isinstance(images, str):
         images = [images]
+
 
     valid_images = filter(
         lambda image: isinstance(image, str) and re.match(r"^https?://", image),
