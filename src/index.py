@@ -184,22 +184,38 @@ def extend(Sonata: AI_Manager):
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model=_ai_model("dall_e", "dall-e-3"),
+    model=_ai_model("dall_e", "gpt-image-2"),
     # model="dall-e-2",
     # model = "gpt-image-1"
 )
 def DallE(client, prompt, model, config):
-    return (
-        client.generate(
-            model=model,
-            prompt=prompt,
-            # quality=config.get("quality", "auto"),
-            quality=config.get("quality", "standard"),
-            n=config.get("num_images", 1),
-        )
-        .data[0]
-        .url
+    result = client.generate(
+        model=model,
+        prompt=prompt,
+        quality=config.get("quality", "standard"),
+        n=config.get("num_images", 1),
     )
+    image = result.data[0]
+
+    if getattr(image, "url", None):
+        return image.url
+
+    image_base64 = getattr(image, "b64_json", None)
+    if image_base64:
+        image_bytes = base64.b64decode(image_base64)
+
+        url = "https://catbox.moe/user/api.php"
+        files = {
+            "reqtype": (None, "fileupload"),
+            "fileToUpload": ("image.png", image_bytes),
+        }
+        response = requests.post(url, files=files)
+
+        if response.status_code == 200 and response.text.startswith("http"):
+            return response.text
+        raise AI_Error(f"Failed to upload image to catbox: {response.text}")
+
+    raise AI_Error("No image URL or base64 image data was returned by OpenAI.")
 
 
 @MANAGER.register_ai(
