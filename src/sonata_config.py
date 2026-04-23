@@ -18,7 +18,7 @@ from typing import Any
 from modules.plugins import PLUGINS_DICT
 
 _DEFAULT_AI_MODELS: dict[str, str] = {
-    "dall_e": "dall-e-3",
+    "dall_e": "gpt-image-2",
     "assistant": "gpt-4o",
     "grok_beta": "grok-beta",
     "grok": "grok-4-1-fast-non-reasoning",
