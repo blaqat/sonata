@@ -34,7 +34,7 @@ from modules.utils import (
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
-        "gif_search": "tenor",
+        "gif_search": "klipy",
         "agent_model": "Claude",
         "agent": True,
         "agent_retries": 3,
@@ -244,9 +244,28 @@ def gif_giphy_search(*search_term, limit=15):
 
 
 def gif_tenor_search(*search_term, limit=15):
-    """Search for a gif using the Tenor API"""
+    """Search for a gif using the Tenor API (deprecated; prefer KLIPY)."""
+    cprint(
+        "Tenor GIF search is deprecated; set gif_search to 'klipy' and configure KLIPY.",
+        "yellow",
+    )
     search_term = " ".join(search_term)
     url = f"https://tenor.googleapis.com/v2/search?q={search_term}&key={settings.TENOR_G}&limit={limit}"
+    with requests.get(url) as response:
+        gifs = json.loads(response.text)["results"]
+
+    n = get_n(search_term, len(gifs))
+    if len(gifs) == 0:
+        return "Gif not found."
+    return {
+        "link": gifs[n]["media_formats"]["gif"]["url"],
+    }
+
+
+def gif_klipy_search(*search_term, limit=15):
+    """Search for a gif using the KLIPY API (Tenor-compatible drop-in)."""
+    search_term = " ".join(search_term)
+    url = f"https://api.klipy.com/v2/search?q={search_term}&key={settings.KLIPY}&limit={limit}"
     with requests.get(url) as response:
         gifs = json.loads(response.text)["results"]
 
@@ -488,8 +507,7 @@ def combined_search(*search_term: str) -> Dict[str, Any]:
 )
 def get_gif(*search_term):
     limit = 15
-    # search = random.choice([gif_google_search, gif_giphy_search, gif_tenor_search])
-    search_style = MANAGER.MANAGER.config.get("gif_search", "tenor")
+    search_style = MANAGER.MANAGER.config.get("gif_search", "klipy")
 
     match search_style:
         case "google":
@@ -498,8 +516,14 @@ def get_gif(*search_term):
             search = gif_giphy_search
         case "tenor":
             search = gif_tenor_search
+        case "klipy":
+            search = gif_klipy_search
+        case "random":
+            search = random.choice(
+                [gif_google_search, gif_giphy_search, gif_klipy_search]
+            )
         case _:
-            search = gif_tenor_search
+            search = gif_klipy_search
 
     return search(*search_term, limit=limit)
 

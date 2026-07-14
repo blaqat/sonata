@@ -991,7 +991,8 @@ async def get_reference_chain(message, max_length=-1, include_message=False):
     return chain
 
 
-def tenor_get_dl_url(url, key, size="mediumgif"):
+def gif_provider_get_dl_url(url, key, size="mediumgif", api_host=None):
+    """Resolve a Tenor/KLIPY page URL to a direct media download URL."""
     gif_id = None
     try:
         gif_id = re.search(r"-(\d+)$", url).group(1)
@@ -1001,7 +1002,13 @@ def tenor_get_dl_url(url, key, size="mediumgif"):
     if not gif_id:
         return None
 
-    api_url = f"https://tenor.googleapis.com/v2/posts?ids={gif_id}&key={key}"
+    if api_host is None:
+        if "klipy.com" in url:
+            api_host = "api.klipy.com"
+        else:
+            api_host = "tenor.googleapis.com"
+
+    api_url = f"https://{api_host}/v2/posts?ids={gif_id}&key={key}"
     response = requests.get(api_url)
 
     if response.status_code == 200:
@@ -1037,6 +1044,10 @@ def tenor_get_dl_url(url, key, size="mediumgif"):
     else:
         return None
 
+
+def tenor_get_dl_url(url, key, size="mediumgif"):
+    """Backward-compatible alias for gif_provider_get_dl_url (Tenor host)."""
+    return gif_provider_get_dl_url(url, key, size=size, api_host="tenor.googleapis.com")
 
 class Map:
     def __init__(self, initial_dict: dict = None):

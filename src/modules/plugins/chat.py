@@ -49,7 +49,7 @@ from modules.utils import (
     has_inside,
     get_reference_message as get_ref,
     get_reference_chain as get_ref_chain,
-    tenor_get_dl_url,
+    gif_provider_get_dl_url,
     get_trace,
 )
 import random
@@ -171,12 +171,23 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
         urls = re.findall(r"http\S+", message.content)
         for url in urls:
             if has_inside(url, image_types):
+                original_url = url
                 if "tenor.com" in url:
-                    url = tenor_get_dl_url(
-                        url, settings.TENOR_G, "tinywebppreview_transparent"
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.TENOR_G,
+                        "tinywebppreview_transparent",
+                        api_host="tenor.googleapis.com",
+                    )
+                elif "klipy.com" in url:
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.KLIPY,
+                        "tinywebppreview_transparent",
+                        api_host="api.klipy.com",
                     )
                 attachments.append(url)
-                message.content = message.content.replace(url, "")
+                message.content = message.content.replace(original_url, "")
             else:
                 not_grabbed.append(url)
 
@@ -359,12 +370,23 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         urls = re.findall(r"http\S+", message.content)
         for url in urls:
             if has_inside(url, image_types):
+                original_url = url
                 if "tenor.com" in url:
-                    url = tenor_get_dl_url(
-                        url, settings.TENOR_G, "tinywebppreview_transparent"
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.TENOR_G,
+                        "tinywebppreview_transparent",
+                        api_host="tenor.googleapis.com",
+                    )
+                elif "klipy.com" in url:
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.KLIPY,
+                        "tinywebppreview_transparent",
+                        api_host="api.klipy.com",
                     )
                 attachments.append(url)
-                message.content = message.content.replace(url, "")
+                message.content = message.content.replace(original_url, "")
             else:
                 not_grabbed.append(url)
 

@@ -184,7 +184,7 @@ def load_config(path: Path | None = None) -> tuple[RuntimeConfig, dict[str, Any]
 def rand_runtime(runtime: RuntimeConfig, plugins: dict[str, Any]) -> None:
     """Randomize the same runtime and plugin toggles as the former `rand_config()`."""
     models = ["g", "o", "c", "a", "m", "x"]
-    gif_searches = ["tenor", "giphy", "google", "random"]
+    gif_searches = ["klipy", "giphy", "google", "random", "tenor"]
 
     runtime.prompt_reset = bool(randint(0, 1))
     runtime.vc_recording = bool(randint(0, 1))
