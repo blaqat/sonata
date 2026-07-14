@@ -6,11 +6,11 @@ description: Create a new ticket from scratch.
 
 1. Ask clarifying questions if title/context is vague
 
-2. Create a Sonata ticket with:
-   - Title, description, acceptance criteria, estimation, tags
+2. Create a page in **SONA Tickets** (Notion) with:
+   - Name, description, acceptance criteria, Points, Type, Milestones (when clear)
 
-3. Create a Dev Plan subtask using the template
+3. Create a child Dev Plan (`Type=Plan`, Parent = new ticket) and fill it out
 
-4. Set ticket → Planning, Dev Plan → Ready for Review
+4. Set parent → `Planning`, Dev Plan → `Ready`
 
-5. Output the ticket link and summary
+5. Output the Notion ticket link, `SONA-{n}` ID, and summary

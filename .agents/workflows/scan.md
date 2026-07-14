@@ -1,20 +1,20 @@
 ---
-description: Audit all TODO tickets for completeness.
+description: Audit all New tickets for completeness.
 ---
 
-1. Fetch all Sonata tickets in TODO status
+1. Fetch all SONA Tickets in Notion with Status = `New`
 
 2. For each ticket, check for:
    - Acceptance criteria
 
-   - Estimation
+   - Points (estimation)
 
-   - Tags
+   - Type / Milestones when clear
 
-   - Dev Plan subtask (using "Dev Plan" template)
+   - Dev Plan child (`Type=Plan`)
 
 3. If anything is missing, fill it out
 
-4. Once complete: ticket → Planning, Dev Plan subtask → Ready for Review
+4. Once complete: parent → `Planning`, Dev Plan → `Ready`
 
 5. Output a summary of what was updated and what was already complete

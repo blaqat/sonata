@@ -9,3 +9,6 @@ images/
 __pycache__/
 .DS_Store
 beacon-mainland/
+
+# Claude Code local worktrees (do not commit)
+.claude/worktrees/

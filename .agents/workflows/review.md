@@ -2,9 +2,9 @@
 description: Review a ticket or Dev Plan created by @blaqat.
 ---
 
-/review [TICKET_CODE]
+/review [SONA-{n}]
 
-1. Fetch the specified ticket and its Dev Plan subtask (if exists)
+1. Fetch the specified Notion ticket and its Dev Plan child (if exists)
 
 2. Evaluate the ticket for:
    - Clear, concise title
@@ -13,9 +13,9 @@ description: Review a ticket or Dev Plan created by @blaqat.
 
    - Specific, testable acceptance criteria
 
-   - Reasonable estimation
+   - Reasonable Points
 
-   - Appropriate tags
+   - Appropriate Type / Milestones
 
    - Dependencies or blockers identified
 
@@ -43,8 +43,8 @@ description: Review a ticket or Dev Plan created by @blaqat.
      forward
 
 6. Update Dev Plan Status
-   - If good to go or minor feedback move to done
-   - If needs revision move back to todo
+   - If good to go or minor feedback → `Done`
+   - If needs revision → `New`
 
 Response Guidelines:
 

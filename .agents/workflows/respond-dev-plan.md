@@ -2,9 +2,9 @@
 description: Reply to review comments on a Dev Plan.
 ---
 
-/respond [TICKET_CODE]
+/respond [SONA-{n}]
 
-1. Fetch the specified ticket and its Dev Plan subtask
+1. Fetch the specified Notion ticket and its Dev Plan child (`Type=Plan`)
 
 2. Read all unresolved comments from @blaqat
 
@@ -20,4 +20,5 @@ description: Reply to review comments on a Dev Plan.
 
 5. Output a summary of responses and any plan modifications
 
-6. Move status of ticket to ready for review if its not there
+6. Ensure parent is `Planning` and Dev Plan is `Ready` if it is ready for
+   @blaqat to re-review

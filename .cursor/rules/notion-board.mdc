@@ -1,0 +1,18 @@
+---
+description: Notion is the Sonata project board (tickets, statuses, Dev Plans). Prefer AGENTS.md for full workflow.
+globs:
+alwaysApply: true
+---
+
+# Sonata project board (Notion)
+
+Tracking lives in **Notion**, not Linear. Full workflow: `AGENTS.md` and
+`.agents/rules/project-manager-guide.md`.
+
+- **Project:** https://app.notion.com/p/39d243549f638012be2bca1294ec5c79
+- **SONA Tickets:** https://app.notion.com/p/ba5243549f63822db8f9019f8d89beb6
+- **Data source:** `collection://fe024354-9f63-83db-87dc-07f92799408c`
+- IDs: `SONA-{n}` (Notion auto-increment `ID`)
+- Statuses: `New` → `Planning` → `Ready` → `In progress` → `In Review` → `Done`
+- Dev Plans: child pages with `Type=Plan` + `Parent` relation
+- Use Notion MCP for create/query/update; do not create Linear issues
