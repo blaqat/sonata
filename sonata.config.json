@@ -54,7 +54,7 @@
       "using_assistant": true
     },
     "self_commands": {
-      "gif_search": "random",
+      "gif_search": "klipy",
       "agent_model": "Claude",
       "agent": false,
       "agent_retries": 3,

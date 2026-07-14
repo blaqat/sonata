@@ -201,6 +201,12 @@ def get_n(search_term, results_len):
     # Convert the search term to lowercase and remove spaces
     search_term = search_term.lower().replace(" ", "")
 
+    # Empty / single-result sets have no unique rotation to perform.
+    if results_len <= 0:
+        return 0
+    if results_len == 1:
+        return 0
+
     # If the search term is not in the cache, initialize it with 0
     if search_term not in GIF_CACHE:
         GIF_CACHE[search_term] = {0}
@@ -212,11 +218,10 @@ def get_n(search_term, results_len):
 
     # If the cache is close to containing all the possible results, find the first missing one and return it
     if len(GIF_CACHE[search_term]) >= results_len - 4:
-        hasnt_done = 1
         for i in range(1, results_len):
             if i not in GIF_CACHE[search_term]:
-                GIF_CACHE[search_term].add(hasnt_done)
-                return hasnt_done
+                GIF_CACHE[search_term].add(i)
+                return i
 
     # If none of the above conditions are met, generate a random number that hasn't been used yet
     while True:
@@ -235,11 +240,12 @@ def gif_giphy_search(*search_term, limit=15):
     )
     with request.urlopen("".join((url, "?", params))) as response:
         data = json.loads(response.read())
-    n = get_n(search_term, len(data["data"]))
-    if len(data) == 0:
+    gifs = data.get("data") or []
+    if not gifs:
         return "Gif not found."
+    n = get_n(search_term, len(gifs))
     return {
-        "link": data["data"][n]["url"],
+        "link": gifs[n]["url"],
     }
 
 
@@ -250,13 +256,14 @@ def gif_tenor_search(*search_term, limit=15):
         "yellow",
     )
     search_term = " ".join(search_term)
-    url = f"https://tenor.googleapis.com/v2/search?q={search_term}&key={settings.TENOR_G}&limit={limit}"
-    with requests.get(url) as response:
-        gifs = json.loads(response.text)["results"]
-
-    n = get_n(search_term, len(gifs))
-    if len(gifs) == 0:
+    response = requests.get(
+        "https://tenor.googleapis.com/v2/search",
+        params={"q": search_term, "key": settings.TENOR_G, "limit": limit},
+    )
+    gifs = json.loads(response.text).get("results") or []
+    if not gifs:
         return "Gif not found."
+    n = get_n(search_term, len(gifs))
     return {
         "link": gifs[n]["media_formats"]["gif"]["url"],
     }
@@ -265,13 +272,14 @@ def gif_tenor_search(*search_term, limit=15):
 def gif_klipy_search(*search_term, limit=15):
     """Search for a gif using the KLIPY API (Tenor-compatible drop-in)."""
     search_term = " ".join(search_term)
-    url = f"https://api.klipy.com/v2/search?q={search_term}&key={settings.KLIPY}&limit={limit}"
-    with requests.get(url) as response:
-        gifs = json.loads(response.text)["results"]
-
-    n = get_n(search_term, len(gifs))
-    if len(gifs) == 0:
+    response = requests.get(
+        "https://api.klipy.com/v2/search",
+        params={"q": search_term, "key": settings.KLIPY, "limit": limit},
+    )
+    gifs = json.loads(response.text).get("results") or []
+    if not gifs:
         return "Gif not found."
+    n = get_n(search_term, len(gifs))
     return {
         "link": gifs[n]["media_formats"]["gif"]["url"],
     }

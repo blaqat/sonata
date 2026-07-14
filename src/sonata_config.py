@@ -124,7 +124,7 @@ def _project_plugin_defaults() -> dict[str, Any]:
             "censor": False,
         },
         "self_commands": {
-            "gif_search": "random",
+            "gif_search": "klipy",
             "agent": False,
             "search": {
                 "num_results": 2,
