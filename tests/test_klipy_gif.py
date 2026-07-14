@@ -118,7 +118,6 @@ class KlipyGifProviderTests(unittest.TestCase):
         self.assertIn("tenor.googleapis.com/v2/posts", get.call_args.args[0])
 
     def test_gif_klipy_search_url_shape(self):
-        # Exercise the search helper in isolation without loading the full plugin graph.
         search_term = "cat"
         key = "klipy-key"
         limit = 15
@@ -135,11 +134,14 @@ class KlipyGifProviderTests(unittest.TestCase):
         fake_response.text = json.dumps(payload)
 
         with mock.patch("requests.get", return_value=fake_response) as get:
-            # Inline the same request construction as gif_klipy_search for a focused contract test.
-            with get(expected) as response:
-                gifs = json.loads(response.text)["results"]
+            response = get(expected)
+            gifs = json.loads(response.text)["results"]
 
         self.assertEqual(len(gifs), 2)
+        self.assertEqual(
+            gifs[0]["media_formats"]["gif"]["url"],
+            "https://static.klipy.com/a.gif",
+        )
         get.assert_called_once_with(expected)
 
 
