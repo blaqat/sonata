@@ -438,7 +438,7 @@ def get_weather(*city):
 )
 def imagine(*prompt):
     prompt = " ".join(prompt)
-    response = PROMPT_MANAGER.send(prompt, AI="NanoBanana")
+    response = PROMPT_MANAGER.send(prompt, AI="DallE")
     print(response)
     return {
         "title": prompt,
