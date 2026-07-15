@@ -991,17 +991,28 @@ async def get_reference_chain(message, max_length=-1, include_message=False):
     return chain
 
 
-def tenor_get_dl_url(url, key, size="mediumgif"):
+def gif_provider_get_dl_url(url, key, size="mediumgif", api_host=None):
+    """Resolve a Tenor/KLIPY page URL to a direct media download URL."""
     gif_id = None
     try:
-        gif_id = re.search(r"-(\d+)$", url).group(1)
+        # Tenor/KLIPY page links often end with -<id>; chat may pass media URLs
+        # that also include a file extension or query string.
+        cleaned = url.split("?", 1)[0].rstrip("/")
+        cleaned = re.sub(r"\.(gif|png|jpe?g|webp)$", "", cleaned, flags=re.IGNORECASE)
+        gif_id = re.search(r"-(\d+)$", cleaned).group(1)
     except AttributeError:
         return None
 
     if not gif_id:
         return None
 
-    api_url = f"https://tenor.googleapis.com/v2/posts?ids={gif_id}&key={key}"
+    if api_host is None:
+        if "klipy.com" in url:
+            api_host = "api.klipy.com"
+        else:
+            api_host = "tenor.googleapis.com"
+
+    api_url = f"https://{api_host}/v2/posts?ids={gif_id}&key={key}"
     response = requests.get(api_url)
 
     if response.status_code == 200:
@@ -1010,33 +1021,41 @@ def tenor_get_dl_url(url, key, size="mediumgif"):
             formats = data["results"][0]["media_formats"]
             if size not in formats:
                 cprint(f"Invalid size {size}. Available sizes: {formats.keys()}")
-                # Find first one with tiny
-                for key in formats.keys():
-                    if "nano" in key and ("gif" in key or "webp" in key):
-                        size = key
+                # Prefer a nano/tiny preview when the requested size is absent.
+                for candidate in formats.keys():
+                    if "nano" in candidate and ("gif" in candidate or "webp" in candidate):
+                        size = candidate
                         break
                 else:
-                    for key in formats.keys():
-                        if "tiny" in key and ("gif" in key or "webp" in key):
-                            size = key
+                    for candidate in formats.keys():
+                        if "tiny" in candidate and (
+                            "gif" in candidate or "webp" in candidate
+                        ):
+                            size = candidate
                             break
                 cprint(f"Replaced with {size}")
-            data["results"][0]["media_formats"][size]["url"]
+            if size in formats:
+                formats[size].get("url")
             medium_gif_url = (
                 data.get("results", [{}])[0]
-                .get("media_formats", [{}])
+                .get("media_formats", {})
                 .get("mediumgif", {})
                 .get("url", None)
             )
             if medium_gif_url:
                 return medium_gif_url
-            else:
-                return None
+            if size in formats:
+                return formats[size].get("url")
+            return None
         else:
             return None
     else:
         return None
 
+
+def tenor_get_dl_url(url, key, size="mediumgif"):
+    """Backward-compatible alias for gif_provider_get_dl_url (Tenor host)."""
+    return gif_provider_get_dl_url(url, key, size=size, api_host="tenor.googleapis.com")
 
 class Map:
     def __init__(self, initial_dict: dict = None):
