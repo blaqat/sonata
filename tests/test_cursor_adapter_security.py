@@ -150,10 +150,23 @@ class TestGateAndPolicy(unittest.IsolatedAsyncioTestCase):
         mod = load_cursor_plugin()
         _bootstrap(mod, policy=None, require_policy=True)
         mod._STATE["policy_manager"] = None
-        with self.assertRaises(ConfigurationError):
-            await mod._revalidate_run_auth(
-                user_id=T2, guild_id=1, channel_id=2, role_ids=[], subcommand="run"
-            )
+        with patch.object(mod, "_resolve_policy_manager", return_value=None):
+            with self.assertRaises(ConfigurationError):
+                await mod._revalidate_run_auth(
+                    user_id=T2, guild_id=1, channel_id=2, role_ids=[], subcommand="run"
+                )
+
+    def test_resolve_policy_manager_uses_sona_chat_plugin(self):
+        mod = load_cursor_plugin()
+        pm = SimpleNamespace()
+        # Sonata.get("chat") is chat history; policy lives on Sonata.chat.
+        sona = SimpleNamespace(
+            chat=SimpleNamespace(policy_manager=pm),
+            get=lambda *args, **kwargs: {},
+        )
+        mod._STATE["policy_manager"] = None
+        mod._STATE["bot"] = SimpleNamespace(sonata=sona)
+        self.assertIs(mod._resolve_policy_manager(), pm)
 
     async def test_channel_policy_deny(self):
         mod = load_cursor_plugin()

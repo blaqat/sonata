@@ -157,8 +157,12 @@ def _resolve_policy_manager(interaction: discord.Interaction | None = None):
             sona = None
     if sona is None:
         return None
-    chat = sona.get("chat") if hasattr(sona, "get") else None
-    return getattr(chat, "policy_manager", None) if chat else None
+    # Chat plugin API lives on Sonata.chat (builder sub_class), not Sonata.get("chat")
+    # which returns the per-channel message history dict.
+    chat_plugin = getattr(sona, "chat", None)
+    if chat_plugin is not None:
+        return getattr(chat_plugin, "policy_manager", None)
+    return None
 
 
 def _require_policy_manager() -> bool:
