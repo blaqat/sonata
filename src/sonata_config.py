@@ -120,6 +120,7 @@ def _project_plugin_defaults() -> dict[str, Any]:
                 "BluBot",
                 1311742291521835048,
                 746799398994051162,
+                1527366826793894109,
             ],
             "censor": False,
         },
