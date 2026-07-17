@@ -146,13 +146,18 @@ class MemoryAccessStore:
 
 
 class ImageRetentionStore:
-    """Process-local bounded image retention for pending approvals.
+    """Process-local bounded image retention for pending approvals/decisions.
 
-    Tradeoff: Discord CDN URLs can expire during the 12h approval window, so we
+    Tradeoff: Discord CDN URLs can expire during the approval window, so we
     download and retain base64 bytes in memory (not Beacon) up to
     ``max_total_bytes``. Expired/denied requests drop their bytes. This avoids
     unbounded Beacon growth and secret-like blob persistence while keeping
-    approvals usable after CDN expiry.
+    approvals usable after CDN expiry within a single process lifetime.
+
+    Deliberate limitation: image bytes are process-local. After a bot restart,
+    pending multimodal approvals/idle/model decisions fail closed and the
+    requester must resubmit attachments. Text-only pending approvals survive
+    via Beacon-persisted envelopes.
     """
 
     def __init__(self, *, max_total_bytes: int):

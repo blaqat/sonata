@@ -203,6 +203,42 @@ class TestCursorClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cfg.read_timeout_seconds, 30.0)
         self.assertNotEqual(cfg.read_timeout_seconds, cfg.stream_timeout_seconds)
 
+    async def test_stream_run_passes_stream_timeout_to_send(self):
+        cfg = make_config(stream_timeout_seconds=456.0, read_timeout_seconds=30.0)
+        http = AsyncMock()
+        client = CursorCloudClient(cfg, client=http)
+        seen = {}
+
+        class StreamResp:
+            status_code = 200
+            headers = {}
+
+            async def aread(self):
+                return b""
+
+            async def aclose(self):
+                return None
+
+            async def aiter_text(self):
+                if False:
+                    yield ""
+
+        req = MagicMock()
+
+        def build_request(*args, **kwargs):
+            seen["timeout"] = kwargs.get("timeout")
+            return req
+
+        http.build_request = MagicMock(side_effect=build_request)
+        http.send = AsyncMock(return_value=StreamResp())
+
+        events = []
+        async for ev in client.stream_run("bc-1", "run-1"):
+            events.append(ev)
+        self.assertEqual(seen["timeout"].read, 456.0)
+        http.send.assert_awaited()
+        self.assertTrue(http.send.await_args.kwargs.get("stream"))
+
 
 if __name__ == "__main__":
     unittest.main()

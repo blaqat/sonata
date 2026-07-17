@@ -33,9 +33,21 @@ class SessionStore(Protocol):
 
     async def get_idle_decision(self, decision_id: str) -> IdleDecision | None: ...
 
+    async def find_open_idle_decision(self, scope: ScopeKey) -> IdleDecision | None: ...
+
+    async def reserve_idle_decision(
+        self, decision: IdleDecision
+    ) -> IdleDecision | None: ...
+
     async def save_model_decision(self, decision: ModelDecision) -> ModelDecision: ...
 
     async def get_model_decision(self, decision_id: str) -> ModelDecision | None: ...
+
+    async def find_open_model_decision(self, scope: ScopeKey) -> ModelDecision | None: ...
+
+    async def reserve_model_decision(
+        self, decision: ModelDecision
+    ) -> ModelDecision | None: ...
 
     async def save_pending_payload(self, decision_id: str, payload: dict[str, Any]) -> None: ...
 
@@ -148,12 +160,61 @@ class MemorySessionStore:
     async def get_idle_decision(self, decision_id: str) -> IdleDecision | None:
         return self._idle.get(decision_id)
 
+    def _is_open_decision(self, decision, *, now=None) -> bool:
+        now = now or utcnow()
+        if getattr(decision, "consumed", False):
+            return False
+        expires = getattr(decision, "expires_at", None)
+        if expires is not None and now >= expires:
+            return False
+        return True
+
+    async def find_open_idle_decision(self, scope: ScopeKey) -> IdleDecision | None:
+        key = scope.as_str()
+        now = utcnow()
+        for decision in self._idle.values():
+            if decision.scope.as_str() != key:
+                continue
+            if self._is_open_decision(decision, now=now):
+                return decision
+        return None
+
+    async def reserve_idle_decision(
+        self, decision: IdleDecision
+    ) -> IdleDecision | None:
+        """CAS: at most one outstanding idle decision per scope."""
+        existing = await self.find_open_idle_decision(decision.scope)
+        if existing is not None:
+            return None
+        self._idle[decision.decision_id] = decision
+        return decision
+
     async def save_model_decision(self, decision: ModelDecision) -> ModelDecision:
         self._model[decision.decision_id] = decision
         return decision
 
     async def get_model_decision(self, decision_id: str) -> ModelDecision | None:
         return self._model.get(decision_id)
+
+    async def find_open_model_decision(self, scope: ScopeKey) -> ModelDecision | None:
+        key = scope.as_str()
+        now = utcnow()
+        for decision in self._model.values():
+            if decision.scope.as_str() != key:
+                continue
+            if self._is_open_decision(decision, now=now):
+                return decision
+        return None
+
+    async def reserve_model_decision(
+        self, decision: ModelDecision
+    ) -> ModelDecision | None:
+        """CAS: at most one outstanding model decision per scope."""
+        existing = await self.find_open_model_decision(decision.scope)
+        if existing is not None:
+            return None
+        self._model[decision.decision_id] = decision
+        return decision
 
     async def save_pending_payload(
         self, decision_id: str, payload: dict[str, Any]

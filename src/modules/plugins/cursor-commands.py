@@ -5,6 +5,12 @@ Discord slash-command adapter for Cursor Cloud Agents (`/cursor …`).
 
 Core API/session/access logic lives in ``cursor_cloud``; this plugin only wires
 Discord interactions, channel policies, and Beacon persistence.
+
+Deliberate limitation: retained image bytes for pending approvals and idle/model
+decisions are process-local (not Beacon). After a bot restart, text-only pending
+approvals survive; multimodal pending work fails closed and the requester must
+resubmit with attachments. Cleanup runs from ``SonataClient.close()`` — py-cord
+does not dispatch ``on_close``.
 """
 
 from __future__ import annotations
@@ -398,9 +404,23 @@ class BeaconSessionStore(MemorySessionStore):
         self._persist()
         return result
 
+    async def reserve_idle_decision(self, decision: IdleDecision) -> IdleDecision | None:
+        result = await super().reserve_idle_decision(decision)
+        if result is not None:
+            self._persist()
+        return result
+
     async def save_model_decision(self, decision: ModelDecision) -> ModelDecision:
         result = await super().save_model_decision(decision)
         self._persist()
+        return result
+
+    async def reserve_model_decision(
+        self, decision: ModelDecision
+    ) -> ModelDecision | None:
+        result = await super().reserve_model_decision(decision)
+        if result is not None:
+            self._persist()
         return result
 
     async def save_pending_payload(self, decision_id: str, payload: dict[str, Any]) -> None:
@@ -629,28 +649,58 @@ def _serializable_pending(
 
 
 async def _rehydrate_pending_images(pending: dict[str, Any]) -> list[ImageInput]:
-    """Load retained images for a decision; fail closed on missing/mismatch."""
+    """Load retained images for a decision; fail closed on missing/mismatch.
+
+    Image bytes are process-local: after restart, multimodal pending decisions
+    cannot be rehydrated and the user must resubmit with attachments.
+    """
     key = pending.get("retention_key")
     expected_raw = list(pending.get("image_metas") or [])
     expected = [
         PromptImageMeta.from_dict(m) if isinstance(m, dict) else m for m in expected_raw
     ]
+    restart_msg = (
+        "Pending run images are only kept in memory and do not survive bot "
+        "restarts; please resubmit the run with attachments."
+    )
     if not key:
         if expected:
             raise ValidationError(
                 "Pending images missing retention key",
-                user_message="Pending run images unavailable after restart; please resubmit.",
+                user_message=restart_msg,
             )
         return []
     images = await _access().images.get(str(key)) or []
     if expected and (not images or not metas_match(expected, metas_from_images(images))):
         raise ValidationError(
-            "Pending image metadata mismatch",
-            user_message="Pending run images unavailable or changed; please resubmit.",
+            "Pending image metadata mismatch or process-local retention lost",
+            user_message=restart_msg,
         )
     if not expected and not images:
         return []
     return images
+
+
+async def _discard_retention_key(key: str | None) -> None:
+    if key:
+        await _access().images.discard(str(key))
+
+
+async def _delete_or_edit_status_msg(
+    status_msg: discord.Message | None, content: str
+) -> None:
+    """Remove orphan public status when launch aborts (busy/race)."""
+    if status_msg is None:
+        return
+    try:
+        await status_msg.delete()
+        return
+    except Exception:
+        pass
+    try:
+        await status_msg.edit(content=content[:2000], view=None, allowed_mentions=CONTENT_MENTIONS)
+    except Exception:
+        logger.debug("Could not clean up orphan Cursor status message", exc_info=True)
 
 
 async def _build_context_for_run(
@@ -746,6 +796,7 @@ async def _launch_run(
     sessions = _sessions()
     client = _client()
     role_ids = role_ids if role_ids is not None else _role_ids(getattr(interaction, "user", None) or type("U", (), {"roles": []})())
+    interaction_obj = interaction if isinstance(interaction, discord.Interaction) else None
 
     # Final fail-closed auth immediately before consume/submit.
     await _revalidate_run_auth(
@@ -754,47 +805,67 @@ async def _launch_run(
         channel_id=scope.channel_id,
         role_ids=role_ids,
         subcommand="run",
-        interaction=interaction if isinstance(interaction, discord.Interaction) else None,
+        interaction=interaction_obj,
     )
 
-    # Post status outside the API-submit critical section when possible.
-    if status_msg is None and not skip_status_post:
-        status_msg = await _public(interaction, initial_queued_message())
-
+    # Pre-check busy under the scope lock BEFORE posting public Queued status,
+    # so concurrent callers cannot leave orphan status messages.
     async with sessions.lock_for(scope):
-        # Re-check auth under the scope lock before create/follow-up.
         await _revalidate_run_auth(
             user_id=scope.user_id,
             guild_id=scope.guild_id,
             channel_id=scope.channel_id,
             role_ids=role_ids,
             subcommand="run",
-            interaction=interaction if isinstance(interaction, discord.Interaction) else None,
+            interaction=interaction_obj,
         )
-        # Consume one-run grants under the same lock as API submit to prevent
-        # concurrent /cursor run from double-creating agents. Must use the
-        # original approval envelope so the grant hash still matches.
-        if grant is not None and getattr(grant, "kind", None) == "once" and not getattr(
-            grant, "consumed", False
-        ):
-            if envelope is None:
-                raise ValidationError(
-                    "Missing envelope for one-run grant consume",
-                    user_message="Approval grant could not be consumed safely; please resubmit.",
-                )
-            grant = await _access().consume_grant_for_submit(grant, envelope)
-
         active = await sessions.get_active(scope)
-        if not force_new and agent_id is None and active is not None:
-            agent_id = active.agent_id
-
-        if agent_id and not force_new:
-            session = await sessions.get_session(scope, agent_id)
+        resolved_agent = agent_id
+        if not force_new and resolved_agent is None and active is not None:
+            resolved_agent = active.agent_id
+        if resolved_agent and not force_new:
+            session = await sessions.get_session(scope, resolved_agent)
             if session and run_is_busy(session.latest_run_status):
                 raise BusyRunError()
 
-        api_images = [img.to_api() for img in images]
+    # Post status only after the busy pre-check passed.
+    if status_msg is None and not skip_status_post:
+        status_msg = await _public(interaction, initial_queued_message())
+
+    async with sessions.lock_for(scope):
+        # Re-check auth + busy under the scope lock before create/follow-up.
         try:
+            await _revalidate_run_auth(
+                user_id=scope.user_id,
+                guild_id=scope.guild_id,
+                channel_id=scope.channel_id,
+                role_ids=role_ids,
+                subcommand="run",
+                interaction=interaction_obj,
+            )
+            # Consume one-run grants under the same lock as API submit to prevent
+            # concurrent /cursor run from double-creating agents. Must use the
+            # original approval envelope so the grant hash still matches.
+            if grant is not None and getattr(grant, "kind", None) == "once" and not getattr(
+                grant, "consumed", False
+            ):
+                if envelope is None:
+                    raise ValidationError(
+                        "Missing envelope for one-run grant consume",
+                        user_message="Approval grant could not be consumed safely; please resubmit.",
+                    )
+                grant = await _access().consume_grant_for_submit(grant, envelope)
+
+            active = await sessions.get_active(scope)
+            if not force_new and agent_id is None and active is not None:
+                agent_id = active.agent_id
+
+            if agent_id and not force_new:
+                session = await sessions.get_session(scope, agent_id)
+                if session and run_is_busy(session.latest_run_status):
+                    raise BusyRunError()
+
+            api_images = [img.to_api() for img in images]
             if force_new or not agent_id:
                 agent, run = await client.create_agent(
                     prompt_text,
@@ -837,6 +908,12 @@ async def _launch_run(
                 session.summary = prompt_text[:200]
                 session.last_meaningful_activity_at = utcnow()
                 await sessions.upsert(session)
+        except BusyRunError:
+            await _delete_or_edit_status_msg(
+                status_msg,
+                "### Busy\n" + BusyRunError().user_message,
+            )
+            raise
         except Exception as exc:
             if grant is not None and getattr(grant, "kind", None) == "once":
                 await _access().mark_submit_failed_after_consume(grant)
@@ -886,6 +963,232 @@ async def _launch_run(
 
         _STATE["trackers"][session.agent_id] = asyncio.create_task(_runner())
     return session
+
+
+async def _rollback_decision(
+    *,
+    kind: str,
+    decision_id: str,
+    scope: ScopeKey,
+    retention_key: str | None,
+) -> None:
+    sessions = _sessions()
+    async with sessions.lock_for(scope):
+        if kind == "model":
+            decision = await sessions.get_model_decision(decision_id)
+            if decision is not None:
+                decision.consumed = True
+                decision.choice = ModelChoice.CANCEL
+                await sessions.save_model_decision(decision)
+        else:
+            decision = await sessions.get_idle_decision(decision_id)
+            if decision is not None:
+                decision.consumed = True
+                decision.choice = IdleChoice.CANCEL
+                await sessions.save_idle_decision(decision)
+        await sessions.pop_pending_payload(decision_id)
+    await _discard_retention_key(retention_key)
+
+
+async def _offer_model_decision(
+    interaction: discord.Interaction,
+    *,
+    scope: ScopeKey,
+    active: AgentSession,
+    preferred: str | None,
+    prompt: str,
+    prompt_text: str,
+    message_ref: str | None,
+    image_inputs: list[ImageInput],
+    skipped: list[str],
+) -> bool:
+    """Reserve+post a model decision. Returns True if a prompt was posted/deduped."""
+    sessions = _sessions()
+    retained = await _download_images(image_inputs) if image_inputs else []
+    retention_key = new_id("ret") if retained else None
+    decision = ModelDecision(
+        decision_id=new_id("mdl"),
+        scope=scope,
+        agent_id=active.agent_id,
+        preferred_model=preferred or "",
+        agent_model=active.model or "",
+        expires_at=utcnow() + timedelta(minutes=30),
+    )
+    payload = _serializable_pending(
+        prompt=prompt,
+        prompt_text=prompt_text,
+        message_ref=message_ref,
+        preferred=preferred,
+        image_metas=metas_from_images(retained or image_inputs),
+        retention_key=retention_key,
+        skipped=skipped,
+        scope=scope,
+    )
+
+    async with sessions.lock_for(scope):
+        active_now = await sessions.get_active(scope)
+        still = (
+            active_now is not None
+            and preferred
+            and active_now.model
+            and preferred != active_now.model
+        )
+        if not still:
+            return False
+        existing = await sessions.find_open_model_decision(scope)
+        if existing is not None:
+            await _ephemeral(
+                interaction,
+                f"A model choice is already pending (`{existing.decision_id}`).",
+            )
+            return True
+        if retention_key and retained:
+            await _access().images.put(
+                retention_key, retained, expires_at=decision.expires_at
+            )
+        await sessions.save_pending_payload(decision.decision_id, payload)
+        reserved = await sessions.reserve_model_decision(decision)
+        if reserved is None:
+            await _discard_retention_key(retention_key)
+            await sessions.pop_pending_payload(decision.decision_id)
+            existing = await sessions.find_open_model_decision(scope)
+            await _ephemeral(
+                interaction,
+                f"A model choice is already pending (`{getattr(existing, 'decision_id', '?')}`).",
+            )
+            return True
+
+    view = ModelDecisionView(decision.decision_id)
+    try:
+        msg = await interaction.channel.send(
+            f"### Model choice\n"
+            f"<@{scope.user_id}> selected `{preferred}` but session "
+            f"`{active.agent_id}` was created with `{active.model}`.\n"
+            f"Follow-up runs cannot change model.",
+            view=view,
+            allowed_mentions=discord.AllowedMentions(
+                users=True, everyone=False, roles=False
+            ),
+        )
+    except Exception:
+        await _rollback_decision(
+            kind="model",
+            decision_id=decision.decision_id,
+            scope=scope,
+            retention_key=retention_key,
+        )
+        raise
+
+    decision.message_channel_id = str(msg.channel.id)
+    decision.message_id = str(msg.id)
+    await sessions.save_model_decision(decision)
+    bot = _STATE.get("bot")
+    if bot:
+        bot.add_view(ModelDecisionView(decision.decision_id))
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            "Model mismatch — choose how to proceed in the channel message.",
+            ephemeral=True,
+        )
+    return True
+
+
+async def _offer_idle_decision(
+    interaction: discord.Interaction,
+    *,
+    scope: ScopeKey,
+    active: AgentSession,
+    preferred: str | None,
+    prompt: str,
+    prompt_text: str,
+    message_ref: str | None,
+    image_inputs: list[ImageInput],
+    skipped: list[str],
+) -> bool:
+    """Reserve+post an idle decision. Returns True if a prompt was posted/deduped."""
+    sessions = _sessions()
+    cfg = _cfg()
+    retained = await _download_images(image_inputs) if image_inputs else []
+    retention_key = new_id("ret") if retained else None
+    decision = IdleDecision(
+        decision_id=new_id("idle"),
+        scope=scope,
+        agent_id=active.agent_id,
+        expires_at=utcnow() + timedelta(minutes=30),
+    )
+    payload = _serializable_pending(
+        prompt=prompt,
+        prompt_text=prompt_text,
+        message_ref=message_ref,
+        preferred=preferred,
+        image_metas=metas_from_images(retained or image_inputs),
+        retention_key=retention_key,
+        skipped=skipped,
+        scope=scope,
+    )
+
+    async with sessions.lock_for(scope):
+        active_now = await sessions.get_active(scope)
+        still = active_now is not None and session_is_idle(
+            active_now, idle_minutes=cfg.session_idle_prompt_minutes
+        )
+        if not still:
+            return False
+        existing = await sessions.find_open_idle_decision(scope)
+        if existing is not None:
+            await _ephemeral(
+                interaction,
+                f"An idle session choice is already pending (`{existing.decision_id}`).",
+            )
+            return True
+        if retention_key and retained:
+            await _access().images.put(
+                retention_key, retained, expires_at=decision.expires_at
+            )
+        await sessions.save_pending_payload(decision.decision_id, payload)
+        reserved = await sessions.reserve_idle_decision(decision)
+        if reserved is None:
+            await _discard_retention_key(retention_key)
+            await sessions.pop_pending_payload(decision.decision_id)
+            existing = await sessions.find_open_idle_decision(scope)
+            await _ephemeral(
+                interaction,
+                f"An idle session choice is already pending (`{getattr(existing, 'decision_id', '?')}`).",
+            )
+            return True
+
+    view = IdleDecisionView(decision.decision_id)
+    try:
+        msg = await interaction.channel.send(
+            f"### Idle session\n"
+            f"<@{scope.user_id}> — session `{active.agent_id}` has been idle. "
+            f"Continue previous, start new, or cancel?",
+            view=view,
+            allowed_mentions=discord.AllowedMentions(
+                users=True, everyone=False, roles=False
+            ),
+        )
+    except Exception:
+        await _rollback_decision(
+            kind="idle",
+            decision_id=decision.decision_id,
+            scope=scope,
+            retention_key=retention_key,
+        )
+        raise
+
+    decision.message_channel_id = str(msg.channel.id)
+    decision.message_id = str(msg.id)
+    await sessions.save_idle_decision(decision)
+    bot = _STATE.get("bot")
+    if bot:
+        bot.add_view(IdleDecisionView(decision.decision_id))
+    if not interaction.response.is_done():
+        await interaction.response.send_message(
+            "Session idle — choose how to proceed in the channel message.",
+            ephemeral=True,
+        )
+    return True
 
 
 async def _prepare_and_maybe_launch(
@@ -942,57 +1245,21 @@ async def _prepare_and_maybe_launch(
         and preferred != active.model
         and model_override_choice is None
     ):
-        retention_key = new_id("ret")
-        retained = await _download_images(image_inputs) if image_inputs else []
-        if retained:
-            await _access().images.put(
-                retention_key,
-                retained,
-                expires_at=utcnow() + timedelta(hours=cfg.access.approval_timeout_hours),
-            )
-        decision = ModelDecision(
-            decision_id=new_id("mdl"),
+        posted = await _offer_model_decision(
+            interaction,
             scope=scope,
-            agent_id=active.agent_id,
-            preferred_model=preferred,
-            agent_model=active.model,
-            expires_at=utcnow() + timedelta(minutes=30),
+            active=active,
+            preferred=preferred,
+            prompt=prompt,
+            prompt_text=prompt_text,
+            message_ref=message_ref,
+            image_inputs=image_inputs,
+            skipped=skipped,
         )
-        await sessions.save_pending_payload(
-            decision.decision_id,
-            _serializable_pending(
-                prompt=prompt,
-                prompt_text=prompt_text,
-                message_ref=message_ref,
-                preferred=preferred,
-                image_metas=metas_from_images(retained or image_inputs),
-                retention_key=retention_key if retained else None,
-                skipped=skipped,
-                scope=scope,
-            ),
-        )
-        await sessions.save_model_decision(decision)
-        view = ModelDecisionView(decision.decision_id)
-        msg = await interaction.channel.send(
-            f"### Model choice\n"
-            f"<@{scope.user_id}> selected `{preferred}` but session "
-            f"`{active.agent_id}` was created with `{active.model}`.\n"
-            f"Follow-up runs cannot change model.",
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
-        )
-        decision.message_channel_id = str(msg.channel.id)
-        decision.message_id = str(msg.id)
-        await sessions.save_model_decision(decision)
-        bot = _STATE.get("bot")
-        if bot:
-            bot.add_view(ModelDecisionView(decision.decision_id))
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "Model mismatch — choose how to proceed in the channel message.",
-                ephemeral=True,
-            )
-        return
+        if posted:
+            return
+        # Condition cleared under lock (race); refresh and continue.
+        active = await sessions.get_active(scope)
 
     if model_override_choice == ModelChoice.NEW_SESSION:
         want_new = True
@@ -1006,54 +1273,20 @@ async def _prepare_and_maybe_launch(
         and active is not None
         and session_is_idle(active, idle_minutes=cfg.session_idle_prompt_minutes)
     ):
-        retention_key = new_id("ret")
-        retained = await _download_images(image_inputs) if image_inputs else []
-        if retained:
-            await _access().images.put(
-                retention_key,
-                retained,
-                expires_at=utcnow() + timedelta(hours=cfg.access.approval_timeout_hours),
-            )
-        decision = IdleDecision(
-            decision_id=new_id("idle"),
+        posted = await _offer_idle_decision(
+            interaction,
             scope=scope,
-            agent_id=active.agent_id,
-            expires_at=utcnow() + timedelta(minutes=30),
+            active=active,
+            preferred=preferred,
+            prompt=prompt,
+            prompt_text=prompt_text,
+            message_ref=message_ref,
+            image_inputs=image_inputs,
+            skipped=skipped,
         )
-        await sessions.save_pending_payload(
-            decision.decision_id,
-            _serializable_pending(
-                prompt=prompt,
-                prompt_text=prompt_text,
-                message_ref=message_ref,
-                preferred=preferred,
-                image_metas=metas_from_images(retained or image_inputs),
-                retention_key=retention_key if retained else None,
-                skipped=skipped,
-                scope=scope,
-            ),
-        )
-        await sessions.save_idle_decision(decision)
-        view = IdleDecisionView(decision.decision_id)
-        msg = await interaction.channel.send(
-            f"### Idle session\n"
-            f"<@{scope.user_id}> — session `{active.agent_id}` has been idle. "
-            f"Continue previous, start new, or cancel?",
-            view=view,
-            allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
-        )
-        decision.message_channel_id = str(msg.channel.id)
-        decision.message_id = str(msg.id)
-        await sessions.save_idle_decision(decision)
-        bot = _STATE.get("bot")
-        if bot:
-            bot.add_view(IdleDecisionView(decision.decision_id))
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "Session idle — choose how to proceed in the channel message.",
-                ephemeral=True,
-            )
-        return
+        if posted:
+            return
+        active = await sessions.get_active(scope)
 
     # Activity refresh only after idle/model gates have passed.
     await sessions.touch_activity(scope)
@@ -1310,6 +1543,18 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
         return
 
     images = await access.images.get(request.request_id) or []
+    if envelope.image_metas and not images:
+        await access.deny_unauthorized_request(
+            request.request_id,
+            actor_id=str(interaction.user.id),
+            reason="images_lost_after_restart",
+        )
+        await _ephemeral(
+            interaction,
+            "Approved request images are only kept in memory and do not survive "
+            "bot restarts; denied. Please resubmit the run with attachments.",
+        )
+        return
     if not metas_match(envelope.image_metas, metas_from_images(images)):
         await access.deny_unauthorized_request(
             request.request_id,
@@ -1506,7 +1751,10 @@ async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> N
     try:
         images = await _rehydrate_pending_images(pending)
     except ValidationError:
+        await _discard_retention_key(pending.get("retention_key"))
         raise
+    # Handoff complete — drop process-local retention promptly.
+    await _discard_retention_key(pending.get("retention_key"))
 
     if interaction.message:
         try:
@@ -1598,7 +1846,13 @@ async def _complete_model(interaction, decision_id: str, choice: ModelChoice) ->
                 pass
         return
 
-    images = await _rehydrate_pending_images(pending)
+    try:
+        images = await _rehydrate_pending_images(pending)
+    except ValidationError:
+        await _discard_retention_key(pending.get("retention_key"))
+        raise
+    await _discard_retention_key(pending.get("retention_key"))
+
     if interaction.message:
         try:
             await interaction.message.edit(
@@ -2057,14 +2311,36 @@ def _register_commands(bot: discord.Bot) -> None:
     bot.add_application_command(cursor_group)
 
 
+async def _pending_rehydratable(pending: dict[str, Any] | None) -> bool:
+    """Text-only pending survives restart; multimodal needs process-local bytes."""
+    if not pending or not pending.get("prompt_text"):
+        return False
+    key = pending.get("retention_key")
+    metas = list(pending.get("image_metas") or [])
+    if not key and not metas:
+        return True
+    if not key:
+        return False
+    access = _STATE.get("access")
+    if access is None:
+        return False
+    images = await access.images.get(str(key))
+    return bool(images)
+
+
 async def _register_views(bot: discord.Bot) -> None:
-    """Re-register durable non-ephemeral views; skip consumed/expired decisions."""
+    """Re-register durable non-ephemeral views; skip consumed/expired/unrehydratable."""
     access = _STATE.get("access")
     sessions = _STATE.get("sessions")
     now = utcnow()
     if access:
         for request in await access.store.list_requests():
             if request.decision.value == "pending":
+                # Multimodal approvals need process-local retained bytes.
+                images = await access.images.get(request.request_id)
+                if request.envelope.image_metas and not images:
+                    # Fail closed after restart: do not reattach dead multimodal UI.
+                    continue
                 bot.add_view(ApprovalView(request.request_id))
     if sessions:
         state = sessions.export_state()
@@ -2077,9 +2353,8 @@ async def _register_views(bot: discord.Bot) -> None:
                 continue
             if decision.expires_at and now >= decision.expires_at:
                 continue
-            # Fail closed if payload cannot be rehydrated after restart.
             pending = await sessions.get_pending_payload(decision_id)
-            if not pending or not pending.get("prompt_text"):
+            if not await _pending_rehydratable(pending):
                 continue
             bot.add_view(IdleDecisionView(decision_id))
         for decision_id, raw in (state.get("model") or {}).items():
@@ -2092,7 +2367,7 @@ async def _register_views(bot: discord.Bot) -> None:
             if decision.expires_at and now >= decision.expires_at:
                 continue
             pending = await sessions.get_pending_payload(decision_id)
-            if not pending or not pending.get("prompt_text"):
+            if not await _pending_rehydratable(pending):
                 continue
             bot.add_view(ModelDecisionView(decision_id))
     _STATE["views_registered"] = True
@@ -2170,6 +2445,46 @@ async def _edit_approval_expired_message(request) -> None:
         )
 
 
+async def _expire_stale_decisions() -> None:
+    """Expire idle/model decisions and discard their retention keys promptly."""
+    sessions = _STATE.get("sessions")
+    access = _STATE.get("access")
+    if not sessions:
+        return
+    now = utcnow()
+    state = sessions.export_state()
+    for decision_id, raw in list((state.get("idle") or {}).items()):
+        try:
+            decision = IdleDecision.from_dict(raw)
+        except Exception:
+            continue
+        if decision.consumed:
+            continue
+        if decision.expires_at and now >= decision.expires_at:
+            decision.consumed = True
+            decision.choice = IdleChoice.CANCEL
+            await sessions.save_idle_decision(decision)
+            pending = await sessions.pop_pending_payload(decision_id)
+            if pending:
+                await _discard_retention_key(pending.get("retention_key"))
+    for decision_id, raw in list((state.get("model") or {}).items()):
+        try:
+            decision = ModelDecision.from_dict(raw)
+        except Exception:
+            continue
+        if decision.consumed:
+            continue
+        if decision.expires_at and now >= decision.expires_at:
+            decision.consumed = True
+            decision.choice = ModelChoice.CANCEL
+            await sessions.save_model_decision(decision)
+            pending = await sessions.pop_pending_payload(decision_id)
+            if pending:
+                await _discard_retention_key(pending.get("retention_key"))
+    if access:
+        await access.images.purge_expired()
+
+
 async def _expiry_loop() -> None:
     while True:
         try:
@@ -2177,21 +2492,30 @@ async def _expiry_loop() -> None:
                 expired = await _access().expire_stale_requests()
                 for request in expired:
                     await _edit_approval_expired_message(request)
+            await _expire_stale_decisions()
         except Exception:
             logger.exception("Cursor approval expiry loop failed")
         await asyncio.sleep(60)
 
 
 async def cleanup_cursor_runtime() -> None:
-    """Cancel trackers/tasks and close shared HTTP clients."""
+    """Cancel trackers/tasks and close shared HTTP clients (idempotent)."""
+    if _STATE.get("_cleanup_done"):
+        return
+    _STATE["_cleanup_done"] = True
+    to_await: list[asyncio.Task] = []
     for key in ("expiry_task", "reconcile_task"):
         task = _STATE.get(key)
         if task is not None:
             task.cancel()
+            to_await.append(task)
             _STATE[key] = None
     for agent_id, task in list((_STATE.get("trackers") or {}).items()):
         task.cancel()
+        to_await.append(task)
         _STATE["trackers"].pop(agent_id, None)
+    if to_await:
+        await asyncio.gather(*to_await, return_exceptions=True)
     client = _STATE.get("client")
     if client is not None:
         try:
@@ -2226,6 +2550,10 @@ def cursor(sonata: AI_Manager):
 
         async def setup(self, bot: discord.Bot):
             await setup_cursor_runtime(sonata, bot)
+
+        async def cleanup(self):
+            """Invoked from SonataClient.close() — real shutdown path."""
+            await cleanup_cursor_runtime()
 
     return Cursor
 
@@ -2310,14 +2638,13 @@ async def setup_cursor_runtime(sonata: AI_Manager, bot: discord.Bot) -> None:
             pass
 
     await _register_views(bot)
-
-    if not getattr(bot, "_cursor_close_hook", False):
-
-        @bot.listen("on_close")
-        async def _cursor_on_close():
-            await cleanup_cursor_runtime()
-
-        bot._cursor_close_hook = True
+    # Expose cleanup for SonataClient.close() (py-cord does not dispatch on_close).
+    _STATE["_cleanup_done"] = False
+    setattr(bot, "_cursor_cleanup", cleanup_cursor_runtime)
+    if hasattr(sonata, "cursor") and sonata.cursor is not None:
+        # Ensure builder instance exposes cleanup even if rebuilt.
+        if not hasattr(sonata.cursor, "cleanup"):
+            sonata.cursor.cleanup = cleanup_cursor_runtime  # type: ignore
 
     if cfg.is_ready:
         if _STATE.get("reconcile_task") is None or _STATE["reconcile_task"].done():
@@ -2331,10 +2658,16 @@ async def cursor_bot_hook(sonata: AI_Manager, bot: discord.Bot) -> None:
     await setup_cursor_runtime(sonata, bot)
 
 
+async def cursor_cleanup_hook(sonata=None, bot=None):
+    """Memory-registered cleanup callable for Sonata.get('cursor', 'cleanup')."""
+    await cleanup_cursor_runtime()
+
+
 @MANAGER.mem(
     {},
     key="cursor",
     hook=cursor_bot_hook,
+    cleanup=cursor_cleanup_hook,
 )
 def init_cursor(_M):
     return None

@@ -583,6 +583,7 @@ class SonataClient(commands.Bot):
 
     def __init__(self, command_prefix, intents):
         super().__init__(command_prefix=command_prefix, intents=intents)
+        self._sonata_cursor_cleanup_done = False
 
     async def on_ready(self) -> None:
         cprint("Logged on as {0}!".format(self.user), "purple")
@@ -590,6 +591,37 @@ class SonataClient(commands.Bot):
         cursor_hook = Sonata.get("cursor", "hook")
         if callable(cursor_hook):
             self.loop.create_task(cursor_hook(Sonata, self))
+
+    async def close(self) -> None:
+        """Idempotent shutdown: run Cursor cleanup before py-cord close.
+
+        py-cord does not dispatch ``on_close``, so plugin cleanup must be
+        invoked from this override — never via atexit for async work.
+        """
+        if not self._sonata_cursor_cleanup_done:
+            self._sonata_cursor_cleanup_done = True
+            cleanup = getattr(self, "_cursor_cleanup", None)
+            if not callable(cleanup):
+                cursor = getattr(Sonata, "cursor", None)
+                cleanup = getattr(cursor, "cleanup", None) if cursor is not None else None
+            if not callable(cleanup):
+                cleanup = Sonata.get("cursor", "cleanup")
+            if callable(cleanup):
+                try:
+                    result = cleanup()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except TypeError:
+                    # Memory hooks are sometimes invoked as cleanup(Sonata).
+                    try:
+                        result = cleanup(Sonata)
+                        if asyncio.iscoroutine(result):
+                            await result
+                    except Exception as exc:
+                        cprint(f"Cursor cleanup failed: {exc}", "red")
+                except Exception as exc:
+                    cprint(f"Cursor cleanup failed: {exc}", "red")
+        await super().close()
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
         if message.guild is None:

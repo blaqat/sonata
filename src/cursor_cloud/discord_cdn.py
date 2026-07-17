@@ -19,11 +19,12 @@ ALLOWED_DISCORD_CDN_HOSTS = frozenset(
 
 
 def is_allowed_discord_cdn_url(url: str) -> bool:
+    """Allow only HTTPS Discord CDN hosts (reject HTTP even on allowlisted hosts)."""
     try:
         parsed = urlparse(url)
     except Exception:
         return False
-    if parsed.scheme not in {"http", "https"}:
+    if parsed.scheme != "https":
         return False
     host = (parsed.hostname or "").lower()
     return host in ALLOWED_DISCORD_CDN_HOSTS

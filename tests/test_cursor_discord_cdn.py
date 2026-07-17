@@ -17,6 +17,14 @@ class TestDiscordCDNAllowlist(unittest.TestCase):
         self.assertFalse(is_allowed_discord_cdn_url("https://evil.example/a.png"))
         self.assertFalse(is_allowed_discord_cdn_url("https://discord.com/attachments/1/a.png"))
 
+    def test_https_only_rejects_http_allowlisted_host(self):
+        self.assertFalse(
+            is_allowed_discord_cdn_url("http://cdn.discordapp.com/attachments/1/a.png")
+        )
+        self.assertFalse(
+            is_allowed_discord_cdn_url("http://media.discordapp.net/attachments/1/a.png")
+        )
+
 
 class TestDiscordCDNDownloader(unittest.IsolatedAsyncioTestCase):
     async def test_no_authorization_header_sent(self):
