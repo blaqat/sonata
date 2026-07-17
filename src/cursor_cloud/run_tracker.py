@@ -7,15 +7,18 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
 from .client import CursorCloudClient
-from .errors import CursorCloudError, StreamExpiredError, TransportError
+from .errors import CursorCloudError, StreamExpiredError
 from .models import (
     GitBranchInfo,
+    RunRecord,
     RunSnapshot,
     RunStatus,
+    ScopeKey,
     StreamEvent,
     ToolActivity,
     utcnow,
 )
+from .run_log import RunLogStore, sanitize_log_summary
 from .session_store import is_meaningful_stream_event
 from .status_renderer import render_status, safe_tool_summary
 
@@ -25,6 +28,25 @@ class StatusSink(Protocol):
 
 
 OnActivity = Callable[[str], Awaitable[None] | None]
+
+
+def is_stream_unavailable_error(data: dict[str, Any] | None) -> bool:
+    """True when an SSE error means the stream ended, not that the agent failed."""
+    payload = data or {}
+    code = str(payload.get("code") or "").lower()
+    message = str(
+        payload.get("message") or payload.get("error") or payload.get("text") or ""
+    ).lower()
+    if code in {"stream_expired", "stream_unavailable", "gone"}:
+        return True
+    needles = (
+        "no longer available",
+        "stream expired",
+        "stream is no longer",
+        "stream unavailable",
+        "run stream is no longer",
+    )
+    return any(n in message for n in needles)
 
 
 class RunTracker:
@@ -37,6 +59,8 @@ class RunTracker:
         agent_name: str | None = None,
         skipped_images: list[str] | None = None,
         on_meaningful_activity: OnActivity | None = None,
+        run_log: RunLogStore | None = None,
+        scope: ScopeKey | None = None,
     ):
         self.client = client
         self.sink = sink
@@ -44,11 +68,14 @@ class RunTracker:
         self.agent_name = agent_name
         self.skipped_images = skipped_images or []
         self.on_meaningful_activity = on_meaningful_activity
+        self.run_log = run_log
+        self.scope = scope
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._pending_render = False
         self._last_edit = 0.0
         self.snapshot: RunSnapshot | None = None
+        self._pending_log_kinds: set[str] = set()
 
     def apply_event(self, snapshot: RunSnapshot, event: StreamEvent) -> RunSnapshot:
         if event.id:
@@ -116,11 +143,18 @@ class RunTracker:
                 )
             if branches:
                 snapshot.git_branches = branches
+            # Successful result clears a prior non-fatal stream glitch message.
+            if snapshot.status == RunStatus.FINISHED:
+                snapshot.error_message = ""
         elif name == "error":
-            snapshot.status = RunStatus.ERROR
-            snapshot.error_message = str(
-                data.get("message") or data.get("code") or "Agent error"
-            )
+            if is_stream_unavailable_error(data):
+                # Stream ended; caller reconciles via GET run — do not mark ERROR.
+                pass
+            else:
+                snapshot.status = RunStatus.ERROR
+                snapshot.error_message = str(
+                    data.get("message") or data.get("code") or "Agent error"
+                )
         elif name == "done":
             if not snapshot.status.is_terminal:
                 # done without result — leave status as-is but mark finished if running
@@ -129,9 +163,140 @@ class RunTracker:
         snapshot.updated_at = utcnow()
         return snapshot
 
+    def apply_run_record(self, snapshot: RunSnapshot, run: RunRecord) -> RunSnapshot:
+        """Reconcile snapshot fields from a GET /runs response."""
+        snapshot.status = run.status
+        if run.result:
+            snapshot.result_text = run.result
+        if run.duration_ms is not None:
+            snapshot.duration_ms = run.duration_ms
+        if run.id:
+            snapshot.run_id = run.id
+        git = run.git or {}
+        branches = []
+        for item in git.get("branches") or []:
+            if not isinstance(item, dict):
+                continue
+            branches.append(
+                GitBranchInfo(
+                    repo_url=str(item.get("repoUrl") or item.get("repo_url") or ""),
+                    branch=item.get("branch"),
+                    pr_url=item.get("prUrl") or item.get("pr_url"),
+                )
+            )
+        if branches:
+            snapshot.git_branches = branches
+        if snapshot.status == RunStatus.FINISHED:
+            snapshot.error_message = ""
+        elif snapshot.status == RunStatus.ERROR and not snapshot.error_message:
+            snapshot.error_message = "Agent error"
+        elif snapshot.status in {RunStatus.CANCELLED, RunStatus.EXPIRED}:
+            snapshot.error_message = ""
+        snapshot.updated_at = utcnow()
+        return snapshot
+
+    async def _reconcile_from_api(self, agent_id: str, run_id: str) -> None:
+        if self.snapshot is None:
+            return
+        run = await self.client.get_run(agent_id, run_id)
+        self.apply_run_record(self.snapshot, run)
+        await self._log(
+            "system",
+            f"Reconciled from API: {run.status.value}",
+            detail={"status": run.status.value},
+        )
+        if run.result:
+            await self._log("result", sanitize_log_summary(run.result))
+
+    async def _log(
+        self,
+        kind: str,
+        summary: str,
+        *,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        if self.run_log is None or self.scope is None or self.snapshot is None:
+            return
+        try:
+            await self.run_log.append(
+                self.scope,
+                agent_id=self.snapshot.agent_id,
+                run_id=self.snapshot.run_id,
+                kind=kind,
+                summary=summary,
+                detail=detail,
+            )
+        except Exception:
+            # Logging must never break tracking.
+            pass
+
+    async def _flush_pending_text_logs(self) -> None:
+        if self.snapshot is None or not self._pending_log_kinds:
+            return
+        pending = set(self._pending_log_kinds)
+        self._pending_log_kinds.clear()
+        if "thinking" in pending and self.snapshot.thinking_text:
+            await self._log(
+                "thinking",
+                sanitize_log_summary(self.snapshot.thinking_text[-220:]),
+            )
+        if "assistant" in pending and self.snapshot.assistant_text:
+            await self._log(
+                "assistant",
+                sanitize_log_summary(self.snapshot.assistant_text[-220:]),
+            )
+
+    async def _log_event(self, event: StreamEvent) -> None:
+        name = event.event
+        data = event.data or {}
+        if name in {"thinking", "assistant"}:
+            self._pending_log_kinds.add(name)
+            return
+        await self._flush_pending_text_logs()
+        if name == "status":
+            status = str(data.get("status") or "")
+            await self._log("status", status or "status update")
+        elif name == "tool_call":
+            tool_name = str(data.get("name") or "tool")
+            status = str(data.get("status") or "")
+            summary = safe_tool_summary(
+                tool_name,
+                data.get("args"),
+                data.get("result"),
+                truncated=data.get("truncated")
+                if isinstance(data.get("truncated"), dict)
+                else None,
+            )
+            await self._log("tool_call", f"{status} {summary}".strip())
+        elif name == "result":
+            text = str(data.get("text") or data.get("status") or "result")
+            await self._log("result", sanitize_log_summary(text))
+        elif name == "error":
+            if is_stream_unavailable_error(data):
+                await self._log(
+                    "system",
+                    "Stream unavailable; reconciling",
+                    detail={"code": str(data.get("code") or "")},
+                )
+            else:
+                await self._log(
+                    "error",
+                    sanitize_log_summary(
+                        str(data.get("message") or data.get("code") or "error")
+                    ),
+                )
+        elif name == "done":
+            await self._log("done", "done")
+        elif name == "heartbeat":
+            pass
+        else:
+            await self._log("system", sanitize_log_summary(name))
+
     async def _emit(self, *, terminal: bool = False) -> None:
         if self.snapshot is None:
             return
+        if terminal or self._pending_log_kinds:
+            await self._flush_pending_text_logs()
         content = render_status(
             self.snapshot,
             agent_name=self.agent_name,
@@ -180,9 +345,29 @@ class RunTracker:
             ):
                 if self._stop.is_set():
                     break
+
+                stream_gone = event.event == "error" and is_stream_unavailable_error(
+                    event.data
+                )
                 self.apply_event(self.snapshot, event)
+                await self._log_event(event)
                 await self._notify_activity(event.event)
-                if self.snapshot.status.is_terminal or event.event in {"result", "error", "done"}:
+
+                if stream_gone:
+                    try:
+                        await self._reconcile_from_api(agent_id, run_id)
+                    except CursorCloudError as exc:
+                        self.snapshot.status = RunStatus.ERROR
+                        self.snapshot.error_message = exc.user_message
+                    self._pending_render = False
+                    await self._emit(terminal=True)
+                    break
+
+                if self.snapshot.status.is_terminal or event.event in {
+                    "result",
+                    "error",
+                    "done",
+                }:
                     self._pending_render = False
                     await self._emit(terminal=True)
                     if event.event in {"result", "error", "done"} or self.snapshot.status.is_terminal:
@@ -190,13 +375,23 @@ class RunTracker:
                             break
                 else:
                     self._pending_render = True
+
+            # Stream ended without a terminal snapshot — poll once.
+            if (
+                self.snapshot
+                and not self.snapshot.status.is_terminal
+                and not self._stop.is_set()
+            ):
+                try:
+                    await self._reconcile_from_api(agent_id, run_id)
+                except CursorCloudError as exc:
+                    self.snapshot.status = RunStatus.ERROR
+                    self.snapshot.error_message = exc.user_message
+                await self._emit(terminal=True)
         except StreamExpiredError:
             # Fallback should have handled; if not, poll once.
             try:
-                run = await self.client.get_run(agent_id, run_id)
-                self.snapshot.status = run.status
-                self.snapshot.result_text = run.result or self.snapshot.result_text
-                self.snapshot.duration_ms = run.duration_ms
+                await self._reconcile_from_api(agent_id, run_id)
                 await self._emit(terminal=True)
             except CursorCloudError as exc:
                 self.snapshot.status = RunStatus.ERROR

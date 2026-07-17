@@ -61,7 +61,15 @@ class TestCommandRegistration(unittest.TestCase):
     def test_group_has_required_subcommands(self):
         mod = load_cursor_plugin()
         names = {c.name for c in mod.cursor_group.walk_commands()}
-        for required in {"run", "stop", "sessions", "session", "model", "status"}:
+        for required in {
+            "run",
+            "stop",
+            "sessions",
+            "session",
+            "model",
+            "status",
+            "history",
+        }:
             self.assertIn(required, names)
 
     def test_option_raw_types_are_classes_under_future_annotations(self):
@@ -86,6 +94,12 @@ class TestCommandRegistration(unittest.TestCase):
         stop = by_name["stop"]
         self.assertIs(stop.options[0]._raw_type, discord.User)
         self.assertEqual(stop.options[0].input_type, SlashCommandOptionType.user)
+
+        history = by_name["history"]
+        run_opt = next(o for o in history.options if o.name == "run_id")
+        self.assertIs(run_opt._raw_type, str)
+        self.assertFalse(run_opt.required)
+        self.assertEqual(run_opt.input_type, SlashCommandOptionType.string)
 
 
 class TestPolicyCommandNames(unittest.IsolatedAsyncioTestCase):

@@ -66,6 +66,11 @@ from cursor_cloud.models import (
     ScopeKey,
     utcnow,
 )
+from cursor_cloud.run_log import (
+    MemoryRunLogStore,
+    format_history_message,
+    sanitize_log_summary,
+)
 from cursor_cloud.run_tracker import RunTracker
 from cursor_cloud.session_store import (
     MemorySessionStore,
@@ -91,6 +96,7 @@ _STATE: dict[str, Any] = {
     "client": None,
     "cdn": None,
     "sessions": None,
+    "run_logs": None,
     "access_store": None,
     "access": None,
     "bot": None,
@@ -113,6 +119,14 @@ def _cfg():
 
 def _sessions() -> MemorySessionStore:
     return _STATE["sessions"]
+
+
+def _run_logs() -> MemoryRunLogStore:
+    store = _STATE.get("run_logs")
+    if store is None:
+        store = MemoryRunLogStore()
+        _STATE["run_logs"] = store
+    return store
 
 
 def _access() -> AccessController:
@@ -448,6 +462,38 @@ class BeaconSessionStore(MemorySessionStore):
 
     async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None:
         await super().set_model_pref(scope, model_id)
+        self._persist()
+
+
+class BeaconRunLogStore(MemoryRunLogStore):
+    def __init__(self, beacon_branch, **kwargs):
+        super().__init__(**kwargs)
+        self.beacon = beacon_branch
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            data = self.beacon.discover("run_logs")
+            if isinstance(data, dict):
+                self.import_state(data)
+        except Exception:
+            logger.exception("Failed loading Cursor run logs from Beacon")
+
+    def _persist(self) -> None:
+        try:
+            self.beacon.illuminate("run_logs", self.export_state())
+        except Exception:
+            logger.exception("Failed persisting Cursor run logs")
+
+    async def append(self, scope, *, agent_id, run_id, kind, summary, detail=None):
+        await super().append(
+            scope,
+            agent_id=agent_id,
+            run_id=run_id,
+            kind=kind,
+            summary=summary,
+            detail=detail,
+        )
         self._persist()
 
 
@@ -1000,6 +1046,18 @@ async def _launch_run(
         async def on_activity(_event: str):
             await sessions.touch_activity(scope, session.agent_id)
 
+        run_logs = _run_logs()
+        try:
+            await run_logs.append(
+                scope,
+                agent_id=session.agent_id,
+                run_id=session.latest_run_id or "",
+                kind="prompt",
+                summary=sanitize_log_summary(prompt_text),
+            )
+        except Exception:
+            logger.debug("Failed to append Cursor prompt log", exc_info=True)
+
         sink = DiscordStatusSink(status_msg)
         tracker = RunTracker(
             client,
@@ -1008,6 +1066,8 @@ async def _launch_run(
             agent_name=session.name or session.agent_id,
             skipped_images=skipped,
             on_meaningful_activity=on_activity,
+            run_log=run_logs,
+            scope=scope,
         )
 
         async def _runner():
@@ -2145,6 +2205,65 @@ async def cursor_model(
         await _ephemeral(interaction, exc.user_message)
 
 
+@cursor_group.command(
+    name="history",
+    description="Show local activity log for a Cursor run (thinking/tools/result)",
+)
+async def cursor_history(
+    ctx: discord.ApplicationContext,
+    run_id: str = Option(
+        str,
+        "Run id (default: active run)",
+        required=False,
+    ),
+    page: int = Option(
+        int,
+        "Page number (1-based)",
+        required=False,
+    ),
+):
+    interaction = ctx.interaction
+    if await _gate(interaction, "history") is None:
+        return
+    await _defer(interaction, ephemeral=True)
+    scope = _scope_from_interaction(interaction)
+    sessions = _sessions()
+    active = await sessions.get_active(scope)
+    target_run = (run_id or "").strip() or (active.latest_run_id if active else None)
+    if not target_run:
+        await _ephemeral(interaction, "No active run. Pass `run_id` or start a run first.")
+        return
+    page_num = max(1, int(page or 1))
+    page_size = 12
+    logs = _run_logs()
+    total = await logs.entry_count(scope, target_run)
+    if total == 0:
+        # Soft hint: list recent run ids if any.
+        recent = await logs.list_run_ids(scope)
+        hint = ""
+        if recent:
+            shown = ", ".join(f"`{r}`" for r in recent[:5])
+            hint = f"\nRecent logged runs: {shown}"
+        await _ephemeral(
+            interaction,
+            f"### History\nNo log entries for `{target_run}`.{hint}",
+        )
+        return
+    offset = (page_num - 1) * page_size
+    entries = await logs.get_entries(
+        scope, target_run, offset=offset, limit=page_size
+    )
+    text = format_history_message(
+        entries,
+        run_id=target_run,
+        page=page_num,
+        total_entries=total,
+        page_size=page_size,
+        agent_id=active.agent_id if active else None,
+    )
+    await _ephemeral(interaction, text)
+
+
 @cursor_group.command(name="status", description="Show status for your active Cursor run")
 async def cursor_status(
     ctx: discord.ApplicationContext,
@@ -2477,6 +2596,8 @@ async def _reconcile_runs() -> None:
                     sink,
                     edit_interval_ms=_cfg().status_edit_interval_ms,
                     agent_name=session.name or session.agent_id,
+                    run_log=_run_logs(),
+                    scope=session.scope,
                 )
 
                 async def _resume(sess=session, tr=tracker):
@@ -2723,11 +2844,14 @@ async def setup_cursor_runtime(sonata: AI_Manager, bot: discord.Bot) -> None:
         access_store = BeaconAccessStore(
             branch.branch("access"), audit_limit=cfg.access.audit_history_limit
         )
+        run_logs = BeaconRunLogStore(branch.branch("run_logs"))
     else:
         sessions = MemorySessionStore(max_recent=cfg.max_recent_sessions)
         access_store = MemoryAccessStore(audit_limit=cfg.access.audit_history_limit)
+        run_logs = MemoryRunLogStore()
 
     _STATE["sessions"] = sessions
+    _STATE["run_logs"] = run_logs
     _STATE["access_store"] = access_store
     _STATE["access"] = AccessController(
         cfg,

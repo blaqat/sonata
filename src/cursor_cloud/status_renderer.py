@@ -48,10 +48,17 @@ def render_status(
         lines.append(f"Agent: `{redact_untrusted(agent_name)[:80]}`")
     lines.append(f"Run: `{snapshot.run_id}`")
 
-    if snapshot.error_message:
+    if snapshot.error_message and snapshot.status == RunStatus.ERROR:
         lines.append("")
         lines.append("### Error")
         lines.append(redact_untrusted(snapshot.error_message)[:500])
+
+    # Short thinking peek while active (full trail lives in /cursor history).
+    if snapshot.status.is_active and snapshot.thinking_text:
+        peek = redact_untrusted(snapshot.thinking_text.strip())[-160:]
+        if peek:
+            lines.append("")
+            lines.append(f"_Thinking…_ {peek}")
 
     tools = snapshot.tools[-3:]
     if tools:
@@ -61,7 +68,11 @@ def render_status(
             summary = redact_untrusted(tool.summary or tool.name)[:120]
             lines.append(f"- `{tool.name}` ({tool.status}) {summary}".rstrip())
 
-    body = snapshot.result_text or snapshot.assistant_text
+    body = snapshot.result_text or (
+        snapshot.assistant_text if snapshot.status.is_terminal else ""
+    )
+    if not body and snapshot.status.is_active and snapshot.assistant_text:
+        body = snapshot.assistant_text[-400:]
     if body:
         lines.append("")
         lines.append("### Output")

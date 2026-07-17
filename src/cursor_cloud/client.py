@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -357,9 +358,17 @@ class CursorCloudClient:
             # Invalid Last-Event-ID — caller may retry without it.
             raise exc
 
+        # Consume via explicit anext/aclose so early consumer break (after
+        # terminal `done`) does not leave httpcore's byte-stream aiter to
+        # log "async generator ignored GeneratorExit".
         buffer = ""
+        byte_iter = response.aiter_text()
         try:
-            async for chunk in response.aiter_text():
+            while True:
+                try:
+                    chunk = await byte_iter.__anext__()
+                except StopAsyncIteration:
+                    break
                 buffer += chunk
                 events, buffer = parse_sse_chunk(buffer)
                 for event in events:
@@ -373,7 +382,11 @@ class CursorCloudClient:
         except httpx.HTTPError as exc:
             raise TransportError(str(exc)) from exc
         finally:
-            await response.aclose()
+            with contextlib.suppress(Exception):
+                await byte_iter.aclose()
+            with contextlib.suppress(Exception):
+                if not response.is_closed:
+                    await response.aclose()
 
     async def stream_run_with_fallback(
         self,

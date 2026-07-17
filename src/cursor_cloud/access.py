@@ -315,6 +315,7 @@ class AccessController:
             "session",
             "model",
             "status",
+            "history",
             "approve",
             "deny",
         }
