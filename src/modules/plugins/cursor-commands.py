@@ -31,15 +31,20 @@ from cursor_cloud.context import (
     collect_chain_attachments,
     encode_image_bytes,
     images_from_discord_attachments,
+    metas_from_images,
+    metas_match,
     parse_message_reference,
 )
+from cursor_cloud.discord_cdn import DiscordCDNDownloader
 from cursor_cloud.errors import (
     AuthorizationError,
     BusyRunError,
+    ConfigurationError,
     CursorCloudError,
     GrantConsumedError,
     OwnershipError,
     StaleStateError,
+    ValidationError,
 )
 from cursor_cloud.models import (
     AccessTier,
@@ -49,6 +54,7 @@ from cursor_cloud.models import (
     ImageInput,
     ModelChoice,
     ModelDecision,
+    PromptImageMeta,
     RunRequestEnvelope,
     RunStatus,
     ScopeKey,
@@ -77,14 +83,16 @@ __dependencies__ = ["beacon", "chat"]
 _STATE: dict[str, Any] = {
     "config": None,
     "client": None,
+    "cdn": None,
     "sessions": None,
     "access_store": None,
     "access": None,
     "bot": None,
     "trackers": {},
     "views_registered": False,
-    "sync_done": False,
-    "pending_images": {},  # request_id -> list[ImageInput] also in ImageRetentionStore
+    "expiry_task": None,
+    "reconcile_task": None,
+    "policy_manager": None,  # injectable for tests / resolved from Sonata
 }
 
 
@@ -121,49 +129,60 @@ def _role_ids(user: discord.abc.User) -> list[str]:
     return [str(r.id) for r in roles]
 
 
-async def _policy_allowed(interaction: discord.Interaction, subcommand: str) -> bool:
-    bot = _STATE.get("bot")
-    sonata = getattr(bot, "sonata", None) if bot else None
-    # Prefer AI manager chat.policy_manager via CONTEXT if available.
-    policy_manager = None
-    try:
-        from modules.plugins import PLUGINS_DICT
-
-        chat = PLUGINS_DICT.get("chat")
-        # Sonata instance is attached during extend; fall back via MANAGER
-    except Exception:
-        pass
-
-    # Resolve via interaction.client + AI_Manager singleton pattern used elsewhere.
+def _resolve_policy_manager(interaction: discord.Interaction | None = None):
+    """Return ChannelPolicies-like manager or None. Injectable via _STATE for tests."""
+    injected = _STATE.get("policy_manager")
+    if injected is not None:
+        return injected
     sona = None
-    client = interaction.client
-    if hasattr(client, "sonata"):
-        sona = client.sonata
-    else:
-        # index.py binds Sonata globally through plugins; look up chat on CONTEXT manager host
+    bot = _STATE.get("bot")
+    if bot is not None:
+        sona = getattr(bot, "sonata", None)
+    if sona is None and interaction is not None:
+        client = getattr(interaction, "client", None)
+        if client is not None:
+            sona = getattr(client, "sonata", None)
+    if sona is None:
         try:
             from index import Sonata as SonaGlobal  # type: ignore
 
             sona = SonaGlobal
         except Exception:
             sona = None
+    if sona is None:
+        return None
+    chat = sona.get("chat") if hasattr(sona, "get") else None
+    return getattr(chat, "policy_manager", None) if chat else None
 
-    if sona is not None:
-        chat = sona.get("chat") if hasattr(sona, "get") else None
-        policy_manager = getattr(chat, "policy_manager", None) if chat else None
 
-    if policy_manager is None:
+def _require_policy_manager() -> bool:
+    """Whether missing channel policy must fail closed."""
+    if _STATE.get("require_policy") is False:
+        return False
+    if _STATE.get("require_policy") is True:
         return True
+    bot = _STATE.get("bot")
+    return bool(bot is not None and getattr(bot, "sonata", None) is not None)
 
-    guild_id = interaction.guild_id
-    channel_id = interaction.channel_id
-    user_id = interaction.user.id
-    roles = _role_ids(interaction.user)
+
+def _policy_allowed_for(
+    *,
+    guild_id,
+    channel_id,
+    user_id,
+    role_ids: list[str],
+    subcommand: str,
+    interaction: discord.Interaction | None = None,
+) -> bool:
+    """Evaluate channel policy. Returns False if manager missing and required."""
+    policy_manager = _resolve_policy_manager(interaction)
+    if policy_manager is None:
+        return not _require_policy_manager()
     if not policy_manager.can_speak(
         guild_id=guild_id,
         channel_id=channel_id,
         user_id=user_id,
-        role_ids=roles,
+        role_ids=role_ids,
     ):
         return False
     return policy_manager.is_command_allowed(
@@ -171,8 +190,79 @@ async def _policy_allowed(interaction: discord.Interaction, subcommand: str) -> 
         channel_id=channel_id,
         command=f"cursor.{subcommand}",
         user_id=user_id,
-        role_ids=roles,
+        role_ids=role_ids,
     )
+
+
+async def _policy_allowed(interaction: discord.Interaction, subcommand: str) -> bool:
+    return _policy_allowed_for(
+        guild_id=interaction.guild_id,
+        channel_id=interaction.channel_id,
+        user_id=interaction.user.id,
+        role_ids=_role_ids(interaction.user),
+        subcommand=subcommand,
+        interaction=interaction,
+    )
+
+
+async def _role_ids_for_user(guild, user_id: str | int) -> list[str]:
+    if guild is None:
+        return []
+    try:
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return []
+    member = guild.get_member(uid) if hasattr(guild, "get_member") else None
+    if member is None and hasattr(guild, "fetch_member"):
+        try:
+            member = await guild.fetch_member(uid)
+        except Exception:
+            member = None
+    return _role_ids(member) if member is not None else []
+
+
+async def _revalidate_run_auth(
+    *,
+    user_id: str | int,
+    guild_id,
+    channel_id,
+    role_ids: list[str] | None = None,
+    subcommand: str = "run",
+    interaction: discord.Interaction | None = None,
+    minimum: AccessTier = AccessTier.APPROVAL,
+) -> AccessTier:
+    """Fail-closed tier + policy check used at every deferred boundary and before submit."""
+    cfg = _cfg()
+    if cfg is None or not cfg.enabled:
+        raise ConfigurationError("Cursor commands are disabled.")
+    err = cfg.readiness_error()
+    if err and str(user_id) != (cfg.god_user_id or ""):
+        raise ConfigurationError(err)
+    tier = await _access().resolve_tier(user_id)
+    if tier == AccessTier.DENIED or int(tier) > int(minimum):
+        raise AuthorizationError()
+    if not await _access().can_use_command(user_id, subcommand):
+        raise AuthorizationError()
+    policy_manager = _resolve_policy_manager(interaction)
+    if policy_manager is None and _require_policy_manager():
+        raise ConfigurationError(
+            "Channel policy manager missing",
+            user_message=(
+                "Cursor channel policy is not configured; refusing to run."
+            ),
+        )
+    if not _policy_allowed_for(
+        guild_id=guild_id,
+        channel_id=channel_id,
+        user_id=user_id,
+        role_ids=role_ids or [],
+        subcommand=subcommand,
+        interaction=interaction,
+    ):
+        raise AuthorizationError(
+            user_message="Cursor is not allowed in this channel."
+        )
+    return tier
 
 
 async def _gate(interaction: discord.Interaction, subcommand: str) -> AccessTier | None:
@@ -183,7 +273,6 @@ async def _gate(interaction: discord.Interaction, subcommand: str) -> AccessTier
         return None
     err = cfg.readiness_error()
     if err and subcommand not in {"status"}:
-        # Still allow god to see status-ish errors; otherwise fail closed.
         if not cfg.god_user_id:
             await _ephemeral(interaction, err)
             return None
@@ -192,23 +281,24 @@ async def _gate(interaction: discord.Interaction, subcommand: str) -> AccessTier
             return None
 
     try:
-        tier = await _access().resolve_tier(interaction.user.id)
-    except Exception:
-        tier = AccessTier.DENIED
-
-    if tier == AccessTier.DENIED:
-        await _ephemeral(interaction, "You are not allowed to use Cursor commands.")
+        return await _revalidate_run_auth(
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+            role_ids=_role_ids(interaction.user),
+            subcommand=subcommand,
+            interaction=interaction,
+            minimum=AccessTier.APPROVAL,
+        )
+    except AuthorizationError as exc:
+        await _ephemeral(interaction, exc.user_message)
         return None
-
-    if not await _access().can_use_command(interaction.user.id, subcommand):
-        await _ephemeral(interaction, "You are not allowed to use that Cursor command.")
+    except ConfigurationError as exc:
+        await _ephemeral(interaction, exc.user_message)
         return None
-
-    if not await _policy_allowed(interaction, subcommand):
-        await _ephemeral(interaction, "Cursor is not allowed in this channel.")
+    except CursorCloudError as exc:
+        await _ephemeral(interaction, exc.user_message)
         return None
-
-    return tier
 
 
 async def _ephemeral(interaction: discord.Interaction, content: str) -> None:
@@ -312,6 +402,19 @@ class BeaconSessionStore(MemorySessionStore):
         result = await super().save_model_decision(decision)
         self._persist()
         return result
+
+    async def save_pending_payload(self, decision_id: str, payload: dict[str, Any]) -> None:
+        await super().save_pending_payload(decision_id, payload)
+        self._persist()
+
+    async def pop_pending_payload(self, decision_id: str) -> dict[str, Any] | None:
+        result = await super().pop_pending_payload(decision_id)
+        self._persist()
+        return result
+
+    async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None:
+        await super().set_model_pref(scope, model_id)
+        self._persist()
 
 
 class BeaconAccessStore(MemoryAccessStore):
@@ -444,40 +547,110 @@ class ModelDecisionView(discord.ui.View):
         )
 
 
+def _cdn() -> DiscordCDNDownloader:
+    cdn = _STATE.get("cdn")
+    if cdn is None:
+        cfg = _cfg()
+        cdn = DiscordCDNDownloader(
+            max_bytes=cfg.max_image_bytes if cfg else 15 * 1024 * 1024
+        )
+        _STATE["cdn"] = cdn
+    return cdn
+
+
 async def _download_images(images: list[ImageInput]) -> list[ImageInput]:
-    """Download CDN URLs into bounded base64 for approval delay safety."""
+    """Download Discord CDN URLs via unauthenticated allowlisted client.
+
+    Never reuse the Cursor API Basic-auth client. Fail closed on host/redirect
+    violations rather than falling back to raw CDN URLs for pending approvals.
+    """
     cfg = _cfg()
-    client = _client()
-    http = await client._ensure_client()
+    downloader = _cdn()
     out: list[ImageInput] = []
     total = 0
     for img in images:
         if img.data_b64:
             size = img.size_bytes or 0
             if total + size > cfg.max_retained_image_bytes:
-                break
+                raise ValidationError(
+                    "Retained image budget exceeded",
+                    user_message="Images exceed the retention budget; reduce attachments and retry.",
+                )
             out.append(img)
             total += size
             continue
         if not img.url:
-            continue
-        try:
-            resp = await http.get(img.url)
-            resp.raise_for_status()
-            data = resp.content
-            if len(data) > cfg.max_image_bytes:
-                continue
-            if total + len(data) > cfg.max_retained_image_bytes:
-                break
-            encoded = encode_image_bytes(data, img.mime_type)
-            encoded.source_message_id = img.source_message_id
-            encoded.url = img.url
-            out.append(encoded)
-            total += len(data)
-        except Exception:
-            # Keep URL as last resort if download fails at request time.
-            out.append(img)
+            raise ValidationError(
+                "Image missing url/data",
+                user_message="An image could not be retained; resubmit the run.",
+            )
+        data, mime = await downloader.download(img.url, expected_mime=img.mime_type)
+        if total + len(data) > cfg.max_retained_image_bytes:
+            raise ValidationError(
+                "Retained image budget exceeded",
+                user_message="Images exceed the retention budget; reduce attachments and retry.",
+            )
+        encoded = encode_image_bytes(data, mime)
+        encoded.source_message_id = img.source_message_id
+        encoded.url = img.url
+        out.append(encoded)
+        total += len(data)
     return out
+
+
+def _serializable_pending(
+    *,
+    prompt: str,
+    prompt_text: str,
+    message_ref: str | None,
+    preferred: str | None,
+    image_metas: list,
+    retention_key: str | None,
+    skipped: list[str] | None = None,
+    scope: ScopeKey | None = None,
+) -> dict[str, Any]:
+    """Durable decision payload (no API secrets / no raw unbounded image bytes)."""
+    data: dict[str, Any] = {
+        "prompt": prompt,
+        "prompt_text": prompt_text,
+        "message_ref": message_ref,
+        "preferred": preferred,
+        "image_metas": [
+            m.to_dict() if hasattr(m, "to_dict") else dict(m) for m in image_metas
+        ],
+        "retention_key": retention_key,
+        "skipped": list(skipped or []),
+    }
+    if scope is not None:
+        data["guild_id"] = scope.guild_id
+        data["channel_id"] = scope.channel_id
+        data["user_id"] = scope.user_id
+    return data
+
+
+async def _rehydrate_pending_images(pending: dict[str, Any]) -> list[ImageInput]:
+    """Load retained images for a decision; fail closed on missing/mismatch."""
+    key = pending.get("retention_key")
+    expected_raw = list(pending.get("image_metas") or [])
+    expected = [
+        PromptImageMeta.from_dict(m) if isinstance(m, dict) else m for m in expected_raw
+    ]
+    if not key:
+        if expected:
+            raise ValidationError(
+                "Pending images missing retention key",
+                user_message="Pending run images unavailable after restart; please resubmit.",
+            )
+        return []
+    images = await _access().images.get(str(key)) or []
+    if expected and (not images or not metas_match(expected, metas_from_images(images))):
+        raise ValidationError(
+            "Pending image metadata mismatch",
+            user_message="Pending run images unavailable or changed; please resubmit.",
+        )
+    if not expected and not images:
+        return []
+    return images
 
 
 async def _build_context_for_run(
@@ -562,13 +735,55 @@ async def _launch_run(
     force_new: bool,
     model: str | None,
     grant=None,
-) -> None:
+    envelope: RunRequestEnvelope | None = None,
+    scope: ScopeKey | None = None,
+    role_ids: list[str] | None = None,
+    skip_status_post: bool = False,
+    status_msg: discord.Message | None = None,
+) -> AgentSession:
     cfg = _cfg()
-    scope = _scope_from_interaction(interaction)
+    scope = scope or _scope_from_interaction(interaction)
     sessions = _sessions()
     client = _client()
+    role_ids = role_ids if role_ids is not None else _role_ids(getattr(interaction, "user", None) or type("U", (), {"roles": []})())
+
+    # Final fail-closed auth immediately before consume/submit.
+    await _revalidate_run_auth(
+        user_id=scope.user_id,
+        guild_id=scope.guild_id,
+        channel_id=scope.channel_id,
+        role_ids=role_ids,
+        subcommand="run",
+        interaction=interaction if isinstance(interaction, discord.Interaction) else None,
+    )
+
+    # Post status outside the API-submit critical section when possible.
+    if status_msg is None and not skip_status_post:
+        status_msg = await _public(interaction, initial_queued_message())
 
     async with sessions.lock_for(scope):
+        # Re-check auth under the scope lock before create/follow-up.
+        await _revalidate_run_auth(
+            user_id=scope.user_id,
+            guild_id=scope.guild_id,
+            channel_id=scope.channel_id,
+            role_ids=role_ids,
+            subcommand="run",
+            interaction=interaction if isinstance(interaction, discord.Interaction) else None,
+        )
+        # Consume one-run grants under the same lock as API submit to prevent
+        # concurrent /cursor run from double-creating agents. Must use the
+        # original approval envelope so the grant hash still matches.
+        if grant is not None and getattr(grant, "kind", None) == "once" and not getattr(
+            grant, "consumed", False
+        ):
+            if envelope is None:
+                raise ValidationError(
+                    "Missing envelope for one-run grant consume",
+                    user_message="Approval grant could not be consumed safely; please resubmit.",
+                )
+            grant = await _access().consume_grant_for_submit(grant, envelope)
+
         active = await sessions.get_active(scope)
         if not force_new and agent_id is None and active is not None:
             agent_id = active.agent_id
@@ -578,9 +793,7 @@ async def _launch_run(
             if session and run_is_busy(session.latest_run_status):
                 raise BusyRunError()
 
-        status_msg = await _public(interaction, initial_queued_message())
         api_images = [img.to_api() for img in images]
-
         try:
             if force_new or not agent_id:
                 agent, run = await client.create_agent(
@@ -602,8 +815,8 @@ async def _launch_run(
                     starting_ref=cfg.default_ref,
                     latest_run_id=run.id,
                     latest_run_status=run.status,
-                    status_channel_id=str(status_msg.channel.id),
-                    status_message_id=str(status_msg.id),
+                    status_channel_id=str(status_msg.channel.id) if status_msg else None,
+                    status_message_id=str(status_msg.id) if status_msg else None,
                     summary=prompt_text[:200],
                     active=True,
                     last_meaningful_activity_at=utcnow(),
@@ -618,58 +831,61 @@ async def _launch_run(
                     raise OwnershipError()
                 session.latest_run_id = run.id
                 session.latest_run_status = run.status
-                session.status_channel_id = str(status_msg.channel.id)
-                session.status_message_id = str(status_msg.id)
+                if status_msg is not None:
+                    session.status_channel_id = str(status_msg.channel.id)
+                    session.status_message_id = str(status_msg.id)
                 session.summary = prompt_text[:200]
                 session.last_meaningful_activity_at = utcnow()
                 await sessions.upsert(session)
         except Exception as exc:
             if grant is not None and getattr(grant, "kind", None) == "once":
                 await _access().mark_submit_failed_after_consume(grant)
+                if status_msg is not None:
+                    await status_msg.edit(
+                        content=(
+                            "### Error\n" + GrantConsumedError(str(exc)).user_message
+                        )[:2000],
+                        allowed_mentions=CONTENT_MENTIONS,
+                    )
+                raise GrantConsumedError(str(exc)) from exc
+            if status_msg is not None:
                 await status_msg.edit(
-                    content=(
-                        "### Error\n"
-                        + GrantConsumedError(str(exc)).user_message
-                    )[:2000],
+                    content=f"### Error\n{redact_untrusted(getattr(exc, 'user_message', str(exc)))}"[:2000],
                     allowed_mentions=CONTENT_MENTIONS,
                 )
-                raise GrantConsumedError(str(exc)) from exc
-            await status_msg.edit(
-                content=f"### Error\n{redact_untrusted(getattr(exc, 'user_message', str(exc)))}"[:2000],
-                allowed_mentions=CONTENT_MENTIONS,
-            )
             raise
 
-    async def on_activity(_event: str):
-        await sessions.touch_activity(scope, session.agent_id)
+    if status_msg is not None:
+        async def on_activity(_event: str):
+            await sessions.touch_activity(scope, session.agent_id)
 
-    sink = DiscordStatusSink(status_msg)
-    tracker = RunTracker(
-        client,
-        sink,
-        edit_interval_ms=cfg.status_edit_interval_ms,
-        agent_name=session.name or session.agent_id,
-        skipped_images=skipped,
-        on_meaningful_activity=on_activity,
-    )
+        sink = DiscordStatusSink(status_msg)
+        tracker = RunTracker(
+            client,
+            sink,
+            edit_interval_ms=cfg.status_edit_interval_ms,
+            agent_name=session.name or session.agent_id,
+            skipped_images=skipped,
+            on_meaningful_activity=on_activity,
+        )
 
-    async def _runner():
-        try:
-            snap = await tracker.track(
-                session.agent_id,
-                session.latest_run_id,
-                initial_status=session.latest_run_status,
-            )
-            session.latest_run_status = snap.status
-            session.degraded = snap.degraded
-            if snap.status.is_terminal:
-                session.last_meaningful_activity_at = utcnow()
-            await sessions.upsert(session)
-        finally:
-            _STATE["trackers"].pop(session.agent_id, None)
+        async def _runner():
+            try:
+                snap = await tracker.track(
+                    session.agent_id,
+                    session.latest_run_id,
+                    initial_status=session.latest_run_status,
+                )
+                session.latest_run_status = snap.status
+                session.degraded = snap.degraded
+                if snap.status.is_terminal:
+                    session.last_meaningful_activity_at = utcnow()
+                await sessions.upsert(session)
+            finally:
+                _STATE["trackers"].pop(session.agent_id, None)
 
-    task = asyncio.create_task(_runner())
-    _STATE["trackers"][session.agent_id] = task
+        _STATE["trackers"][session.agent_id] = asyncio.create_task(_runner())
+    return session
 
 
 async def _prepare_and_maybe_launch(
@@ -682,185 +898,263 @@ async def _prepare_and_maybe_launch(
     skip_idle: bool = False,
     skip_model: bool = False,
     model_override_choice: ModelChoice | None = None,
+    prebuilt: tuple[str, list[ImageInput], list[str]] | None = None,
 ) -> None:
     scope = _scope_from_interaction(interaction)
     sessions = _sessions()
     cfg = _cfg()
-    tier = await _access().resolve_tier(interaction.user.id)
+    role_ids = _role_ids(interaction.user)
 
-    prompt_text, image_inputs, skipped = await _build_context_for_run(
-        interaction, prompt, message_ref, images
+    # Gate DENIED / Tier3 and policy before any work.
+    tier = await _revalidate_run_auth(
+        user_id=scope.user_id,
+        guild_id=scope.guild_id,
+        channel_id=scope.channel_id,
+        role_ids=role_ids,
+        subcommand="run",
+        interaction=interaction,
     )
-    await sessions.touch_activity(scope)
 
-    async with sessions.lock_for(scope):
-        active = await sessions.get_active(scope)
-        preferred = None
-        if active is not None:
-            preferred = active.preferred_model or cfg.default_model or None
-        else:
-            preferred = (
-                (_STATE.get("user_model_pref") or {}).get(scope.as_str())
-                or cfg.default_model
-                or None
+    if prebuilt is None:
+        prompt_text, image_inputs, skipped = await _build_context_for_run(
+            interaction, prompt, message_ref, images
+        )
+    else:
+        prompt_text, image_inputs, skipped = prebuilt
+
+    # Idle/model decisions MUST run before refreshing meaningful activity.
+    active = await sessions.get_active(scope)
+    preferred = None
+    if active is not None:
+        preferred = active.preferred_model or await sessions.get_model_pref(scope) or cfg.default_model or None
+    else:
+        preferred = await sessions.get_model_pref(scope) or cfg.default_model or None
+
+    want_new = bool(force_new)
+
+    # Model mismatch before idle + approval hashing.
+    if (
+        not skip_model
+        and active is not None
+        and not want_new
+        and preferred
+        and active.model
+        and preferred != active.model
+        and model_override_choice is None
+    ):
+        retention_key = new_id("ret")
+        retained = await _download_images(image_inputs) if image_inputs else []
+        if retained:
+            await _access().images.put(
+                retention_key,
+                retained,
+                expires_at=utcnow() + timedelta(hours=cfg.access.approval_timeout_hours),
             )
-
-        # Model mismatch decision (before idle + approval hashing).
-        want_new = bool(force_new)
-        if (
-            not skip_model
-            and active is not None
-            and not want_new
-            and preferred
-            and active.model
-            and preferred != active.model
-            and model_override_choice is None
-        ):
-            decision = ModelDecision(
-                decision_id=new_id("mdl"),
+        decision = ModelDecision(
+            decision_id=new_id("mdl"),
+            scope=scope,
+            agent_id=active.agent_id,
+            preferred_model=preferred,
+            agent_model=active.model,
+            expires_at=utcnow() + timedelta(minutes=30),
+        )
+        await sessions.save_pending_payload(
+            decision.decision_id,
+            _serializable_pending(
+                prompt=prompt,
+                prompt_text=prompt_text,
+                message_ref=message_ref,
+                preferred=preferred,
+                image_metas=metas_from_images(retained or image_inputs),
+                retention_key=retention_key if retained else None,
+                skipped=skipped,
                 scope=scope,
-                agent_id=active.agent_id,
-                preferred_model=preferred,
-                agent_model=active.model,
-                expires_at=utcnow() + timedelta(minutes=30),
-            )
-            await sessions.save_model_decision(decision)
-            _STATE["pending_run"] = {
-                decision.decision_id: {
-                    "prompt": prompt,
-                    "message_ref": message_ref,
-                    "images": images,
-                }
-            }
-            view = ModelDecisionView(decision.decision_id)
-            await _ephemeral(
-                interaction,
-                f"Selected model `{preferred}` differs from this session's "
-                f"create-time model `{active.model}`. Follow-up runs cannot change model.",
-            )
-            # Use followup with view in channel for persistent buttons
-            await interaction.followup.send(
-                f"Model mismatch for <@{scope.user_id}> — choose how to proceed.",
-                view=view,
+            ),
+        )
+        await sessions.save_model_decision(decision)
+        view = ModelDecisionView(decision.decision_id)
+        msg = await interaction.channel.send(
+            f"### Model choice\n"
+            f"<@{scope.user_id}> selected `{preferred}` but session "
+            f"`{active.agent_id}` was created with `{active.model}`.\n"
+            f"Follow-up runs cannot change model.",
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
+        )
+        decision.message_channel_id = str(msg.channel.id)
+        decision.message_id = str(msg.id)
+        await sessions.save_model_decision(decision)
+        bot = _STATE.get("bot")
+        if bot:
+            bot.add_view(ModelDecisionView(decision.decision_id))
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Model mismatch — choose how to proceed in the channel message.",
                 ephemeral=True,
             )
-            return
+        return
 
-        if model_override_choice == ModelChoice.NEW_SESSION:
-            want_new = True
-        elif model_override_choice == ModelChoice.CONTINUE_ORIGINAL:
-            want_new = False
-            preferred = active.model if active else preferred
+    if model_override_choice == ModelChoice.NEW_SESSION:
+        want_new = True
+    elif model_override_choice == ModelChoice.CONTINUE_ORIGINAL:
+        want_new = False
+        preferred = active.model if active else preferred
 
-        # Idle decision before approval.
-        if (
-            not skip_idle
-            and not want_new
-            and active is not None
-            and session_is_idle(active, idle_minutes=cfg.session_idle_prompt_minutes)
-        ):
-            decision = IdleDecision(
-                decision_id=new_id("idle"),
-                scope=scope,
-                agent_id=active.agent_id,
-                expires_at=utcnow() + timedelta(minutes=30),
+    if (
+        not skip_idle
+        and not want_new
+        and active is not None
+        and session_is_idle(active, idle_minutes=cfg.session_idle_prompt_minutes)
+    ):
+        retention_key = new_id("ret")
+        retained = await _download_images(image_inputs) if image_inputs else []
+        if retained:
+            await _access().images.put(
+                retention_key,
+                retained,
+                expires_at=utcnow() + timedelta(hours=cfg.access.approval_timeout_hours),
             )
-            await sessions.save_idle_decision(decision)
-            _STATE.setdefault("pending_run", {})[decision.decision_id] = {
-                "prompt": prompt,
-                "message_ref": message_ref,
-                "images": images,
-                "preferred": preferred,
-            }
-            view = IdleDecisionView(decision.decision_id)
-            if interaction.response.is_done():
-                await interaction.followup.send(
-                    "This session has been idle. Continue previous, start new, or cancel?",
-                    view=view,
-                    ephemeral=True,
+        decision = IdleDecision(
+            decision_id=new_id("idle"),
+            scope=scope,
+            agent_id=active.agent_id,
+            expires_at=utcnow() + timedelta(minutes=30),
+        )
+        await sessions.save_pending_payload(
+            decision.decision_id,
+            _serializable_pending(
+                prompt=prompt,
+                prompt_text=prompt_text,
+                message_ref=message_ref,
+                preferred=preferred,
+                image_metas=metas_from_images(retained or image_inputs),
+                retention_key=retention_key if retained else None,
+                skipped=skipped,
+                scope=scope,
+            ),
+        )
+        await sessions.save_idle_decision(decision)
+        view = IdleDecisionView(decision.decision_id)
+        msg = await interaction.channel.send(
+            f"### Idle session\n"
+            f"<@{scope.user_id}> — session `{active.agent_id}` has been idle. "
+            f"Continue previous, start new, or cancel?",
+            view=view,
+            allowed_mentions=discord.AllowedMentions(users=True, everyone=False, roles=False),
+        )
+        decision.message_channel_id = str(msg.channel.id)
+        decision.message_id = str(msg.id)
+        await sessions.save_idle_decision(decision)
+        bot = _STATE.get("bot")
+        if bot:
+            bot.add_view(IdleDecisionView(decision.decision_id))
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                "Session idle — choose how to proceed in the channel message.",
+                ephemeral=True,
+            )
+        return
+
+    # Activity refresh only after idle/model gates have passed.
+    await sessions.touch_activity(scope)
+
+    agent_id = None if want_new else (active.agent_id if active else None)
+
+    # Retain images once; envelope metas must match retained set exactly.
+    retained_for_run = await _download_images(image_inputs) if image_inputs else []
+    exact_metas = metas_from_images(retained_for_run)
+    if image_inputs and not metas_match(exact_metas, metas_from_images(image_inputs)) and not all(
+        i.data_b64 for i in image_inputs
+    ):
+        # After download, fingerprints change from URL→bytes; that is expected.
+        # Require retained set to be the submission set going forward.
+        pass
+    submit_images = retained_for_run if retained_for_run else image_inputs
+
+    envelope = RunRequestEnvelope(
+        requester_id=scope.user_id,
+        scope=scope,
+        prompt_text=prompt_text,
+        model=preferred if want_new or active is None else (active.model if active else preferred),
+        repository_url=cfg.default_repository_url,
+        starting_ref=cfg.default_ref,
+        agent_id=agent_id,
+        is_follow_up=bool(agent_id),
+        image_metas=metas_from_images(submit_images),
+    )
+
+    grant = None
+    if tier == AccessTier.APPROVAL:
+        grant = await _access().find_valid_grant(scope, scope.user_id, envelope)
+        if grant is None:
+            retained = submit_images
+            # Envelope already uses retained metas; store same set.
+            if not metas_match(envelope.image_metas, metas_from_images(retained)):
+                raise ValidationError(
+                    "Image metadata mismatch",
+                    user_message="Image set changed during preparation; please resubmit.",
                 )
-            else:
-                await interaction.response.send_message(
-                    "This session has been idle. Continue previous, start new, or cancel?",
-                    view=view,
-                    ephemeral=True,
-                )
+            request = await _access().create_approval_request(
+                envelope,
+                prompt_preview=redact_preview(prompt),
+                images=retained,
+            )
+            approvers = await _access().current_approver_ids()
+            mentions = " ".join(f"<@{uid}>" for uid in approvers)
+            summary = (
+                f"### Cursor approval\n"
+                f"Requester: <@{scope.user_id}>\n"
+                f"Scope: guild `{scope.guild_id}` channel `{scope.channel_id}`\n"
+                f"Mode: {'follow-up' if envelope.is_follow_up else 'new agent'}\n"
+                f"Repo: `{envelope.repository_url}` @ `{envelope.starting_ref}`\n"
+                f"Model: `{envelope.model or 'default'}`\n"
+                f"Images: {len(retained)}\n"
+                f"Preview: {redact_preview(prompt)}\n"
+                f"Request: `{request.request_id}`\n"
+                f"{mentions}"
+            )
+            view = ApprovalView(request.request_id)
+            approve_mentions = discord.AllowedMentions(
+                everyone=False, users=True, roles=False, replied_user=False
+            )
+            await _ephemeral(
+                interaction,
+                f"Approval pending (`{request.request_id}`). Approvers have been notified.",
+            )
+            msg = await interaction.channel.send(
+                summary[:2000], view=view, allowed_mentions=approve_mentions
+            )
+            request.approval_channel_id = str(msg.channel.id)
+            request.approval_message_id = str(msg.id)
+            await _access().store.save_request(request)
+            bot = _STATE.get("bot")
+            if bot:
+                bot.add_view(ApprovalView(request.request_id))
             return
 
-        agent_id = None if want_new else (active.agent_id if active else None)
-        envelope = RunRequestEnvelope(
-            requester_id=scope.user_id,
-            scope=scope,
-            prompt_text=prompt_text,
-            model=preferred if want_new or active is None else (active.model if active else preferred),
-            repository_url=cfg.default_repository_url,
-            starting_ref=cfg.default_ref,
-            agent_id=agent_id,
-            is_follow_up=bool(agent_id),
-            image_metas=build_run_prompt(
-                prompt_text, direct_images=image_inputs
-            ).image_metas(),
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
+    # Verify retained images still match envelope before submit.
+    if not metas_match(envelope.image_metas, metas_from_images(submit_images)):
+        raise ValidationError(
+            "Image metadata mismatch before submit",
+            user_message="Image set no longer matches the approved request; please resubmit.",
         )
 
-        grant = None
-        if tier == AccessTier.APPROVAL:
-            grant = await _access().find_valid_grant(scope, scope.user_id, envelope)
-            if grant is None:
-                retained = await _download_images(image_inputs)
-                request = await _access().create_approval_request(
-                    envelope,
-                    prompt_preview=redact_preview(prompt),
-                    images=retained,
-                )
-                approvers = await _access().current_approver_ids()
-                mentions = " ".join(f"<@{uid}>" for uid in approvers)
-                summary = (
-                    f"### Cursor approval\n"
-                    f"Requester: <@{scope.user_id}>\n"
-                    f"Scope: guild `{scope.guild_id}` channel `{scope.channel_id}`\n"
-                    f"Mode: {'follow-up' if envelope.is_follow_up else 'new agent'}\n"
-                    f"Repo: `{envelope.repository_url}` @ `{envelope.starting_ref}`\n"
-                    f"Model: `{envelope.model or 'default'}`\n"
-                    f"Images: {len(image_inputs)}\n"
-                    f"Preview: {redact_preview(prompt)}\n"
-                    f"Request: `{request.request_id}`\n"
-                    f"{mentions}"
-                )
-                view = ApprovalView(request.request_id)
-                approve_mentions = discord.AllowedMentions(
-                    everyone=False, users=True, roles=False, replied_user=False
-                )
-                await _ephemeral(
-                    interaction,
-                    f"Approval pending (`{request.request_id}`). Approvers have been notified.",
-                )
-                msg = await interaction.channel.send(
-                    summary[:2000], view=view, allowed_mentions=approve_mentions
-                )
-                request.approval_channel_id = str(msg.channel.id)
-                request.approval_message_id = str(msg.id)
-                await _access().store.save_request(request)
-                bot = _STATE.get("bot")
-                if bot:
-                    bot.add_view(ApprovalView(request.request_id))
-                return
-            # Consume one-run grants immediately before submit.
-            if grant.kind == "once":
-                grant = await _access().consume_grant_for_submit(grant, envelope)
-
-        # Defer if needed then launch
-        if not interaction.response.is_done():
-            await interaction.response.defer()
-
+    # One-run grant consume happens under the scope lock inside _launch_run.
     await _launch_run(
         interaction,
         prompt_text=prompt_text,
-        images=image_inputs,
+        images=submit_images,
         skipped=skipped,
         agent_id=agent_id,
         force_new=want_new,
         model=envelope.model,
         grant=grant,
+        envelope=envelope,
+        scope=scope,
+        role_ids=role_ids,
     )
 
 
@@ -882,6 +1176,45 @@ async def handle_component(interaction: discord.Interaction) -> bool:
         if kind.startswith("apr_"):
             mode = {"apr_once": "once", "apr_timed": "timed", "apr_deny": "deny"}[kind]
             minutes = _cfg().access.default_grant_minutes if mode == "timed" else None
+            # Before approving: fail closed if requester was demoted / policy revoked.
+            if mode in {"once", "timed"}:
+                pending_req = await _access().store.get_request(token)
+                if pending_req is not None and pending_req.envelope is not None:
+                    env = pending_req.envelope
+                    try:
+                        await _revalidate_run_auth(
+                            user_id=env.requester_id,
+                            guild_id=env.scope.guild_id,
+                            channel_id=env.scope.channel_id,
+                            role_ids=await _role_ids_for_user(
+                                interaction.guild, env.requester_id
+                            ),
+                            subcommand="run",
+                            interaction=interaction,
+                        )
+                    except (AuthorizationError, ConfigurationError) as exc:
+                        await _access().deny_unauthorized_request(
+                            token,
+                            actor_id=str(interaction.user.id),
+                            reason=exc.user_message,
+                        )
+                        if interaction.message:
+                            try:
+                                await interaction.message.edit(
+                                    content=(
+                                        f"### Denied\nRequest `{token}` — "
+                                        f"requester no longer authorized."
+                                    ),
+                                    view=None,
+                                    allowed_mentions=CONTENT_MENTIONS,
+                                )
+                            except discord.HTTPException:
+                                pass
+                        await _ephemeral(
+                            interaction,
+                            f"Cannot approve: {exc.user_message}",
+                        )
+                        return True
             request = await _access().decide_request(
                 interaction.user.id, token, mode=mode, minutes=minutes
             )
@@ -931,17 +1264,76 @@ async def handle_component(interaction: discord.Interaction) -> bool:
 
 
 async def _launch_approved_request(interaction: discord.Interaction, request) -> None:
-    images = await _access().images.get(request.request_id) or []
+    """Launch an approved request only if requester is still authorized."""
+    access = _access()
+    # Reload — decision path may have raced with expiry/deny.
+    request = await access.store.get_request(request.request_id)
+    if request is None or not str(request.decision.value).startswith("approved"):
+        await _ephemeral(interaction, "Request is not approved.")
+        return
+
     envelope = request.envelope
-    # Find grant created by decision
+    scope = envelope.scope
+    role_ids = await _role_ids_for_user(interaction.guild, envelope.requester_id)
+
+    try:
+        await _revalidate_run_auth(
+            user_id=envelope.requester_id,
+            guild_id=scope.guild_id,
+            channel_id=scope.channel_id,
+            role_ids=role_ids,
+            subcommand="run",
+            interaction=interaction,
+        )
+    except (AuthorizationError, ConfigurationError) as exc:
+        await access.deny_unauthorized_request(
+            request.request_id,
+            actor_id=str(interaction.user.id),
+            reason=getattr(exc, "user_message", None) or str(exc),
+        )
+        if interaction.message:
+            try:
+                await interaction.message.edit(
+                    content=(
+                        f"### Denied\nRequest `{request.request_id}` — "
+                        f"requester no longer authorized."
+                    ),
+                    view=None,
+                    allowed_mentions=CONTENT_MENTIONS,
+                )
+            except discord.HTTPException:
+                pass
+        await _ephemeral(
+            interaction,
+            f"Approved request can no longer launch: {exc.user_message}",
+        )
+        return
+
+    images = await access.images.get(request.request_id) or []
+    if not metas_match(envelope.image_metas, metas_from_images(images)):
+        await access.deny_unauthorized_request(
+            request.request_id,
+            actor_id=str(interaction.user.id),
+            reason="image_metadata_mismatch",
+        )
+        await _ephemeral(
+            interaction,
+            "Approved request image metadata mismatch; denied. Please resubmit.",
+        )
+        return
+
     grant = None
     if request.grant_id:
-        grant = await _access().store.get_grant(request.grant_id)
-    if grant and grant.kind == "once" and not grant.consumed:
-        grant = await _access().consume_grant_for_submit(grant, envelope)
+        grant = await access.store.get_grant(request.grant_id)
+        if grant is not None and (grant.revoked or (grant.kind == "once" and grant.consumed)):
+            await _ephemeral(interaction, "Request already used or expired.")
+            return
 
-    # Build a synthetic interaction channel send path: post status in original channel.
-    channel = interaction.guild.get_channel(int(envelope.scope.channel_id)) if interaction.guild else None
+    channel = (
+        interaction.guild.get_channel(int(envelope.scope.channel_id))
+        if interaction.guild
+        else None
+    )
     if channel is None:
         try:
             channel = await interaction.client.fetch_channel(int(envelope.scope.channel_id))
@@ -950,7 +1342,7 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
 
     class _FakeInteraction:
         def __init__(self):
-            self.user = type("U", (), {"id": int(envelope.requester_id)})()
+            self.user = type("U", (), {"id": int(envelope.requester_id), "roles": []})()
             self.guild_id = int(envelope.scope.guild_id)
             self.channel_id = int(envelope.scope.channel_id)
             self.channel = channel
@@ -958,6 +1350,7 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             self.client = interaction.client
             self.response = _Resp()
             self.followup = channel
+            self._msg = None
 
         async def original_response(self):
             return self._msg
@@ -979,16 +1372,28 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             self._done = True
 
     fake = _FakeInteraction()
-    # Monkeypatch followup.send
+
     async def _followup_send(content, **kwargs):
-        wait = kwargs.pop("wait", False)
-        msg = await channel.send(content, allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS))
+        kwargs.pop("wait", False)
+        msg = await channel.send(
+            content,
+            allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
+        )
         fake._msg = msg
         return msg
 
     fake.followup.send = _followup_send  # type: ignore
 
     try:
+        # Final auth check immediately before submit (inside _launch_run too).
+        await _revalidate_run_auth(
+            user_id=envelope.requester_id,
+            guild_id=scope.guild_id,
+            channel_id=scope.channel_id,
+            role_ids=role_ids,
+            subcommand="run",
+            interaction=interaction,
+        )
         await _launch_run(
             fake,  # type: ignore
             prompt_text=envelope.prompt_text,
@@ -998,20 +1403,36 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             force_new=not envelope.is_follow_up,
             model=envelope.model,
             grant=grant,
+            envelope=envelope,
+            scope=scope,
+            role_ids=role_ids,
         )
-        await _access().images.discard(request.request_id)
+        await access.images.discard(request.request_id)
         if interaction.message:
             await interaction.message.edit(
                 content=f"### Approved\nRequest `{request.request_id}` launched.",
                 view=None,
                 allowed_mentions=CONTENT_MENTIONS,
             )
+    except (AuthorizationError, ConfigurationError) as exc:
+        await access.deny_unauthorized_request(
+            request.request_id,
+            actor_id=str(interaction.user.id),
+            reason=getattr(exc, "user_message", None) or str(exc),
+        )
+        await _ephemeral(
+            interaction,
+            f"Approved request can no longer launch: {exc.user_message}",
+        )
     except Exception as exc:
         logger.exception("Approved launch failed")
-        await interaction.followup.send(
-            f"Approved but launch failed: {getattr(exc, 'user_message', exc)}",
-            ephemeral=True,
-        )
+        try:
+            await interaction.followup.send(
+                f"Approved but launch failed: {getattr(exc, 'user_message', exc)}",
+                ephemeral=True,
+            )
+        except Exception:
+            pass
 
 
 async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> None:
@@ -1023,7 +1444,42 @@ async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> N
         raise StaleStateError(user_message="Idle decision expired.")
     if str(interaction.user.id) != decision.scope.user_id:
         raise AuthorizationError()
-    await _gate(interaction, "run")
+
+    pending = await sessions.get_pending_payload(decision_id)
+    if not pending or not pending.get("prompt_text"):
+        # Fail closed — consume so the control cannot be reused after restart.
+        async with sessions.lock_for(decision.scope):
+            decision = await sessions.get_idle_decision(decision_id)
+            if decision and not decision.consumed:
+                decision.consumed = True
+                decision.choice = IdleChoice.CANCEL
+                await sessions.save_idle_decision(decision)
+        await sessions.pop_pending_payload(decision_id)
+        raise StaleStateError(
+            user_message="Pending run payload missing after restart; please resubmit."
+        )
+
+    role_ids = _role_ids(interaction.user)
+    try:
+        await _revalidate_run_auth(
+            user_id=decision.scope.user_id,
+            guild_id=decision.scope.guild_id,
+            channel_id=decision.scope.channel_id,
+            role_ids=role_ids,
+            subcommand="run",
+            interaction=interaction,
+        )
+    except (AuthorizationError, ConfigurationError):
+        async with sessions.lock_for(decision.scope):
+            decision = await sessions.get_idle_decision(decision_id)
+            if decision and not decision.consumed:
+                decision.consumed = True
+                decision.choice = IdleChoice.CANCEL
+                await sessions.save_idle_decision(decision)
+        await sessions.pop_pending_payload(decision_id)
+        if pending.get("retention_key"):
+            await _access().images.discard(str(pending["retention_key"]))
+        raise
 
     async with sessions.lock_for(decision.scope):
         decision = await sessions.get_idle_decision(decision_id)
@@ -1033,19 +1489,45 @@ async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> N
         decision.choice = choice
         await sessions.save_idle_decision(decision)
 
-    pending = (_STATE.get("pending_run") or {}).pop(decision_id, None)
+    pending = await sessions.pop_pending_payload(decision_id) or pending
     await interaction.response.send_message(
         f"Idle choice: `{choice.value}`.", ephemeral=True
     )
-    if choice == IdleChoice.CANCEL or not pending:
+    if choice == IdleChoice.CANCEL:
+        if pending.get("retention_key"):
+            await _access().images.discard(str(pending["retention_key"]))
+        if interaction.message:
+            try:
+                await interaction.message.edit(content="### Idle — cancelled", view=None)
+            except discord.HTTPException:
+                pass
         return
+
+    try:
+        images = await _rehydrate_pending_images(pending)
+    except ValidationError:
+        raise
+
+    if interaction.message:
+        try:
+            await interaction.message.edit(
+                content=f"### Idle — `{choice.value}`", view=None
+            )
+        except discord.HTTPException:
+            pass
+
     await _prepare_and_maybe_launch(
         interaction,
-        pending["prompt"],
+        pending.get("prompt") or pending["prompt_text"],
         pending.get("message_ref"),
-        pending.get("images") or [],
+        [],
         force_new=(choice == IdleChoice.NEW),
         skip_idle=True,
+        prebuilt=(
+            pending["prompt_text"],
+            images,
+            list(pending.get("skipped") or []),
+        ),
     )
 
 
@@ -1054,8 +1536,45 @@ async def _complete_model(interaction, decision_id: str, choice: ModelChoice) ->
     decision = await sessions.get_model_decision(decision_id)
     if decision is None or decision.consumed:
         raise StaleStateError()
+    if decision.expires_at and utcnow() >= decision.expires_at:
+        raise StaleStateError(user_message="Model decision expired.")
     if str(interaction.user.id) != decision.scope.user_id:
         raise AuthorizationError()
+
+    pending = await sessions.get_pending_payload(decision_id)
+    if not pending or not pending.get("prompt_text"):
+        async with sessions.lock_for(decision.scope):
+            decision = await sessions.get_model_decision(decision_id)
+            if decision and not decision.consumed:
+                decision.consumed = True
+                decision.choice = ModelChoice.CANCEL
+                await sessions.save_model_decision(decision)
+        await sessions.pop_pending_payload(decision_id)
+        raise StaleStateError(
+            user_message="Pending run payload missing after restart; please resubmit."
+        )
+
+    role_ids = _role_ids(interaction.user)
+    try:
+        await _revalidate_run_auth(
+            user_id=decision.scope.user_id,
+            guild_id=decision.scope.guild_id,
+            channel_id=decision.scope.channel_id,
+            role_ids=role_ids,
+            subcommand="run",
+            interaction=interaction,
+        )
+    except (AuthorizationError, ConfigurationError):
+        async with sessions.lock_for(decision.scope):
+            decision = await sessions.get_model_decision(decision_id)
+            if decision and not decision.consumed:
+                decision.consumed = True
+                decision.choice = ModelChoice.CANCEL
+                await sessions.save_model_decision(decision)
+        await sessions.pop_pending_payload(decision_id)
+        if pending.get("retention_key"):
+            await _access().images.discard(str(pending["retention_key"]))
+        raise
 
     async with sessions.lock_for(decision.scope):
         decision = await sessions.get_model_decision(decision_id)
@@ -1065,19 +1584,42 @@ async def _complete_model(interaction, decision_id: str, choice: ModelChoice) ->
         decision.choice = choice
         await sessions.save_model_decision(decision)
 
-    pending = (_STATE.get("pending_run") or {}).pop(decision_id, None)
+    pending = await sessions.pop_pending_payload(decision_id) or pending
     await interaction.response.send_message(
         f"Model choice: `{choice.value}`.", ephemeral=True
     )
-    if choice == ModelChoice.CANCEL or not pending:
+    if choice == ModelChoice.CANCEL:
+        if pending.get("retention_key"):
+            await _access().images.discard(str(pending["retention_key"]))
+        if interaction.message:
+            try:
+                await interaction.message.edit(content="### Model — cancelled", view=None)
+            except discord.HTTPException:
+                pass
         return
+
+    images = await _rehydrate_pending_images(pending)
+    if interaction.message:
+        try:
+            await interaction.message.edit(
+                content=f"### Model — `{choice.value}`", view=None
+            )
+        except discord.HTTPException:
+            pass
+
+    # Re-enter prepare so approval hashing includes the chosen model path.
     await _prepare_and_maybe_launch(
         interaction,
-        pending["prompt"],
+        pending.get("prompt") or pending["prompt_text"],
         pending.get("message_ref"),
-        pending.get("images") or [],
+        [],
         skip_model=True,
         model_override_choice=choice,
+        prebuilt=(
+            pending["prompt_text"],
+            images,
+            list(pending.get("skipped") or []),
+        ),
     )
 
 
@@ -1120,23 +1662,58 @@ async def cursor_run(
 
 
 @cursor_group.command(name="stop", description="Cancel your active Cursor run in this channel")
-async def cursor_stop(ctx: discord.ApplicationContext):
+async def cursor_stop(
+    ctx: discord.ApplicationContext,
+    user: Option(
+        discord.User,
+        "Tier0/1 emergency: stop another user's owned session in this channel",
+        required=False,
+    ) = None,
+):
     interaction = ctx.interaction
     if await _gate(interaction, "stop") is None:
         return
-    scope = _scope_from_interaction(interaction)
+    actor_scope = _scope_from_interaction(interaction)
     sessions = _sessions()
+    target_user_id = str(user.id) if user is not None else actor_scope.user_id
+    emergency = user is not None and target_user_id != actor_scope.user_id
+    if emergency:
+        tier = await _access().resolve_tier(interaction.user.id)
+        if tier not in {AccessTier.GOD, AccessTier.ADMIN}:
+            await _ephemeral(
+                interaction,
+                "Only Tier 0/1 may emergency-stop another user's owned session.",
+            )
+            return
+        await _access()._audit(
+            interaction.user.id,
+            "emergency_stop",
+            target_id=target_user_id,
+            detail={
+                "guild_id": actor_scope.guild_id,
+                "channel_id": actor_scope.channel_id,
+            },
+        )
+    scope = ScopeKey(
+        guild_id=actor_scope.guild_id,
+        channel_id=actor_scope.channel_id,
+        user_id=target_user_id,
+    )
     async with sessions.lock_for(scope):
         active = await sessions.get_active(scope)
         if active is None or not active.latest_run_id:
-            await _ephemeral(interaction, "No active run to stop.")
+            await _ephemeral(interaction, "No active owned run to stop.")
             return
         try:
             await _client().cancel_run(active.agent_id, active.latest_run_id)
             active.latest_run_status = RunStatus.CANCELLED
             await sessions.upsert(active)
             await sessions.touch_activity(scope, active.agent_id)
-            await _ephemeral(interaction, f"Cancel requested for `{active.latest_run_id}`.")
+            prefix = "Emergency cancel" if emergency else "Cancel"
+            await _ephemeral(
+                interaction,
+                f"{prefix} requested for `{active.latest_run_id}` (owner <@{target_user_id}>).",
+            )
         except CursorCloudError as exc:
             await _ephemeral(interaction, exc.user_message)
 
@@ -1204,7 +1781,12 @@ async def cursor_model(
             await _ephemeral(interaction, exc.user_message)
             return
         active = await sessions.get_active(scope)
-        preferred = (active.preferred_model if active else None) or _cfg().default_model or "(default)"
+        preferred = (
+            (active.preferred_model if active else None)
+            or await sessions.get_model_pref(scope)
+            or _cfg().default_model
+            or "(default)"
+        )
         lines = [
             "### Model",
             f"Preferred for next **new** session: `{preferred}`",
@@ -1225,20 +1807,12 @@ async def cursor_model(
         if model_id not in valid:
             await _ephemeral(interaction, f"Unknown model `{model_id}`.")
             return
+        await sessions.set_model_pref(scope, model_id)
         active = await sessions.get_active(scope)
-        if active is None:
-            # Store preference on a placeholder-less ephemeral note via a synthetic session skip:
-            await _ephemeral(
-                interaction,
-                f"Preferred model set to `{model_id}` for your next new session "
-                "(no active session yet).",
-            )
-            # Keep preference in pending map
-            _STATE.setdefault("user_model_pref", {})[scope.as_str()] = model_id
-            return
-        active.preferred_model = model_id
-        await sessions.upsert(active)
-        await sessions.touch_activity(scope, active.agent_id)
+        if active is not None:
+            active.preferred_model = model_id
+            await sessions.upsert(active)
+            await sessions.touch_activity(scope, active.agent_id)
         await _ephemeral(
             interaction,
             f"Preferred model set to `{model_id}`. "
@@ -1249,14 +1823,45 @@ async def cursor_model(
 
 
 @cursor_group.command(name="status", description="Show status for your active Cursor run")
-async def cursor_status(ctx: discord.ApplicationContext):
+async def cursor_status(
+    ctx: discord.ApplicationContext,
+    user: Option(
+        discord.User,
+        "Tier0/1 emergency: status for another user's owned session in this channel",
+        required=False,
+    ) = None,
+):
     interaction = ctx.interaction
     if await _gate(interaction, "status") is None:
         return
-    scope = _scope_from_interaction(interaction)
+    actor_scope = _scope_from_interaction(interaction)
+    target_user_id = str(user.id) if user is not None else actor_scope.user_id
+    emergency = user is not None and target_user_id != actor_scope.user_id
+    if emergency:
+        tier = await _access().resolve_tier(interaction.user.id)
+        if tier not in {AccessTier.GOD, AccessTier.ADMIN}:
+            await _ephemeral(
+                interaction,
+                "Only Tier 0/1 may emergency-status another user's owned session.",
+            )
+            return
+        await _access()._audit(
+            interaction.user.id,
+            "emergency_status",
+            target_id=target_user_id,
+            detail={
+                "guild_id": actor_scope.guild_id,
+                "channel_id": actor_scope.channel_id,
+            },
+        )
+    scope = ScopeKey(
+        guild_id=actor_scope.guild_id,
+        channel_id=actor_scope.channel_id,
+        user_id=target_user_id,
+    )
     active = await _sessions().get_active(scope)
     if active is None or not active.latest_run_id:
-        await _ephemeral(interaction, "No active session/run.")
+        await _ephemeral(interaction, "No active owned session/run.")
         return
     try:
         run = await _client().get_run(active.agent_id, active.latest_run_id)
@@ -1265,6 +1870,7 @@ async def cursor_status(ctx: discord.ApplicationContext):
         await _sessions().touch_activity(scope, active.agent_id)
         text = (
             f"### Status\n"
+            f"Owner: <@{target_user_id}>\n"
             f"Agent: `{active.agent_id}`\n"
             f"Run: `{run.id}`\n"
             f"State: `{run.status.value}`\n"
@@ -1274,7 +1880,11 @@ async def cursor_status(ctx: discord.ApplicationContext):
         # Try edit existing status message
         if active.status_channel_id and active.status_message_id:
             try:
-                channel = interaction.guild.get_channel(int(active.status_channel_id)) if interaction.guild else interaction.channel
+                channel = (
+                    interaction.guild.get_channel(int(active.status_channel_id))
+                    if interaction.guild
+                    else interaction.channel
+                )
                 if channel:
                     msg = await channel.fetch_message(int(active.status_message_id))
                     await msg.edit(content=text[:2000], allowed_mentions=CONTENT_MENTIONS)
@@ -1380,6 +1990,30 @@ async def cursor_approve(
         # Approvers may be Tier0/1 even if can_use_command blocks tier2 approve name —
         # re-check approver explicitly.
         await _access().require_approver(interaction.user.id)
+        pending_req = await _access().store.get_request(request_id)
+        if pending_req is not None and pending_req.envelope is not None:
+            env = pending_req.envelope
+            try:
+                await _revalidate_run_auth(
+                    user_id=env.requester_id,
+                    guild_id=env.scope.guild_id,
+                    channel_id=env.scope.channel_id,
+                    role_ids=await _role_ids_for_user(
+                        interaction.guild, env.requester_id
+                    ),
+                    subcommand="run",
+                    interaction=interaction,
+                )
+            except (AuthorizationError, ConfigurationError) as exc:
+                await _access().deny_unauthorized_request(
+                    request_id,
+                    actor_id=str(interaction.user.id),
+                    reason=exc.user_message,
+                )
+                await _ephemeral(
+                    interaction, f"Cannot approve: {exc.user_message}"
+                )
+                return
         request = await _access().decide_request(
             interaction.user.id, request_id, mode=mode, minutes=minutes
         )
@@ -1424,17 +2058,42 @@ def _register_commands(bot: discord.Bot) -> None:
 
 
 async def _register_views(bot: discord.Bot) -> None:
+    """Re-register durable non-ephemeral views; skip consumed/expired decisions."""
     access = _STATE.get("access")
     sessions = _STATE.get("sessions")
+    now = utcnow()
     if access:
         for request in await access.store.list_requests():
             if request.decision.value == "pending":
                 bot.add_view(ApprovalView(request.request_id))
     if sessions:
         state = sessions.export_state()
-        for decision_id in state.get("idle") or {}:
+        for decision_id, raw in (state.get("idle") or {}).items():
+            try:
+                decision = IdleDecision.from_dict(raw)
+            except Exception:
+                continue
+            if decision.consumed:
+                continue
+            if decision.expires_at and now >= decision.expires_at:
+                continue
+            # Fail closed if payload cannot be rehydrated after restart.
+            pending = await sessions.get_pending_payload(decision_id)
+            if not pending or not pending.get("prompt_text"):
+                continue
             bot.add_view(IdleDecisionView(decision_id))
-        for decision_id in state.get("model") or {}:
+        for decision_id, raw in (state.get("model") or {}).items():
+            try:
+                decision = ModelDecision.from_dict(raw)
+            except Exception:
+                continue
+            if decision.consumed:
+                continue
+            if decision.expires_at and now >= decision.expires_at:
+                continue
+            pending = await sessions.get_pending_payload(decision_id)
+            if not pending or not pending.get("prompt_text"):
+                continue
             bot.add_view(ModelDecisionView(decision_id))
     _STATE["views_registered"] = True
 
@@ -1489,14 +2148,65 @@ async def _reconcile_runs() -> None:
             logger.exception("Cursor reconcile failed for %s", session.agent_id)
 
 
+async def _edit_approval_expired_message(request) -> None:
+    bot = _STATE.get("bot")
+    if not bot or not request.approval_channel_id or not request.approval_message_id:
+        return
+    try:
+        channel = bot.get_channel(int(request.approval_channel_id))
+        if channel is None:
+            channel = await bot.fetch_channel(int(request.approval_channel_id))
+        msg = await channel.fetch_message(int(request.approval_message_id))
+        await msg.edit(
+            content=f"### Expired\nRequest `{request.request_id}` expired.",
+            view=None,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+    except Exception:
+        logger.debug(
+            "Could not edit expired approval message %s",
+            request.request_id,
+            exc_info=True,
+        )
+
+
 async def _expiry_loop() -> None:
     while True:
         try:
             if _STATE.get("access"):
-                await _access().expire_stale_requests()
+                expired = await _access().expire_stale_requests()
+                for request in expired:
+                    await _edit_approval_expired_message(request)
         except Exception:
             logger.exception("Cursor approval expiry loop failed")
         await asyncio.sleep(60)
+
+
+async def cleanup_cursor_runtime() -> None:
+    """Cancel trackers/tasks and close shared HTTP clients."""
+    for key in ("expiry_task", "reconcile_task"):
+        task = _STATE.get(key)
+        if task is not None:
+            task.cancel()
+            _STATE[key] = None
+    for agent_id, task in list((_STATE.get("trackers") or {}).items()):
+        task.cancel()
+        _STATE["trackers"].pop(agent_id, None)
+    client = _STATE.get("client")
+    if client is not None:
+        try:
+            await client.aclose()
+        except Exception:
+            logger.exception("Cursor client close failed")
+        _STATE["client"] = None
+    cdn = _STATE.get("cdn")
+    if cdn is not None:
+        try:
+            await cdn.aclose()
+        except Exception:
+            logger.exception("Cursor CDN client close failed")
+        _STATE["cdn"] = None
+    _STATE["views_registered"] = False
 
 
 @MANAGER.builder
@@ -1591,12 +2301,29 @@ async def setup_cursor_runtime(sonata: AI_Manager, bot: discord.Bot) -> None:
         except Exception:
             pass
 
+    old_cdn = _STATE.get("cdn")
+    _STATE["cdn"] = DiscordCDNDownloader(max_bytes=cfg.max_image_bytes)
+    if old_cdn is not None:
+        try:
+            await old_cdn.aclose()
+        except Exception:
+            pass
+
     await _register_views(bot)
 
-    if cfg.is_ready and not _STATE.get("reconcile_started"):
-        _STATE["reconcile_started"] = True
-        asyncio.create_task(_reconcile_runs())
-        asyncio.create_task(_expiry_loop())
+    if not getattr(bot, "_cursor_close_hook", False):
+
+        @bot.listen("on_close")
+        async def _cursor_on_close():
+            await cleanup_cursor_runtime()
+
+        bot._cursor_close_hook = True
+
+    if cfg.is_ready:
+        if _STATE.get("reconcile_task") is None or _STATE["reconcile_task"].done():
+            _STATE["reconcile_task"] = asyncio.create_task(_reconcile_runs())
+        if _STATE.get("expiry_task") is None or _STATE["expiry_task"].done():
+            _STATE["expiry_task"] = asyncio.create_task(_expiry_loop())
 
 
 async def cursor_bot_hook(sonata: AI_Manager, bot: discord.Bot) -> None:

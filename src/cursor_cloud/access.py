@@ -440,6 +440,47 @@ class AccessController:
         await self.images.purge_expired()
         return expired
 
+    async def deny_unauthorized_request(
+        self,
+        request_id: str,
+        *,
+        actor_id: str | int = "system",
+        reason: str = "requester_unauthorized",
+    ) -> ApprovalRequest:
+        """Terminally deny without launching.
+
+        Works for PENDING and APPROVED_* (not yet fully consumed) so demotion
+        after approval still fail-closes. Revokes unused grants; never launches.
+        """
+        lock = self.store.lock_for(f"request:{request_id}")
+        async with lock:
+            request = await self.store.get_request(request_id)
+            if request is None:
+                raise StaleStateError(user_message="Approval request not found.")
+            if request.decision in {
+                ApprovalDecision.DENIED,
+                ApprovalDecision.EXPIRED,
+            }:
+                await self.images.discard(request.request_id)
+                return request
+            if request.grant_id:
+                grant = await self.store.get_grant(request.grant_id)
+                if grant is not None and not grant.consumed and not grant.revoked:
+                    grant.revoked = True
+                    await self.store.save_grant(grant)
+            request.decision = ApprovalDecision.DENIED
+            request.decided_at = utcnow()
+            request.decided_by = str(actor_id)
+            await self.store.save_request(request)
+            await self.images.discard(request.request_id)
+            await self._audit(
+                actor_id,
+                "approval_denied_unauthorized",
+                target_id=request_id,
+                detail={"reason": reason},
+            )
+            return request
+
     async def decide_request(
         self,
         actor_id: str | int,

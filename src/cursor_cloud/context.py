@@ -57,23 +57,47 @@ class BuiltPrompt:
     warnings: list[str] = field(default_factory=list)
 
     def image_metas(self) -> list[PromptImageMeta]:
-        metas: list[PromptImageMeta] = []
-        for img in self.images:
-            fingerprint = hashlib.sha256(
-                (img.url or img.data_b64 or "").encode("utf-8")
-            ).hexdigest()[:16]
-            metas.append(
-                PromptImageMeta(
-                    mime_type=img.mime_type,
-                    size_bytes=img.size_bytes,
-                    source_message_id=img.source_message_id,
-                    fingerprint=fingerprint,
-                )
-            )
-        return metas
+        return metas_from_images(self.images)
 
     def api_images(self) -> list[dict[str, Any]]:
         return [img.to_api() for img in self.images]
+
+
+def image_fingerprint(img: ImageInput) -> str:
+    """Stable fingerprint preferring retained bytes over CDN URL."""
+    material = img.data_b64 or img.url or ""
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:16]
+
+
+def metas_from_images(images: list[ImageInput]) -> list[PromptImageMeta]:
+    metas: list[PromptImageMeta] = []
+    for img in images:
+        metas.append(
+            PromptImageMeta(
+                mime_type=img.mime_type,
+                size_bytes=img.size_bytes,
+                source_message_id=img.source_message_id,
+                fingerprint=image_fingerprint(img),
+            )
+        )
+    return metas
+
+
+def metas_match(
+    left: list[PromptImageMeta], right: list[PromptImageMeta]
+) -> bool:
+    """Exact ordered match of mime/size/source/fingerprint."""
+    if len(left) != len(right):
+        return False
+    for a, b in zip(left, right):
+        if (
+            a.mime_type != b.mime_type
+            or a.size_bytes != b.size_bytes
+            or a.source_message_id != b.source_message_id
+            or a.fingerprint != b.fingerprint
+        ):
+            return False
+    return True
 
 
 def guess_mime(content_type: str | None, filename: str | None, url: str | None) -> str | None:

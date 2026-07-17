@@ -576,6 +576,8 @@ class IdleDecision:
     created_at: datetime = field(default_factory=utcnow)
     expires_at: datetime | None = None
     consumed: bool = False
+    message_channel_id: str | None = None
+    message_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -586,6 +588,8 @@ class IdleDecision:
             "created_at": dt_to_iso(self.created_at),
             "expires_at": dt_to_iso(self.expires_at),
             "consumed": self.consumed,
+            "message_channel_id": self.message_channel_id,
+            "message_id": self.message_id,
         }
 
     @classmethod
@@ -598,6 +602,14 @@ class IdleDecision:
             created_at=dt_from_iso(data.get("created_at")) or utcnow(),
             expires_at=dt_from_iso(data.get("expires_at")),
             consumed=bool(data.get("consumed")),
+            message_channel_id=(
+                str(data["message_channel_id"])
+                if data.get("message_channel_id") is not None
+                else None
+            ),
+            message_id=(
+                str(data["message_id"]) if data.get("message_id") is not None else None
+            ),
         )
 
 
@@ -612,6 +624,8 @@ class ModelDecision:
     created_at: datetime = field(default_factory=utcnow)
     expires_at: datetime | None = None
     consumed: bool = False
+    message_channel_id: str | None = None
+    message_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -624,6 +638,8 @@ class ModelDecision:
             "created_at": dt_to_iso(self.created_at),
             "expires_at": dt_to_iso(self.expires_at),
             "consumed": self.consumed,
+            "message_channel_id": self.message_channel_id,
+            "message_id": self.message_id,
         }
 
     @classmethod
@@ -638,6 +654,14 @@ class ModelDecision:
             created_at=dt_from_iso(data.get("created_at")) or utcnow(),
             expires_at=dt_from_iso(data.get("expires_at")),
             consumed=bool(data.get("consumed")),
+            message_channel_id=(
+                str(data["message_channel_id"])
+                if data.get("message_channel_id") is not None
+                else None
+            ),
+            message_id=(
+                str(data["message_id"]) if data.get("message_id") is not None else None
+            ),
         )
 
 

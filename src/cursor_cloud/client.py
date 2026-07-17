@@ -101,6 +101,14 @@ class CursorCloudClient:
             )
         return self._client
 
+    def _stream_timeout(self) -> httpx.Timeout:
+        return httpx.Timeout(
+            connect=self.config.connect_timeout_seconds,
+            read=self.config.stream_timeout_seconds,
+            write=self.config.connect_timeout_seconds,
+            pool=self.config.connect_timeout_seconds,
+        )
+
     def _map_error(self, response: httpx.Response) -> CursorCloudError:
         try:
             body = response.json()
@@ -153,6 +161,7 @@ class CursorCloudClient:
         accept: str | None = None,
         extra_headers: dict[str, str] | None = None,
         stream: bool = False,
+        timeout: httpx.Timeout | None = None,
     ) -> httpx.Response:
         client = await self._ensure_client()
         headers: dict[str, str] = {}
@@ -160,6 +169,7 @@ class CursorCloudClient:
             headers["Accept"] = accept
         if extra_headers:
             headers.update(extra_headers)
+        req_timeout = timeout
 
         attempts = 3 if idempotent else 1
         last_error: Exception | None = None
@@ -172,6 +182,7 @@ class CursorCloudClient:
                         json=json_body,
                         params=params,
                         headers=headers,
+                        timeout=req_timeout or self._stream_timeout(),
                     )
                     response = await client.send(request, stream=True)
                 else:
@@ -181,6 +192,7 @@ class CursorCloudClient:
                         json=json_body,
                         params=params,
                         headers=headers,
+                        timeout=req_timeout,
                     )
             except httpx.TimeoutException as exc:
                 last_error = TransportError(str(exc))
@@ -337,6 +349,7 @@ class CursorCloudClient:
                 extra_headers=headers,
                 stream=True,
                 idempotent=False,
+                timeout=self._stream_timeout(),
             )
         except StreamExpiredError:
             raise

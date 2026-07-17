@@ -37,6 +37,16 @@ class SessionStore(Protocol):
 
     async def get_model_decision(self, decision_id: str) -> ModelDecision | None: ...
 
+    async def save_pending_payload(self, decision_id: str, payload: dict[str, Any]) -> None: ...
+
+    async def get_pending_payload(self, decision_id: str) -> dict[str, Any] | None: ...
+
+    async def pop_pending_payload(self, decision_id: str) -> dict[str, Any] | None: ...
+
+    async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None: ...
+
+    async def get_model_pref(self, scope: ScopeKey) -> str | None: ...
+
     async def all_sessions(self) -> list[AgentSession]: ...
 
     def lock_for(self, scope: ScopeKey) -> asyncio.Lock: ...
@@ -51,6 +61,8 @@ class MemorySessionStore:
         self._active: dict[str, str] = {}
         self._idle: dict[str, IdleDecision] = {}
         self._model: dict[str, ModelDecision] = {}
+        self._pending: dict[str, dict[str, Any]] = {}
+        self._model_prefs: dict[str, str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
 
@@ -143,6 +155,26 @@ class MemorySessionStore:
     async def get_model_decision(self, decision_id: str) -> ModelDecision | None:
         return self._model.get(decision_id)
 
+    async def save_pending_payload(
+        self, decision_id: str, payload: dict[str, Any]
+    ) -> None:
+        # Keyed per decision — never replace the whole map.
+        self._pending[str(decision_id)] = dict(payload)
+
+    async def get_pending_payload(self, decision_id: str) -> dict[str, Any] | None:
+        raw = self._pending.get(str(decision_id))
+        return dict(raw) if raw is not None else None
+
+    async def pop_pending_payload(self, decision_id: str) -> dict[str, Any] | None:
+        raw = self._pending.pop(str(decision_id), None)
+        return dict(raw) if raw is not None else None
+
+    async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None:
+        self._model_prefs[scope.as_str()] = str(model_id)
+
+    async def get_model_pref(self, scope: ScopeKey) -> str | None:
+        return self._model_prefs.get(scope.as_str())
+
     async def all_sessions(self) -> list[AgentSession]:
         out: list[AgentSession] = []
         for bucket in self._sessions.values():
@@ -158,6 +190,8 @@ class MemorySessionStore:
             "active": dict(self._active),
             "idle": {k: v.to_dict() for k, v in self._idle.items()},
             "model": {k: v.to_dict() for k, v in self._model.items()},
+            "pending": {k: dict(v) for k, v in self._pending.items()},
+            "model_prefs": dict(self._model_prefs),
         }
 
     def import_state(self, data: dict[str, Any]) -> None:
@@ -176,6 +210,12 @@ class MemorySessionStore:
         }
         self._model = {
             k: ModelDecision.from_dict(v) for k, v in (data.get("model") or {}).items()
+        }
+        self._pending = {
+            str(k): dict(v) for k, v in (data.get("pending") or {}).items()
+        }
+        self._model_prefs = {
+            str(k): str(v) for k, v in (data.get("model_prefs") or {}).items()
         }
 
 

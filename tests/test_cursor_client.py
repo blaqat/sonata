@@ -193,6 +193,16 @@ class TestCursorClient(unittest.IsolatedAsyncioTestCase):
         params = self.http.request.await_args.kwargs["params"]
         self.assertEqual(params["cursor"], "prev")
 
+    async def test_stream_timeout_uses_configured_stream_read(self):
+        cfg = make_config(stream_timeout_seconds=123.0, read_timeout_seconds=30.0)
+        client = CursorCloudClient(cfg, client=self.http)
+        timeout = client._stream_timeout()
+        self.assertEqual(timeout.read, 123.0)
+        self.assertEqual(timeout.connect, cfg.connect_timeout_seconds)
+        # Non-stream path keeps shorter read timeout on the shared client config.
+        self.assertEqual(cfg.read_timeout_seconds, 30.0)
+        self.assertNotEqual(cfg.read_timeout_seconds, cfg.stream_timeout_seconds)
+
 
 if __name__ == "__main__":
     unittest.main()
