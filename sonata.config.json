@@ -57,14 +57,14 @@
     "self_commands": {
       "gif_search": "klipy",
       "agent_model": "Claude",
-      "agent": false,
+      "agent": true,
       "agent_retries": 3,
       "agent_max_steps": 5,
       "search": {
-        "num_results": 2
+        "num_results": 3
       },
       "video": {
-        "limit": 1,
+        "limit": 2,
         "max_results": 5
       },
       "music": {
@@ -76,10 +76,10 @@
       "inject_emojis": false
     },
     "cursor": {
-      "enabled": false,
+      "enabled": true,
       "api_base_url": "https://api.cursor.com",
-      "default_repository_url": "",
-      "default_ref": "main",
+      "default_repository_url": "https://github.com/blaqat/sonata",
+      "default_ref": "master",
       "default_model": "",
       "auto_create_pr": false,
       "chain_depth": 20,
@@ -87,8 +87,8 @@
       "status_edit_interval_ms": 1200,
       "session_idle_prompt_minutes": 10,
       "access": {
-        "tier1_user_ids": [],
-        "tier2_user_ids": [],
+        "tier1_user_ids": [334039742205132800],
+        "tier2_user_ids": [141323186259230721, 1271099293478162515],
         "default_grant_minutes": 10,
         "approval_timeout_hours": 12
       }
