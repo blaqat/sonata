@@ -7,11 +7,12 @@ import importlib.util
 import pathlib
 import sys
 import unittest
-from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+
+from modules.cursor_shutdown import close_with_cursor_cleanup
 
 
 def load_cursor_plugin():
@@ -28,26 +29,10 @@ def load_cursor_plugin():
     return module
 
 
-class TestSonataClientClosePath(unittest.IsolatedAsyncioTestCase):
-    async def test_close_invokes_cleanup_cancels_tasks_closes_http(self):
+class TestCloseWithCursorCleanup(unittest.IsolatedAsyncioTestCase):
+    async def test_production_close_helper_cancels_tasks_closes_http(self):
+        """Exercise the same helper SonataClient.close uses (no full bot import)."""
         mod = load_cursor_plugin()
-
-        # Minimal stand-in for SonataClient.close override logic.
-        class FakeBot:
-            def __init__(self):
-                self._sonata_cursor_cleanup_done = False
-                self._cursor_cleanup = mod.cleanup_cursor_runtime
-                self.super_close = AsyncMock()
-
-            async def close(self):
-                if not self._sonata_cursor_cleanup_done:
-                    self._sonata_cursor_cleanup_done = True
-                    cleanup = getattr(self, "_cursor_cleanup", None)
-                    if callable(cleanup):
-                        result = cleanup()
-                        if asyncio.iscoroutine(result):
-                            await result
-                await self.super_close()
 
         async def _hang():
             try:
@@ -73,24 +58,46 @@ class TestSonataClientClosePath(unittest.IsolatedAsyncioTestCase):
             }
         )
 
-        bot = FakeBot()
-        await bot.close()
-        await bot.close()  # idempotent — second close must not double-clean
+        bot = MagicMock()
+        bot._sonata_cursor_cleanup_done = False
+        bot._cursor_cleanup = mod.cleanup_cursor_runtime
+        super_close = AsyncMock()
 
+        await close_with_cursor_cleanup(bot, sonata=None, super_close=super_close)
+        await close_with_cursor_cleanup(bot, sonata=None, super_close=super_close)
+
+        self.assertTrue(bot._sonata_cursor_cleanup_done)
         self.assertTrue(expiry.cancelled() or expiry.done())
         self.assertTrue(reconcile.cancelled() or reconcile.done())
         self.assertTrue(tracker.cancelled() or tracker.done())
         client.aclose.assert_awaited_once()
         cdn.aclose.assert_awaited_once()
-        self.assertEqual(bot.super_close.await_count, 2)
+        self.assertEqual(super_close.await_count, 2)
 
-    async def test_index_sonata_client_close_wires_cleanup(self):
-        """Import SonataClient.close source contract without full bot boot."""
+    async def test_close_resolves_sonata_cursor_cleanup(self):
+        cursor = MagicMock()
+        cursor.cleanup = AsyncMock()
+        sonata = MagicMock()
+        sonata.cursor = cursor
+        sonata.get = MagicMock(return_value=None)
+        bot = MagicMock()
+        bot._sonata_cursor_cleanup_done = False
+        # No bot._cursor_cleanup — fall through to sonata.cursor.cleanup
+        if hasattr(bot, "_cursor_cleanup"):
+            del bot._cursor_cleanup
+        # MagicMock always has attrs; force getattr path:
+        bot = type("B", (), {"_sonata_cursor_cleanup_done": False})()
+        super_close = AsyncMock()
+        await close_with_cursor_cleanup(bot, sonata=sonata, super_close=super_close)
+        cursor.cleanup.assert_awaited()
+        super_close.assert_awaited()
+
+    def test_index_sonata_client_close_delegates_to_helper(self):
         index_path = ROOT / "src" / "index.py"
         text = index_path.read_text()
+        self.assertIn("close_with_cursor_cleanup", text)
         self.assertIn("async def close(self)", text)
-        self.assertIn("_cursor_cleanup", text)
-        self.assertIn("await super().close()", text)
+        self.assertIn("super_close=super().close", text)
         self.assertNotIn('@bot.listen("on_close")', text)
 
 

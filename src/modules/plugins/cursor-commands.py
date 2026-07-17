@@ -828,13 +828,18 @@ async def _launch_run(
             if session and run_is_busy(session.latest_run_status):
                 raise BusyRunError()
 
-    # Post status only after the busy pre-check passed.
+    # Post status only after the busy pre-check passed (Discord I/O outside lock).
     if status_msg is None and not skip_status_post:
         status_msg = await _public(interaction, initial_queued_message())
 
-    async with sessions.lock_for(scope):
-        # Re-check auth + busy under the scope lock before create/follow-up.
-        try:
+    status_cleanup: tuple[str, str] | None = None  # (kind, message)
+    grant_consumed = False
+    session: AgentSession | None = None
+    pending_exc: BaseException | None = None
+
+    try:
+        async with sessions.lock_for(scope):
+            # Re-check auth + busy BEFORE consuming a one-run grant.
             await _revalidate_run_auth(
                 user_id=scope.user_id,
                 guild_id=scope.guild_id,
@@ -843,94 +848,139 @@ async def _launch_run(
                 subcommand="run",
                 interaction=interaction_obj,
             )
-            # Consume one-run grants under the same lock as API submit to prevent
-            # concurrent /cursor run from double-creating agents. Must use the
-            # original approval envelope so the grant hash still matches.
+            active = await sessions.get_active(scope)
+            if not force_new and agent_id is None and active is not None:
+                agent_id = active.agent_id
+
+            if agent_id and not force_new:
+                existing = await sessions.get_session(scope, agent_id)
+                if existing and run_is_busy(existing.latest_run_status):
+                    status_cleanup = (
+                        "busy",
+                        "### Busy\n" + BusyRunError().user_message,
+                    )
+                    raise BusyRunError()
+
+            # Consume one-run grants only after busy rejection, under the same
+            # lock as API submit (prevents concurrent duplicate creates).
             if grant is not None and getattr(grant, "kind", None) == "once" and not getattr(
                 grant, "consumed", False
             ):
                 if envelope is None:
                     raise ValidationError(
                         "Missing envelope for one-run grant consume",
-                        user_message="Approval grant could not be consumed safely; please resubmit.",
+                        user_message=(
+                            "Approval grant could not be consumed safely; please resubmit."
+                        ),
                     )
                 grant = await _access().consume_grant_for_submit(grant, envelope)
+                grant_consumed = True
 
-            active = await sessions.get_active(scope)
-            if not force_new and agent_id is None and active is not None:
-                agent_id = active.agent_id
-
+            # Defensive: if busy somehow appears after consume, fail-closed.
             if agent_id and not force_new:
-                session = await sessions.get_session(scope, agent_id)
-                if session and run_is_busy(session.latest_run_status):
+                existing = await sessions.get_session(scope, agent_id)
+                if existing and run_is_busy(existing.latest_run_status):
+                    if grant_consumed and grant is not None:
+                        await _access().mark_submit_failed_after_consume(grant)
+                    status_cleanup = (
+                        "busy",
+                        "### Busy\n" + BusyRunError().user_message,
+                    )
                     raise BusyRunError()
 
             api_images = [img.to_api() for img in images]
-            if force_new or not agent_id:
-                agent, run = await client.create_agent(
-                    prompt_text,
-                    images=api_images or None,
-                    model=model or cfg.default_model or None,
-                    repository_url=cfg.default_repository_url,
-                    starting_ref=cfg.default_ref,
-                    auto_create_pr=cfg.auto_create_pr,
-                )
-                session = AgentSession(
-                    scope=scope,
-                    agent_id=agent.id,
-                    owner_id=scope.user_id,
-                    name=agent.name,
-                    model=model or cfg.default_model or agent.model,
-                    preferred_model=model or cfg.default_model or None,
-                    repository_url=cfg.default_repository_url,
-                    starting_ref=cfg.default_ref,
-                    latest_run_id=run.id,
-                    latest_run_status=run.status,
-                    status_channel_id=str(status_msg.channel.id) if status_msg else None,
-                    status_message_id=str(status_msg.id) if status_msg else None,
-                    summary=prompt_text[:200],
-                    active=True,
-                    last_meaningful_activity_at=utcnow(),
-                )
-                await sessions.upsert(session)
-            else:
-                run = await client.create_run(
-                    agent_id, prompt_text, images=api_images or None
-                )
-                session = await sessions.get_session(scope, agent_id)
-                if session is None:
-                    raise OwnershipError()
-                session.latest_run_id = run.id
-                session.latest_run_status = run.status
-                if status_msg is not None:
-                    session.status_channel_id = str(status_msg.channel.id)
-                    session.status_message_id = str(status_msg.id)
-                session.summary = prompt_text[:200]
-                session.last_meaningful_activity_at = utcnow()
-                await sessions.upsert(session)
-        except BusyRunError:
-            await _delete_or_edit_status_msg(
-                status_msg,
-                "### Busy\n" + BusyRunError().user_message,
-            )
-            raise
-        except Exception as exc:
-            if grant is not None and getattr(grant, "kind", None) == "once":
-                await _access().mark_submit_failed_after_consume(grant)
-                if status_msg is not None:
-                    await status_msg.edit(
-                        content=(
-                            "### Error\n" + GrantConsumedError(str(exc)).user_message
-                        )[:2000],
-                        allowed_mentions=CONTENT_MENTIONS,
+            try:
+                if force_new or not agent_id:
+                    agent, run = await client.create_agent(
+                        prompt_text,
+                        images=api_images or None,
+                        model=model or cfg.default_model or None,
+                        repository_url=cfg.default_repository_url,
+                        starting_ref=cfg.default_ref,
+                        auto_create_pr=cfg.auto_create_pr,
                     )
-                raise GrantConsumedError(str(exc)) from exc
-            if status_msg is not None:
+                    session = AgentSession(
+                        scope=scope,
+                        agent_id=agent.id,
+                        owner_id=scope.user_id,
+                        name=agent.name,
+                        model=model or cfg.default_model or agent.model,
+                        preferred_model=model or cfg.default_model or None,
+                        repository_url=cfg.default_repository_url,
+                        starting_ref=cfg.default_ref,
+                        latest_run_id=run.id,
+                        latest_run_status=run.status,
+                        status_channel_id=(
+                            str(status_msg.channel.id) if status_msg else None
+                        ),
+                        status_message_id=str(status_msg.id) if status_msg else None,
+                        summary=prompt_text[:200],
+                        active=True,
+                        last_meaningful_activity_at=utcnow(),
+                    )
+                    await sessions.upsert(session)
+                else:
+                    run = await client.create_run(
+                        agent_id, prompt_text, images=api_images or None
+                    )
+                    session = await sessions.get_session(scope, agent_id)
+                    if session is None:
+                        raise OwnershipError()
+                    session.latest_run_id = run.id
+                    session.latest_run_status = run.status
+                    if status_msg is not None:
+                        session.status_channel_id = str(status_msg.channel.id)
+                        session.status_message_id = str(status_msg.id)
+                    session.summary = prompt_text[:200]
+                    session.last_meaningful_activity_at = utcnow()
+                    await sessions.upsert(session)
+            except BusyRunError:
+                if grant_consumed and grant is not None:
+                    await _access().mark_submit_failed_after_consume(grant)
+                status_cleanup = (
+                    "busy",
+                    "### Busy\n" + BusyRunError().user_message,
+                )
+                raise
+            except Exception as exc:
+                if (
+                    grant_consumed
+                    and grant is not None
+                    and getattr(grant, "kind", None) == "once"
+                ):
+                    await _access().mark_submit_failed_after_consume(grant)
+                    status_cleanup = (
+                        "grant",
+                        "### Error\n" + GrantConsumedError(str(exc)).user_message,
+                    )
+                    raise GrantConsumedError(str(exc)) from exc
+                status_cleanup = (
+                    "error",
+                    "### Error\n"
+                    + redact_untrusted(getattr(exc, "user_message", str(exc))),
+                )
+                raise
+    except Exception as exc:
+        pending_exc = exc
+
+    # Discord status cleanup/edit OUTSIDE the scope lock (slow I/O).
+    if status_cleanup is not None:
+        kind, content = status_cleanup
+        if kind == "busy":
+            await _delete_or_edit_status_msg(status_msg, content)
+        elif status_msg is not None:
+            try:
                 await status_msg.edit(
-                    content=f"### Error\n{redact_untrusted(getattr(exc, 'user_message', str(exc)))}"[:2000],
+                    content=content[:2000],
                     allowed_mentions=CONTENT_MENTIONS,
                 )
-            raise
+            except Exception:
+                logger.debug("Failed to edit Cursor status after error", exc_info=True)
+
+    if pending_exc is not None:
+        raise pending_exc
+    if session is None:
+        raise BusyRunError()
 
     if status_msg is not None:
         async def on_activity(_event: str):
@@ -2445,6 +2495,37 @@ async def _edit_approval_expired_message(request) -> None:
         )
 
 
+async def _edit_decision_expired_message(
+    *,
+    kind: str,
+    decision_id: str,
+    channel_id: str | None,
+    message_id: str | None,
+) -> None:
+    """Best-effort disable/edit idle or model decision channel message."""
+    bot = _STATE.get("bot")
+    if not bot or not channel_id or not message_id:
+        return
+    label = "Idle session" if kind == "idle" else "Model choice"
+    try:
+        channel = bot.get_channel(int(channel_id))
+        if channel is None:
+            channel = await bot.fetch_channel(int(channel_id))
+        msg = await channel.fetch_message(int(message_id))
+        await msg.edit(
+            content=f"### Expired\n{label} `{decision_id}` expired.",
+            view=None,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+    except Exception:
+        logger.debug(
+            "Could not edit expired %s decision message %s",
+            kind,
+            decision_id,
+            exc_info=True,
+        )
+
+
 async def _expire_stale_decisions() -> None:
     """Expire idle/model decisions and discard their retention keys promptly."""
     sessions = _STATE.get("sessions")
@@ -2467,6 +2548,12 @@ async def _expire_stale_decisions() -> None:
             pending = await sessions.pop_pending_payload(decision_id)
             if pending:
                 await _discard_retention_key(pending.get("retention_key"))
+            await _edit_decision_expired_message(
+                kind="idle",
+                decision_id=decision_id,
+                channel_id=decision.message_channel_id,
+                message_id=decision.message_id,
+            )
     for decision_id, raw in list((state.get("model") or {}).items()):
         try:
             decision = ModelDecision.from_dict(raw)
@@ -2481,6 +2568,12 @@ async def _expire_stale_decisions() -> None:
             pending = await sessions.pop_pending_payload(decision_id)
             if pending:
                 await _discard_retention_key(pending.get("retention_key"))
+            await _edit_decision_expired_message(
+                kind="model",
+                decision_id=decision_id,
+                channel_id=decision.message_channel_id,
+                message_id=decision.message_id,
+            )
     if access:
         await access.images.purge_expired()
 

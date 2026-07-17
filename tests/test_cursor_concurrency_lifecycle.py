@@ -156,10 +156,10 @@ def _interaction(user_id, *, guild_id=1, channel_id=2):
 
 class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_launch_busy_no_orphan_and_one_submit(self):
+        """Slow _public widens TOCTOU: both may post; loser status cleaned; 1 submit."""
         mod = load_cursor_plugin()
         sessions, access, cfg, client = _bootstrap(mod)
         scope = ScopeKey("1", "2", T1)
-        # Start idle (not busy); first submit marks CREATING under lock.
         await sessions.upsert(
             AgentSession(
                 scope=scope,
@@ -171,19 +171,24 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        release = asyncio.Event()
         submits = {"n": 0}
+        public_gate = asyncio.Event()
+        public_entered = {"n": 0}
+        public_msgs = []
 
         async def slow_create_run(*args, **kwargs):
             submits["n"] += 1
-            await release.wait()
             return SimpleNamespace(id="run-ok", status=RunStatus.CREATING)
 
         client.create_run = AsyncMock(side_effect=slow_create_run)
 
-        public_msgs = []
-
-        async def fake_public(interaction, content, **kwargs):
+        async def slow_public(interaction, content, **kwargs):
+            public_entered["n"] += 1
+            # Block until both callers have entered _public (deterministic TOCTOU).
+            if public_entered["n"] >= 2:
+                public_gate.set()
+            await public_gate.wait()
+            await asyncio.sleep(0)  # yield so both proceed into submit lock
             msg = SimpleNamespace(
                 id=len(public_msgs) + 1,
                 channel=SimpleNamespace(id=2),
@@ -194,16 +199,14 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
             public_msgs.append(msg)
             return msg
 
-        mod._public = fake_public
+        mod._public = slow_public
 
         class FakeTracker:
             def __init__(self, *a, **k):
                 pass
 
             async def track(self, *a, **k):
-                return SimpleNamespace(
-                    status=RunStatus.FINISHED, degraded=False
-                )
+                return SimpleNamespace(status=RunStatus.FINISHED, degraded=False)
 
         with patch.object(mod, "RunTracker", FakeTracker):
             async def launch():
@@ -220,22 +223,140 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
                     role_ids=[],
                 )
 
-            t1 = asyncio.create_task(launch())
-            await asyncio.sleep(0.05)
-            t2 = asyncio.create_task(launch())
-            await asyncio.sleep(0.05)
-            release.set()
-            results = await asyncio.gather(t1, t2, return_exceptions=True)
+            results = await asyncio.gather(
+                asyncio.create_task(launch()),
+                asyncio.create_task(launch()),
+                return_exceptions=True,
+            )
 
         oks = [r for r in results if not isinstance(r, Exception)]
         busy = [r for r in results if isinstance(r, BusyRunError)]
         self.assertEqual(len(oks), 1, results)
         self.assertEqual(len(busy), 1, results)
         self.assertEqual(submits["n"], 1)
-        # Busy pre-check under lock means the loser never posts Queued.
-        self.assertEqual(len(public_msgs), 1)
-        for m in public_msgs[1:]:
-            self.assertTrue(m.delete.await_count or m.edit.await_count)
+        self.assertEqual(len(public_msgs), 2)
+        cleaned = [
+            m
+            for m in public_msgs
+            if m.delete.await_count
+            or (m.edit.await_count and "Busy" in str(m.edit.await_args))
+        ]
+        self.assertGreaterEqual(len(cleaned), 1)
+
+    async def test_busy_before_grant_consume_no_consume(self):
+        """Busy rejection must happen before one-run grant consume."""
+        mod = load_cursor_plugin()
+        sessions, access, cfg, client = _bootstrap(mod)
+        scope = ScopeKey("1", "2", T2)
+        await sessions.upsert(
+            AgentSession(
+                scope=scope,
+                agent_id="a1",
+                owner_id=T2,
+                active=True,
+                latest_run_id="r0",
+                latest_run_status=RunStatus.RUNNING,
+            )
+        )
+        env = RunRequestEnvelope(
+            requester_id=T2,
+            scope=scope,
+            prompt_text="p",
+            model="m",
+            repository_url="https://github.com/o/r",
+            starting_ref="main",
+            agent_id="a1",
+            is_follow_up=True,
+        )
+        req = await access.create_approval_request(env, prompt_preview="p")
+        req = await access.decide_request(GOD, req.request_id, mode="once")
+        grant = await access.store.get_grant(req.grant_id)
+        self.assertFalse(grant.consumed)
+
+        interaction = _interaction(T2)
+        with self.assertRaises(BusyRunError):
+            await mod._launch_run(
+                interaction,
+                prompt_text="p",
+                images=[],
+                skipped=[],
+                agent_id="a1",
+                force_new=False,
+                model="m",
+                grant=grant,
+                envelope=env,
+                scope=scope,
+                role_ids=[],
+                skip_status_post=True,
+            )
+        grant2 = await access.store.get_grant(req.grant_id)
+        self.assertFalse(grant2.consumed)
+        client.create_run.assert_not_awaited()
+
+    async def test_busy_after_consume_marks_submit_failed(self):
+        """If busy is detected after consume, audit submit-failed-after-consume."""
+        mod = load_cursor_plugin()
+        sessions, access, cfg, client = _bootstrap(mod)
+        scope = ScopeKey("1", "2", T2)
+        await sessions.upsert(
+            AgentSession(
+                scope=scope,
+                agent_id="a1",
+                owner_id=T2,
+                active=True,
+                latest_run_id="r0",
+                latest_run_status=RunStatus.FINISHED,
+            )
+        )
+        env = RunRequestEnvelope(
+            requester_id=T2,
+            scope=scope,
+            prompt_text="p",
+            model="m",
+            repository_url="https://github.com/o/r",
+            starting_ref="main",
+            agent_id="a1",
+            is_follow_up=True,
+        )
+        req = await access.create_approval_request(env, prompt_preview="p")
+        req = await access.decide_request(GOD, req.request_id, mode="once")
+        grant = await access.store.get_grant(req.grant_id)
+
+        # Flip to busy after consume by patching get_session.
+        real_get = sessions.get_session
+        calls = {"n": 0}
+
+        async def flaky_get(scope_key, agent_id):
+            sess = await real_get(scope_key, agent_id)
+            calls["n"] += 1
+            # 1=pre-check, 2=pre-consume busy check → still free.
+            # 3=post-consume defensive busy check → busy.
+            if calls["n"] >= 3 and sess is not None:
+                sess.latest_run_status = RunStatus.RUNNING
+            return sess
+
+        sessions.get_session = flaky_get
+        interaction = _interaction(T2)
+        with self.assertRaises(BusyRunError):
+            await mod._launch_run(
+                interaction,
+                prompt_text="p",
+                images=[],
+                skipped=[],
+                agent_id="a1",
+                force_new=False,
+                model="m",
+                grant=grant,
+                envelope=env,
+                scope=scope,
+                role_ids=[],
+                skip_status_post=True,
+            )
+        grant2 = await access.store.get_grant(req.grant_id)
+        self.assertTrue(grant2.consumed)
+        events = await access.store.list_audit(limit=20)
+        self.assertTrue(any(e.action == "submit_failed_after_consume" for e in events))
+        client.create_run.assert_not_awaited()
 
 
 class TestIdleDecisionDedupe(unittest.IsolatedAsyncioTestCase):
@@ -501,6 +622,40 @@ class TestHandleComponentAndViews(unittest.IsolatedAsyncioTestCase):
 
 
 class TestExpiryAndReconcile(unittest.IsolatedAsyncioTestCase):
+    async def test_idle_decision_expiry_edits_channel_message(self):
+        mod = load_cursor_plugin()
+        sessions, access, cfg, client = _bootstrap(mod)
+        scope = ScopeKey("1", "2", T2)
+        decision = IdleDecision(
+            decision_id="idle_exp",
+            scope=scope,
+            agent_id="a1",
+            expires_at=utcnow() - timedelta(seconds=1),
+            message_channel_id="2",
+            message_id="55",
+        )
+        await sessions.save_idle_decision(decision)
+        await sessions.save_pending_payload(
+            "idle_exp",
+            {"prompt_text": "built", "retention_key": None, "image_metas": []},
+        )
+        msg = MagicMock()
+        msg.edit = AsyncMock()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(return_value=msg)
+        bot = MagicMock()
+        bot.get_channel.return_value = channel
+        mod._STATE["bot"] = bot
+
+        await mod._expire_stale_decisions()
+        again = await sessions.get_idle_decision("idle_exp")
+        self.assertTrue(again.consumed)
+        self.assertIsNone(await sessions.get_pending_payload("idle_exp"))
+        msg.edit.assert_awaited()
+        kwargs = msg.edit.await_args.kwargs
+        self.assertIsNone(kwargs.get("view"))
+        self.assertIn("Expired", kwargs.get("content") or "")
+
     async def test_edit_approval_expired_message(self):
         mod = load_cursor_plugin()
         sessions, access, cfg, client = _bootstrap(mod)

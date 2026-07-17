@@ -598,30 +598,14 @@ class SonataClient(commands.Bot):
         py-cord does not dispatch ``on_close``, so plugin cleanup must be
         invoked from this override — never via atexit for async work.
         """
-        if not self._sonata_cursor_cleanup_done:
-            self._sonata_cursor_cleanup_done = True
-            cleanup = getattr(self, "_cursor_cleanup", None)
-            if not callable(cleanup):
-                cursor = getattr(Sonata, "cursor", None)
-                cleanup = getattr(cursor, "cleanup", None) if cursor is not None else None
-            if not callable(cleanup):
-                cleanup = Sonata.get("cursor", "cleanup")
-            if callable(cleanup):
-                try:
-                    result = cleanup()
-                    if asyncio.iscoroutine(result):
-                        await result
-                except TypeError:
-                    # Memory hooks are sometimes invoked as cleanup(Sonata).
-                    try:
-                        result = cleanup(Sonata)
-                        if asyncio.iscoroutine(result):
-                            await result
-                    except Exception as exc:
-                        cprint(f"Cursor cleanup failed: {exc}", "red")
-                except Exception as exc:
-                    cprint(f"Cursor cleanup failed: {exc}", "red")
-        await super().close()
+        from modules.cursor_shutdown import close_with_cursor_cleanup
+
+        await close_with_cursor_cleanup(
+            self,
+            sonata=Sonata,
+            log_error=lambda msg: cprint(msg, "red"),
+            super_close=super().close,
+        )
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
         if message.guild is None:
