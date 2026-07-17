@@ -699,7 +699,11 @@ async def _prepare_and_maybe_launch(
         if active is not None:
             preferred = active.preferred_model or cfg.default_model or None
         else:
-            preferred = cfg.default_model or None
+            preferred = (
+                (_STATE.get("user_model_pref") or {}).get(scope.as_str())
+                or cfg.default_model
+                or None
+            )
 
         # Model mismatch decision (before idle + approval hashing).
         want_new = bool(force_new)
