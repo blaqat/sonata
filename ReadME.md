@@ -74,6 +74,11 @@ Sonata uses a modular plugin system. Available plugins include:
 - **beacon**: Serialization plugin for saving and loading data to/from files
 - **self-commands**: Allows the bot to execute commands on itself
 - **term-commands**: Terminal command execution
+- **cursor**: Discord `/cursor` slash commands for Cursor Cloud Agents (see `plugins.cursor` in `sonata.config.json` and `CURSOR_API_KEY` / `GOD` in `.env`)
+
+### Cursor Cloud Agents (`/cursor`)
+
+Enable with `plugins.cursor.enabled` and set `CURSOR_API_KEY`, `GOD`, and `default_repository_url`. Tier 0 is the `GOD` Discord user id (fail-closed if missing). Tier 1/2 lists live under `plugins.cursor.access` plus God-only `/cursor access` overlay commands. Policy gates use `chat.command.cursor.<subcommand>` (e.g. `cursor.run`) in addition to `can_speak`.
 
 ## Contributing
 

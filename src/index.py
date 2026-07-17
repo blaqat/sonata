@@ -587,6 +587,9 @@ class SonataClient(commands.Bot):
     async def on_ready(self) -> None:
         cprint("Logged on as {0}!".format(self.user), "purple")
         self.loop.create_task(Sonata.get("termcmd", "hook")(Sonata, self))
+        cursor_hook = Sonata.get("cursor", "hook")
+        if callable(cursor_hook):
+            self.loop.create_task(cursor_hook(Sonata, self))
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
         if message.guild is None:

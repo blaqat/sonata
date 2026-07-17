@@ -991,6 +991,45 @@ async def get_reference_chain(message, max_length=-1, include_message=False):
     return chain
 
 
+async def get_reference_message_chain(message, max_length=-1, include_message=False):
+    """Return Discord message objects for a reply chain (oldest → newest).
+
+    Companion to ``get_reference_chain`` for callers that need attachments or
+    other message metadata. Skips deleted/inaccessible ancestors without raising.
+    """
+    if message is None:
+        return []
+
+    messages = []
+    if include_message:
+        messages.append(message)
+
+    if message.reference is None:
+        return messages
+
+    depth = max_length
+    current = message
+    seen = {getattr(message, "id", None)}
+    while current is not None and current.reference is not None and depth != 0:
+        try:
+            ref = await get_reference_message(current, return_message=True)
+        except Exception:
+            break
+        if ref is None:
+            break
+        ref_id = getattr(ref, "id", None)
+        if ref_id in seen:
+            break
+        seen.add(ref_id)
+        messages.append(ref)
+        current = ref
+        if depth > 0:
+            depth -= 1
+
+    messages.reverse()
+    return messages
+
+
 def gif_provider_get_dl_url(url, key, size="mediumgif", api_host=None):
     """Resolve a Tenor/KLIPY page URL to a direct media download URL."""
     gif_id = None

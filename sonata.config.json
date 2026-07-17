@@ -74,6 +74,24 @@
     },
     "term_commands": {
       "inject_emojis": false
+    },
+    "cursor": {
+      "enabled": false,
+      "api_base_url": "https://api.cursor.com",
+      "default_repository_url": "",
+      "default_ref": "main",
+      "default_model": "",
+      "auto_create_pr": false,
+      "chain_depth": 20,
+      "max_images": 5,
+      "status_edit_interval_ms": 1200,
+      "session_idle_prompt_minutes": 10,
+      "access": {
+        "tier1_user_ids": [],
+        "tier2_user_ids": [],
+        "default_grant_minutes": 10,
+        "approval_timeout_hours": 12
+      }
     }
   }
 }

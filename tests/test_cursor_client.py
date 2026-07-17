@@ -1,0 +1,198 @@
+import asyncio
+import json
+import pathlib
+import sys
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from cursor_cloud.client import CursorCloudClient, parse_sse_chunk
+from cursor_cloud.config import load_cursor_config
+from cursor_cloud.errors import (
+    AuthenticationError,
+    BusyRunError,
+    RateLimitError,
+    StreamExpiredError,
+    ValidationError,
+)
+from cursor_cloud.models import StreamEvent
+
+
+def make_config(**overrides):
+    env = {"CURSOR_API_KEY": "test-key", "GOD": "123456789012345678"}
+    plugin = {
+        "enabled": True,
+        "default_repository_url": "https://github.com/org/repo",
+        **overrides,
+    }
+    return load_cursor_config(plugin, env=env)
+
+
+class TestParseSSE(unittest.TestCase):
+    def test_multiline_data_and_id(self):
+        buf = (
+            "id: 1-0\n"
+            "event: assistant\n"
+            'data: {"text":"hello"}\n'
+            "\n"
+            "event: heartbeat\n"
+            "data: {}\n"
+            "\n"
+            "partial"
+        )
+        events, rem = parse_sse_chunk(buf)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0].event, "assistant")
+        self.assertEqual(events[0].id, "1-0")
+        self.assertEqual(events[0].data["text"], "hello")
+        self.assertEqual(events[1].event, "heartbeat")
+        self.assertEqual(rem, "partial")
+
+    def test_status_without_id(self):
+        events, _ = parse_sse_chunk(
+            'event: status\ndata: {"runId":"r1","status":"RUNNING"}\n\n'
+        )
+        self.assertEqual(events[0].id, None)
+        self.assertEqual(events[0].data["status"], "RUNNING")
+
+
+class TestCursorClient(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.cfg = make_config()
+        self.http = AsyncMock()
+        self.client = CursorCloudClient(self.cfg, client=self.http)
+
+    def _resp(self, status, body, headers=None):
+        resp = MagicMock()
+        resp.status_code = status
+        resp.headers = headers or {}
+        resp.json.return_value = body
+        resp.text = json.dumps(body)
+        resp.aclose = AsyncMock()
+        resp.aread = AsyncMock()
+        return resp
+
+    async def test_basic_auth_and_create_agent_payload(self):
+        self.http.request = AsyncMock(
+            return_value=self._resp(
+                200,
+                {
+                    "agent": {
+                        "id": "bc-1",
+                        "name": "n",
+                        "status": "ACTIVE",
+                        "latestRunId": "run-1",
+                    },
+                    "run": {
+                        "id": "run-1",
+                        "agentId": "bc-1",
+                        "status": "CREATING",
+                    },
+                },
+            )
+        )
+        # Ensure client uses our mock as already provided
+        agent, run = await self.client.create_agent(
+            "do thing",
+            model="composer-2",
+            images=[{"url": "https://cdn.example/a.png"}],
+        )
+        self.assertEqual(agent.id, "bc-1")
+        self.assertEqual(run.id, "run-1")
+        kwargs = self.http.request.await_args.kwargs
+        body = kwargs["json"]
+        self.assertEqual(body["prompt"]["text"], "do thing")
+        self.assertEqual(body["model"]["id"], "composer-2")
+        self.assertEqual(body["repos"][0]["url"], "https://github.com/org/repo")
+        self.assertIn("images", body["prompt"])
+
+    async def test_follow_up_has_no_model_field(self):
+        self.http.request = AsyncMock(
+            return_value=self._resp(
+                200,
+                {"run": {"id": "run-2", "agentId": "bc-1", "status": "CREATING"}},
+            )
+        )
+        await self.client.create_run("bc-1", "follow up")
+        body = self.http.request.await_args.kwargs["json"]
+        self.assertNotIn("model", body)
+        self.assertEqual(body["prompt"]["text"], "follow up")
+
+    async def test_busy_conflict(self):
+        self.http.request = AsyncMock(
+            return_value=self._resp(
+                409, {"code": "agent_busy", "message": "busy"}
+            )
+        )
+        with self.assertRaises(BusyRunError):
+            await self.client.create_run("bc-1", "x")
+
+    async def test_auth_error(self):
+        self.http.request = AsyncMock(
+            return_value=self._resp(401, {"message": "nope"})
+        )
+        with self.assertRaises(AuthenticationError):
+            await self.client.list_models()
+
+    async def test_rate_limit_honors_retry_after_on_idempotent(self):
+        limited = self._resp(429, {"message": "slow"}, headers={"Retry-After": "0"})
+        ok = self._resp(200, {"items": [{"id": "m1", "displayName": "M"}]})
+        self.http.request = AsyncMock(side_effect=[limited, ok])
+        models = await self.client.list_models()
+        self.assertEqual(models[0].id, "m1")
+        self.assertEqual(self.http.request.await_count, 2)
+
+    async def test_stream_410_fallback(self):
+        # First stream request raises via status mapping
+        expired = self._resp(410, {"code": "stream_expired", "message": "gone"})
+        expired.aread = AsyncMock()
+        self.http.build_request = MagicMock(return_value=MagicMock())
+        self.http.send = AsyncMock(return_value=expired)
+        self.http.request = AsyncMock(
+            return_value=self._resp(
+                200,
+                {
+                    "id": "run-1",
+                    "agentId": "bc-1",
+                    "status": "FINISHED",
+                    "result": "done",
+                    "durationMs": 10,
+                },
+            )
+        )
+        events = []
+        async for ev in self.client.stream_run_with_fallback("bc-1", "run-1"):
+            events.append(ev)
+        self.assertEqual(events[0].event, "result")
+        self.assertEqual(events[0].data["text"], "done")
+        self.assertEqual(events[-1].event, "done")
+
+    async def test_cancel_not_retried_as_mutation(self):
+        self.http.request = AsyncMock(
+            return_value=self._resp(500, {"message": "boom"})
+        )
+        with self.assertRaises(Exception):
+            await self.client.cancel_run("bc-1", "run-1")
+        self.assertEqual(self.http.request.await_count, 1)
+
+    async def test_list_agents_pagination_cursor(self):
+        self.http.request = AsyncMock(
+            return_value=self._resp(
+                200,
+                {
+                    "items": [{"id": "bc-1", "name": "a", "status": "ACTIVE"}],
+                    "nextCursor": "next",
+                },
+            )
+        )
+        items, cursor = await self.client.list_agents(limit=10, cursor="prev")
+        self.assertEqual(cursor, "next")
+        self.assertEqual(items[0].id, "bc-1")
+        params = self.http.request.await_args.kwargs["params"]
+        self.assertEqual(params["cursor"], "prev")
+
+
+if __name__ == "__main__":
+    unittest.main()
