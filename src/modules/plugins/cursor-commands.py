@@ -1950,13 +1950,17 @@ cursor_group = SlashCommandGroup(
 @cursor_group.command(name="run", description="Start or continue a Cursor Cloud Agent run")
 async def cursor_run(
     ctx: discord.ApplicationContext,
-    prompt: Option(str, "Instruction for the agent"),
-    message: Option(str, "Message URL or ID for reply-chain context", required=False) = None,
-    image1: Option(discord.Attachment, "Image 1", required=False) = None,
-    image2: Option(discord.Attachment, "Image 2", required=False) = None,
-    image3: Option(discord.Attachment, "Image 3", required=False) = None,
-    image4: Option(discord.Attachment, "Image 4", required=False) = None,
-    image5: Option(discord.Attachment, "Image 5", required=False) = None,
+    # Option must be the default (not the annotation): `from __future__ import annotations`
+    # stringifies annotations, which breaks py-cord's Option parsing at invoke time.
+    prompt: str = Option(str, "Instruction for the agent"),
+    message: str = Option(
+        str, "Message URL or ID for reply-chain context", required=False
+    ),
+    image1: discord.Attachment = Option(discord.Attachment, "Image 1", required=False),
+    image2: discord.Attachment = Option(discord.Attachment, "Image 2", required=False),
+    image3: discord.Attachment = Option(discord.Attachment, "Image 3", required=False),
+    image4: discord.Attachment = Option(discord.Attachment, "Image 4", required=False),
+    image5: discord.Attachment = Option(discord.Attachment, "Image 5", required=False),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "run") is None:
@@ -1980,11 +1984,11 @@ async def cursor_run(
 @cursor_group.command(name="stop", description="Cancel your active Cursor run in this channel")
 async def cursor_stop(
     ctx: discord.ApplicationContext,
-    user: Option(
+    user: discord.User = Option(
         discord.User,
         "Tier0/1 emergency: stop another user's owned session in this channel",
         required=False,
-    ) = None,
+    ),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "stop") is None:
@@ -2058,7 +2062,7 @@ async def cursor_sessions(ctx: discord.ApplicationContext):
 @cursor_group.command(name="session", description="Switch your active owned Cursor session")
 async def cursor_session(
     ctx: discord.ApplicationContext,
-    agent_id: Option(str, "Owned agent id"),
+    agent_id: str = Option(str, "Owned agent id"),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "session") is None:
@@ -2085,7 +2089,7 @@ async def cursor_session(
 @cursor_group.command(name="model", description="Show or set preferred model for next new session")
 async def cursor_model(
     ctx: discord.ApplicationContext,
-    model_id: Option(str, "Model id from /v1/models", required=False) = None,
+    model_id: str = Option(str, "Model id from /v1/models", required=False),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "model") is None:
@@ -2144,11 +2148,11 @@ async def cursor_model(
 @cursor_group.command(name="status", description="Show status for your active Cursor run")
 async def cursor_status(
     ctx: discord.ApplicationContext,
-    user: Option(
+    user: discord.User = Option(
         discord.User,
         "Tier0/1 emergency: status for another user's owned session in this channel",
         required=False,
-    ) = None,
+    ),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "status") is None:
@@ -2245,8 +2249,8 @@ async def cursor_access_list(ctx: discord.ApplicationContext):
 @access_group.command(name="set", description="Set a user's Cursor tier (God only)")
 async def cursor_access_set(
     ctx: discord.ApplicationContext,
-    user: Option(discord.User, "Target user"),
-    tier: Option(str, "1, 2, 3, or reset"),
+    user: discord.User = Option(discord.User, "Target user"),
+    tier: str = Option(str, "1, 2, 3, or reset"),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "access") is None:
@@ -2284,7 +2288,7 @@ async def cursor_access_grants(ctx: discord.ApplicationContext):
 @access_group.command(name="revoke", description="Revoke a Cursor grant (God only)")
 async def cursor_access_revoke(
     ctx: discord.ApplicationContext,
-    grant_id: Option(str, "Grant id"),
+    grant_id: str = Option(str, "Grant id"),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "access") is None:
@@ -2299,9 +2303,9 @@ async def cursor_access_revoke(
 @cursor_group.command(name="approve", description="Approve a pending Tier 2 Cursor request")
 async def cursor_approve(
     ctx: discord.ApplicationContext,
-    request_id: Option(str, "Approval request id"),
-    mode: Option(str, "once or timed", choices=["once", "timed"]),
-    minutes: Option(int, "Timed grant minutes", required=False) = None,
+    request_id: str = Option(str, "Approval request id"),
+    mode: str = Option(str, "once or timed", choices=["once", "timed"]),
+    minutes: int = Option(int, "Timed grant minutes", required=False),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "approve") is None:
@@ -2347,7 +2351,7 @@ async def cursor_approve(
 @cursor_group.command(name="deny", description="Deny a pending Tier 2 Cursor request")
 async def cursor_deny(
     ctx: discord.ApplicationContext,
-    request_id: Option(str, "Approval request id"),
+    request_id: str = Option(str, "Approval request id"),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "deny") is None:

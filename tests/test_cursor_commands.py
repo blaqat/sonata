@@ -64,6 +64,29 @@ class TestCommandRegistration(unittest.TestCase):
         for required in {"run", "stop", "sessions", "session", "model", "status"}:
             self.assertIn(required, names)
 
+    def test_option_raw_types_are_classes_under_future_annotations(self):
+        """Regression: Option-as-annotation + future annotations made _raw_type a
+        string, crashing py-cord invoke with issubclass() TypeError."""
+        import discord
+        from discord import SlashCommandOptionType
+
+        mod = load_cursor_plugin()
+        by_name = {c.name: c for c in mod.cursor_group.subcommands}
+        model = by_name["model"]
+        self.assertIs(model.options[0]._raw_type, str)
+        self.assertEqual(model.options[0].input_type, SlashCommandOptionType.string)
+
+        run = by_name["run"]
+        image_opts = [o for o in run.options if o.name.startswith("image")]
+        self.assertEqual(len(image_opts), 5)
+        for op in image_opts:
+            self.assertIs(op._raw_type, discord.Attachment)
+            self.assertEqual(op.input_type, SlashCommandOptionType.attachment)
+
+        stop = by_name["stop"]
+        self.assertIs(stop.options[0]._raw_type, discord.User)
+        self.assertEqual(stop.options[0].input_type, SlashCommandOptionType.user)
+
 
 class TestPolicyCommandNames(unittest.IsolatedAsyncioTestCase):
     async def test_tier_gates_before_policy_semantics(self):
