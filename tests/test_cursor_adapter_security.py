@@ -111,6 +111,7 @@ def _interaction(user_id, *, guild_id=1, channel_id=2, response_done=False):
     response = MagicMock()
     response.is_done.return_value = response_done
     response.send_message = AsyncMock()
+    response.defer = AsyncMock()
     followup = MagicMock()
     followup.send = AsyncMock()
     channel = MagicMock()
@@ -183,6 +184,27 @@ class TestGateAndPolicy(unittest.IsolatedAsyncioTestCase):
         tier = await mod._gate(interaction, "run")
         self.assertIsNone(tier)
         interaction.response.send_message.assert_awaited()
+
+    async def test_defer_acks_before_cursor_api(self):
+        mod = load_cursor_plugin()
+        _bootstrap(mod)
+        interaction = _interaction(GOD)
+        interaction.response.defer = AsyncMock()
+        client = MagicMock()
+        client.list_models = AsyncMock(
+            return_value=[SimpleNamespace(id="m1", display_name="M1", aliases=[])]
+        )
+        mod._STATE["client"] = client
+
+        # Simulate ApplicationContext.interaction path used by cursor_model.
+        await mod._defer(interaction, ephemeral=True)
+        interaction.response.defer.assert_awaited_once_with(ephemeral=True)
+        models = await mod._client().list_models()
+        self.assertEqual(models[0].id, "m1")
+        # After defer, followup path is used for ephemeral replies.
+        interaction.response.is_done.return_value = True
+        await mod._ephemeral(interaction, "ok")
+        interaction.followup.send.assert_awaited()
 
 
 class TestIdleBeforeTouch(unittest.IsolatedAsyncioTestCase):

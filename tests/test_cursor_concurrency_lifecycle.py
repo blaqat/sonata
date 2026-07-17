@@ -116,6 +116,7 @@ def _interaction(user_id, *, guild_id=1, channel_id=2):
     response = MagicMock()
     response.is_done.return_value = False
     response.send_message = AsyncMock()
+    response.defer = AsyncMock()
     followup = MagicMock()
     followup.send = AsyncMock()
     channel = MagicMock()

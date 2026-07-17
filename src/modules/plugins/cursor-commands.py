@@ -326,6 +326,16 @@ async def _ephemeral(interaction: discord.Interaction, content: str) -> None:
         logger.exception("Failed to send ephemeral Cursor response")
 
 
+async def _defer(interaction: discord.Interaction, *, ephemeral: bool = True) -> None:
+    """Acknowledge within Discord's ~3s window before slow Cursor API work."""
+    if interaction.response.is_done():
+        return
+    try:
+        await interaction.response.defer(ephemeral=ephemeral)
+    except discord.HTTPException:
+        logger.exception("Failed to defer Cursor interaction")
+
+
 async def _public(interaction: discord.Interaction, content: str, **kwargs) -> discord.Message:
     content = content[:2000]
     if interaction.response.is_done():
@@ -1139,11 +1149,10 @@ async def _offer_model_decision(
     bot = _STATE.get("bot")
     if bot:
         bot.add_view(ModelDecisionView(decision.decision_id))
-    if not interaction.response.is_done():
-        await interaction.response.send_message(
-            "Model mismatch — choose how to proceed in the channel message.",
-            ephemeral=True,
-        )
+    await _ephemeral(
+        interaction,
+        "Model mismatch — choose how to proceed in the channel message.",
+    )
     return True
 
 
@@ -1237,11 +1246,10 @@ async def _offer_idle_decision(
     bot = _STATE.get("bot")
     if bot:
         bot.add_view(IdleDecisionView(decision.decision_id))
-    if not interaction.response.is_done():
-        await interaction.response.send_message(
-            "Session idle — choose how to proceed in the channel message.",
-            ephemeral=True,
-        )
+    await _ephemeral(
+        interaction,
+        "Session idle — choose how to proceed in the channel message.",
+    )
     return True
 
 
@@ -1458,6 +1466,8 @@ async def handle_component(interaction: discord.Interaction) -> bool:
     if len(parts) < 3:
         return False
     kind, token = parts[1], parts[2]
+    # Button clicks also must ack within ~3s before auth/API work.
+    await _defer(interaction, ephemeral=True)
 
     try:
         if kind.startswith("apr_"):
@@ -1505,9 +1515,9 @@ async def handle_component(interaction: discord.Interaction) -> bool:
             request = await _access().decide_request(
                 interaction.user.id, token, mode=mode, minutes=minutes
             )
-            await interaction.response.send_message(
+            await _ephemeral(
+                interaction,
                 f"Decision recorded: `{request.decision.value}`.",
-                ephemeral=True,
             )
             if request.decision.value.startswith("approved"):
                 # Auto-launch for the requester using retained images.
@@ -1789,9 +1799,7 @@ async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> N
         await sessions.save_idle_decision(decision)
 
     pending = await sessions.pop_pending_payload(decision_id) or pending
-    await interaction.response.send_message(
-        f"Idle choice: `{choice.value}`.", ephemeral=True
-    )
+    await _ephemeral(interaction, f"Idle choice: `{choice.value}`.")
     if choice == IdleChoice.CANCEL:
         if pending.get("retention_key"):
             await _access().images.discard(str(pending["retention_key"]))
@@ -1887,9 +1895,7 @@ async def _complete_model(interaction, decision_id: str, choice: ModelChoice) ->
         await sessions.save_model_decision(decision)
 
     pending = await sessions.pop_pending_payload(decision_id) or pending
-    await interaction.response.send_message(
-        f"Model choice: `{choice.value}`.", ephemeral=True
-    )
+    await _ephemeral(interaction, f"Model choice: `{choice.value}`.")
     if choice == ModelChoice.CANCEL:
         if pending.get("retention_key"):
             await _access().images.discard(str(pending["retention_key"]))
@@ -1955,6 +1961,8 @@ async def cursor_run(
     interaction = ctx.interaction
     if await _gate(interaction, "run") is None:
         return
+    # Acknowledge before Cursor API / image download work (Discord ~3s limit).
+    await _defer(interaction, ephemeral=True)
     try:
         await _prepare_and_maybe_launch(
             interaction,
@@ -1981,6 +1989,7 @@ async def cursor_stop(
     interaction = ctx.interaction
     if await _gate(interaction, "stop") is None:
         return
+    await _defer(interaction, ephemeral=True)
     actor_scope = _scope_from_interaction(interaction)
     sessions = _sessions()
     target_user_id = str(user.id) if user is not None else actor_scope.user_id
@@ -2054,6 +2063,7 @@ async def cursor_session(
     interaction = ctx.interaction
     if await _gate(interaction, "session") is None:
         return
+    await _defer(interaction, ephemeral=True)
     scope = _scope_from_interaction(interaction)
     try:
         # Validate ownership locally first — never expose org-wide agents.
@@ -2080,6 +2090,7 @@ async def cursor_model(
     interaction = ctx.interaction
     if await _gate(interaction, "model") is None:
         return
+    await _defer(interaction, ephemeral=True)
     scope = _scope_from_interaction(interaction)
     sessions = _sessions()
     if not model_id:
@@ -2142,6 +2153,7 @@ async def cursor_status(
     interaction = ctx.interaction
     if await _gate(interaction, "status") is None:
         return
+    await _defer(interaction, ephemeral=True)
     actor_scope = _scope_from_interaction(interaction)
     target_user_id = str(user.id) if user is not None else actor_scope.user_id
     emergency = user is not None and target_user_id != actor_scope.user_id
