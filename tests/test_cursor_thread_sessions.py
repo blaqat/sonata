@@ -170,6 +170,17 @@ class TestThreadRenderer(unittest.TestCase):
         text = render_thread_activity(snap)
         self.assertEqual(text, THREAD_THINKING_INDICATOR)
 
+    def test_activity_terminal_does_not_say_done(self):
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text="the answer",
+        )
+        text = render_thread_activity(snap)
+        self.assertNotIn("done", text.lower())
+        self.assertNotIn("_done_", text)
+
     def test_activity_thinking_peek_still_renders(self):
         snap = RunSnapshot(
             run_id="r1",

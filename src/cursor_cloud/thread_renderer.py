@@ -113,9 +113,10 @@ def render_thread_activity(
 
     if not lines:
         if snapshot.status.is_terminal:
-            lines.append("_done_")
-        else:
-            lines.append(THREAD_THINKING_INDICATOR)
+            # Clear activity chrome; the frozen final message carries the answer.
+            # Discord rejects empty message content, so use a zero-width space.
+            return "\u200b"
+        lines.append(THREAD_THINKING_INDICATOR)
 
     text = "\n".join(lines).strip()
     text, _ = truncate_message(text, limit=limit)
