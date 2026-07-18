@@ -293,6 +293,99 @@ class TestTracker(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(snap.status, RunStatus.FINISHED)
         self.assertIn("polled result", sink.updates[-1][0])
 
+    async def test_stream_unavailable_reconcile_miss_then_poll_recovers(self):
+        """Follow-up race: first GET after stream drop fails; later polls succeed."""
+        from cursor_cloud.errors import AgentRunError
+
+        class FakeClient:
+            def __init__(self):
+                self.polls = 0
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent("status", {"runId": "r1", "status": "RUNNING"})
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def get_run(self, agent_id, run_id):
+                self.polls += 1
+                if self.polls == 1:
+                    raise AgentRunError(
+                        "Run stream is no longer available",
+                        code="stream_unavailable",
+                    )
+                if self.polls < 4:
+                    return RunRecord(
+                        id=run_id,
+                        agent_id=agent_id,
+                        status=RunStatus.RUNNING,
+                    )
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="recovered after race",
+                )
+
+        sink = MemoryStatusSink()
+        tracker = RunTracker(
+            FakeClient(),
+            sink,
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        snap = await tracker.track("bc", "r1")
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertEqual(snap.result_text, "recovered after race")
+        self.assertNotIn("no longer available", sink.updates[-1][0])
+
+    async def test_stream_open_cloud_error_unavailable_polls(self):
+        """Stream open failure with stream-unavailable message must poll, not ERROR."""
+        from cursor_cloud.errors import AgentRunError
+
+        class FakeClient:
+            def __init__(self):
+                self.polls = 0
+
+            async def stream_run_with_fallback(self, *a, **k):
+                raise AgentRunError(
+                    "Run stream is no longer available",
+                    code="stream_unavailable",
+                )
+                yield  # make this an async generator  # noqa: RET503
+
+            async def get_run(self, agent_id, run_id):
+                self.polls += 1
+                if self.polls < 2:
+                    return RunRecord(
+                        id=run_id,
+                        agent_id=agent_id,
+                        status=RunStatus.RUNNING,
+                    )
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="from poll after open fail",
+                )
+
+        sink = MemoryStatusSink()
+        tracker = RunTracker(
+            FakeClient(),
+            sink,
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        snap = await tracker.track("bc", "r1")
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertIn("from poll after open fail", snap.result_text)
+
 
 class TestRunLog(unittest.IsolatedAsyncioTestCase):
     async def test_bounded_retention_and_history_render(self):

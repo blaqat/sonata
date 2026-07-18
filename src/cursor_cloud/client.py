@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator
 from typing import Any
 import httpx
@@ -21,6 +22,8 @@ from .errors import (
     ValidationError,
 )
 from .models import AgentRecord, ModelInfo, RunRecord, StreamEvent
+
+logger = logging.getLogger("sonata.cursor.client")
 
 
 def parse_sse_chunk(buffer: str) -> tuple[list[StreamEvent], str]:
@@ -414,6 +417,25 @@ class CursorCloudClient:
         data = response.json()
         return [ModelInfo.from_api(i) for i in data.get("items") or []]
 
+    @staticmethod
+    def _looks_like_stream_unavailable(exc: BaseException) -> bool:
+        code = str(getattr(exc, "code", "") or "").lower()
+        message = " ".join(
+            str(part)
+            for part in (exc, getattr(exc, "user_message", ""), getattr(exc, "message", ""))
+            if part
+        ).lower()
+        if code in {"stream_expired", "stream_unavailable", "gone"}:
+            return True
+        needles = (
+            "no longer available",
+            "stream expired",
+            "stream is no longer",
+            "stream unavailable",
+            "run stream is no longer",
+        )
+        return any(n in message for n in needles)
+
     async def stream_run(
         self,
         agent_id: str,
@@ -425,6 +447,12 @@ class CursorCloudClient:
         if last_event_id:
             headers["Last-Event-ID"] = last_event_id
 
+        logger.warning(
+            "cursor.stream_open agent=%s run=%s last_event_id=%s",
+            agent_id,
+            run_id,
+            last_event_id,
+        )
         try:
             response = await self._request(
                 "GET",
@@ -436,16 +464,30 @@ class CursorCloudClient:
                 timeout=self._stream_timeout(),
             )
         except StreamExpiredError:
+            logger.warning(
+                "cursor.stream_open_410 agent=%s run=%s last_event_id=%s",
+                agent_id,
+                run_id,
+                last_event_id,
+            )
             raise
-        except ValidationError as exc:
-            # Invalid Last-Event-ID — caller may retry without it.
-            raise exc
+        except CursorCloudError as exc:
+            logger.warning(
+                "cursor.stream_open_failed agent=%s run=%s http=%s code=%s msg=%r",
+                agent_id,
+                run_id,
+                getattr(exc, "status", None),
+                getattr(exc, "code", None),
+                (getattr(exc, "user_message", None) or str(exc))[:300],
+            )
+            raise
 
         # Consume via explicit anext/aclose so early consumer break (after
         # terminal `done`) does not leave httpcore's byte-stream aiter to
         # log "async generator ignored GeneratorExit".
         buffer = ""
         byte_iter = response.aiter_text()
+        event_count = 0
         try:
             while True:
                 try:
@@ -455,14 +497,51 @@ class CursorCloudClient:
                 buffer += chunk
                 events, buffer = parse_sse_chunk(buffer)
                 for event in events:
+                    event_count += 1
+                    if event.event in {"error", "result", "done"}:
+                        logger.warning(
+                            "cursor.sse_event agent=%s run=%s event=%s data=%r",
+                            agent_id,
+                            run_id,
+                            event.event,
+                            event.data,
+                        )
                     yield event
             if buffer.strip():
                 events, _ = parse_sse_chunk(buffer + "\n\n")
                 for event in events:
+                    event_count += 1
+                    if event.event in {"error", "result", "done"}:
+                        logger.warning(
+                            "cursor.sse_event agent=%s run=%s event=%s data=%r",
+                            agent_id,
+                            run_id,
+                            event.event,
+                            event.data,
+                        )
                     yield event
+            logger.warning(
+                "cursor.stream_closed agent=%s run=%s events=%s",
+                agent_id,
+                run_id,
+                event_count,
+            )
         except StreamExpiredError:
+            logger.warning(
+                "cursor.stream_mid_410 agent=%s run=%s events=%s",
+                agent_id,
+                run_id,
+                event_count,
+            )
             raise
         except httpx.HTTPError as exc:
+            logger.warning(
+                "cursor.stream_transport agent=%s run=%s events=%s err=%r",
+                agent_id,
+                run_id,
+                event_count,
+                str(exc)[:300],
+            )
             raise TransportError(str(exc)) from exc
         finally:
             with contextlib.suppress(Exception):
@@ -478,15 +557,39 @@ class CursorCloudClient:
         *,
         last_event_id: str | None = None,
     ) -> AsyncIterator[StreamEvent]:
-        """Stream events; on 410 fall back to a synthetic result from GET run."""
+        """Stream events; on stream-gone fall back to GET run / pollable error."""
         try:
             async for event in self.stream_run(
                 agent_id, run_id, last_event_id=last_event_id
             ):
                 yield event
             return
-        except StreamExpiredError:
+        except StreamExpiredError as exc:
+            logger.warning(
+                "cursor.stream_fallback_get agent=%s run=%s reason=410 msg=%r",
+                agent_id,
+                run_id,
+                (exc.user_message or str(exc))[:300],
+            )
             run = await self.get_run(agent_id, run_id)
+            logger.warning(
+                "cursor.stream_fallback_status agent=%s run=%s status=%s has_result=%s",
+                agent_id,
+                run_id,
+                run.status.value,
+                bool(run.result),
+            )
+            # If the run is still active, surface a stream-unavailable error so
+            # RunTracker polls instead of treating a synthetic result as done.
+            if not run.status.is_terminal:
+                yield StreamEvent(
+                    event="error",
+                    data={
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+                return
             payload: dict[str, Any] = {
                 "runId": run.id,
                 "status": run.status.value,
@@ -500,10 +603,37 @@ class CursorCloudClient:
             yield StreamEvent(event="result", data=payload)
             yield StreamEvent(event="done", data={})
         except ValidationError as exc:
+            # Must run before CursorCloudError (ValidationError subclasses it).
             if last_event_id and (
                 "last_event" in str(exc).lower() or "invalid_last_event" in (exc.code or "")
             ):
+                logger.warning(
+                    "cursor.stream_retry_without_last_event agent=%s run=%s",
+                    agent_id,
+                    run_id,
+                )
                 async for event in self.stream_run(agent_id, run_id, last_event_id=None):
                     yield event
+                return
+            raise
+        except CursorCloudError as exc:
+            if self._looks_like_stream_unavailable(exc):
+                logger.warning(
+                    "cursor.stream_open_as_unavailable agent=%s run=%s "
+                    "http=%s code=%s msg=%r — yielding stream_unavailable",
+                    agent_id,
+                    run_id,
+                    getattr(exc, "status", None),
+                    getattr(exc, "code", None),
+                    (exc.user_message or str(exc))[:300],
+                )
+                yield StreamEvent(
+                    event="error",
+                    data={
+                        "code": "stream_unavailable",
+                        "message": exc.user_message
+                        or "Run stream is no longer available",
+                    },
+                )
                 return
             raise

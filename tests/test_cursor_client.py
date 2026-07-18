@@ -170,6 +170,46 @@ class TestCursorClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events[0].data["text"], "done")
         self.assertEqual(events[-1].event, "done")
 
+    async def test_stream_410_while_running_yields_unavailable(self):
+        expired = self._resp(410, {"code": "stream_expired", "message": "gone"})
+        expired.aread = AsyncMock()
+        self.http.build_request = MagicMock(return_value=MagicMock())
+        self.http.send = AsyncMock(return_value=expired)
+        self.http.request = AsyncMock(
+            return_value=self._resp(
+                200,
+                {
+                    "id": "run-1",
+                    "agentId": "bc-1",
+                    "status": "RUNNING",
+                },
+            )
+        )
+        events = []
+        async for ev in self.client.stream_run_with_fallback("bc-1", "run-1"):
+            events.append(ev)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "error")
+        self.assertEqual(events[0].data["code"], "stream_unavailable")
+
+    async def test_stream_open_unavailable_message_yields_error_event(self):
+        bad = self._resp(
+            404,
+            {
+                "code": "not_found",
+                "message": "Run stream is no longer available",
+            },
+        )
+        bad.aread = AsyncMock()
+        self.http.build_request = MagicMock(return_value=MagicMock())
+        self.http.send = AsyncMock(return_value=bad)
+        events = []
+        async for ev in self.client.stream_run_with_fallback("bc-1", "run-1"):
+            events.append(ev)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "error")
+        self.assertEqual(events[0].data["code"], "stream_unavailable")
+
     async def test_cancel_not_retried_as_mutation(self):
         self.http.request = AsyncMock(
             return_value=self._resp(500, {"message": "boom"})

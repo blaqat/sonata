@@ -1241,6 +1241,12 @@ async def _launch_run(
                         if agent_display_name
                         else None
                     )
+                    logger.warning(
+                        "cursor.launch_create_agent scope=%s force_new=%s model=%s",
+                        scope,
+                        force_new,
+                        model or cfg.default_model,
+                    )
                     agent, run = await client.create_agent(
                         prompt_text,
                         images=api_images or None,
@@ -1259,6 +1265,12 @@ async def _launch_run(
                             ),
                             code="missing_run_id",
                         )
+                    logger.warning(
+                        "cursor.launch_agent_created agent=%s run=%s status=%s",
+                        agent.id,
+                        run.id,
+                        getattr(run.status, "value", run.status),
+                    )
                     session_name = (agent.name or suggested_name or "").strip()
                     session = AgentSession(
                         scope=scope,
@@ -1288,6 +1300,22 @@ async def _launch_run(
                             status_msg.channel, agent.name or suggested_name
                         )
                 else:
+                    existing_tracker = _STATE["trackers"].get(agent_id)
+                    prior_session = await sessions.get_session(scope, agent_id)
+                    prior_status = None
+                    if prior_session is not None:
+                        prior_status = getattr(
+                            prior_session.latest_run_status,
+                            "value",
+                            prior_session.latest_run_status,
+                        )
+                    logger.warning(
+                        "cursor.launch_create_run agent=%s prior_status=%s "
+                        "tracker_alive=%s",
+                        agent_id,
+                        prior_status,
+                        bool(existing_tracker and not existing_tracker.done()),
+                    )
                     run = await client.create_run(
                         agent_id, prompt_text, images=api_images or None
                     )
@@ -1302,6 +1330,12 @@ async def _launch_run(
                     session.summary = prompt_text[:200]
                     session.last_meaningful_activity_at = utcnow()
                     await sessions.upsert(session)
+                    logger.warning(
+                        "cursor.launch_run_created agent=%s run=%s status=%s",
+                        agent_id,
+                        run.id,
+                        getattr(run.status, "value", run.status),
+                    )
             except BusyRunError:
                 if grant_consumed and grant is not None:
                     await _access().mark_submit_failed_after_consume(grant)
@@ -1406,6 +1440,12 @@ async def _launch_run(
 
         async def _runner():
             try:
+                logger.warning(
+                    "cursor.tracker_task_start agent=%s run=%s status=%s",
+                    session.agent_id,
+                    session.latest_run_id,
+                    getattr(session.latest_run_status, "value", session.latest_run_status),
+                )
                 snap = await tracker.track(
                     session.agent_id,
                     session.latest_run_id,
@@ -1422,9 +1462,23 @@ async def _launch_run(
                             for g in branches
                         ]
                 await sessions.upsert(session)
+                logger.warning(
+                    "cursor.tracker_task_end agent=%s run=%s status=%s err=%r",
+                    session.agent_id,
+                    session.latest_run_id,
+                    getattr(snap.status, "value", snap.status),
+                    (snap.error_message or "")[:200],
+                )
             finally:
                 _STATE["trackers"].pop(session.agent_id, None)
 
+        prior = _STATE["trackers"].get(session.agent_id)
+        if prior is not None and not prior.done():
+            logger.warning(
+                "cursor.tracker_overwrite agent=%s run=%s prior_alive=True",
+                session.agent_id,
+                session.latest_run_id,
+            )
         _STATE["trackers"][session.agent_id] = asyncio.create_task(_runner())
     return session
 
