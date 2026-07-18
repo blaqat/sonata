@@ -3129,7 +3129,25 @@ async def cursor_sessions(ctx: discord.ApplicationContext):
     if await _gate(interaction, "sessions") is None:
         return
     scope = _scope_from_interaction(interaction)
-    items = await _sessions().list_sessions(scope)
+    sessions = _sessions()
+    items = list(await sessions.list_sessions(scope))
+    # Thread-bound sessions live under the thread channel id, so they are
+    # invisible from the parent channel unless we also surface them here.
+    seen = {s.agent_id for s in items}
+    try:
+        for s in await sessions.all_sessions():
+            if s.agent_id in seen:
+                continue
+            if s.owner_id != scope.user_id:
+                continue
+            if s.scope.guild_id != scope.guild_id:
+                continue
+            if not s.thread_bound:
+                continue
+            items.append(s)
+            seen.add(s.agent_id)
+    except Exception:
+        logger.debug("Failed listing cross-channel thread sessions", exc_info=True)
     if not items:
         await _ephemeral(interaction, "No owned sessions in this channel.")
         return
@@ -3137,6 +3155,9 @@ async def cursor_sessions(ctx: discord.ApplicationContext):
     for s in items:
         mark = " (active)" if s.active else ""
         run = f" run `{s.latest_run_id}`" if s.latest_run_id else ""
+        thread = ""
+        if s.thread_bound:
+            thread = f" thread `<#{s.scope.channel_id}>`"
         git_bits = []
         for item in list(s.latest_git or [])[:2]:
             if item.get("branch"):
@@ -3144,7 +3165,7 @@ async def cursor_sessions(ctx: discord.ApplicationContext):
         git = f" git `{', '.join(git_bits)}`" if git_bits else ""
         lines.append(
             f"- `{s.agent_id}` {redact_untrusted(s.name)[:40]} "
-            f"[{s.latest_run_status.value}]{run}{git}{mark}"
+            f"[{s.latest_run_status.value}]{run}{thread}{git}{mark}"
         )
     await _ephemeral(interaction, "\n".join(lines)[:2000])
 

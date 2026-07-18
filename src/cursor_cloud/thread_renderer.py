@@ -80,6 +80,7 @@ def render_thread_activity(
     """Editable in-flight Activity: thinking + grouped tools only (no run/git chrome)."""
     del agent_name  # unused — kept for call-site compatibility with classic sink
     lines: list[str] = []
+    has_live_progress = False
 
     if snapshot.error_message and snapshot.status == RunStatus.ERROR:
         lines.append("### Error")
@@ -90,17 +91,20 @@ def render_thread_activity(
         if peek:
             lines.append("### Thinking")
             lines.append(peek)
+            has_live_progress = True
 
     tools = list(snapshot.tools[-12:])
     if tools:
         lines.append("### Activity")
         lines.extend(_coalesce_tools(tools))
+        has_live_progress = True
 
     if snapshot.status.is_active and snapshot.assistant_text:
         peek = redact_untrusted(snapshot.assistant_text.strip())[-200:]
         if peek:
             lines.append("")
             lines.append(f"_Draft…_ {peek}")
+            has_live_progress = True
 
     if skipped_images:
         lines.append("")
@@ -117,6 +121,9 @@ def render_thread_activity(
             # Discord rejects empty message content, so use a zero-width space.
             return "\u200b"
         lines.append(THREAD_THINKING_INDICATOR)
+    elif snapshot.status.is_active and not has_live_progress:
+        # Ancillary notes alone (e.g. skipped images) must not look like a dead pause.
+        lines.insert(0, THREAD_THINKING_INDICATOR)
 
     text = "\n".join(lines).strip()
     text, _ = truncate_message(text, limit=limit)

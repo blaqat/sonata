@@ -170,6 +170,20 @@ class TestThreadRenderer(unittest.TestCase):
         text = render_thread_activity(snap)
         self.assertEqual(text, THREAD_THINKING_INDICATOR)
 
+    def test_activity_images_only_still_shows_thinking(self):
+        """Skipped-image notes alone must not look like a dead pause."""
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.RUNNING,
+        )
+        text = render_thread_activity(
+            snap, skipped_images=["duplicate: screenshot.png"]
+        )
+        self.assertIn(THREAD_THINKING_INDICATOR, text)
+        self.assertIn("### Images", text)
+        self.assertIn("duplicate:", text)
+
     def test_activity_terminal_does_not_say_done(self):
         snap = RunSnapshot(
             run_id="r1",
@@ -233,10 +247,14 @@ class TestThreadTranslate(unittest.TestCase):
             cfg = kwargs.get("config") or {}
             self.assertEqual(cfg.get("instructions"), DEFAULT_SONA_INSTRUCTIONS)
             self.assertFalse(cfg.get("agent"))
-            self.assertIn("No punctuation AT ALL", cfg.get("instructions") or "")
-            self.assertIn("Do NOT run commands", cfg.get("instructions") or "")
-            self.assertNotIn("Command Guidelines", cfg.get("instructions") or "")
-            self.assertNotIn("Command List:", cfg.get("instructions") or "")
+            instr = cfg.get("instructions") or ""
+            self.assertIn("Do NOT run commands", instr)
+            self.assertIn("smart aleck", instr.lower())
+            # Thread finals must not inherit ultra-short chat brevity caps.
+            self.assertNotIn("7 words max", instr)
+            self.assertNotIn("No punctuation AT ALL", instr)
+            self.assertNotIn("Command Guidelines", instr)
+            self.assertNotIn("Command List:", instr)
             return "hey — fixed the bug with a grin"
 
         out = translate_thread_final_for_sona(
