@@ -543,6 +543,29 @@ class TestSessionThreadFieldsCompat(unittest.TestCase):
 
 
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
+    async def test_interaction_shim_does_not_patch_channel_send(self):
+        """Regression: followup must not alias/overwrite channel.send (RecursionError)."""
+        mod = load_cursor_plugin()
+        channel = MagicMock()
+        channel.id = 100
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=1))
+        original_send = channel.send
+        message = SimpleNamespace(
+            id=42,
+            author=SimpleNamespace(id=int(T2), roles=[]),
+            guild=SimpleNamespace(id=1),
+            channel=channel,
+        )
+        shim = mod._interaction_shim_from_message(message)
+        self.assertIs(channel.send, original_send)
+        self.assertIsNot(shim.followup, channel)
+        await shim.followup.send("hello")
+        original_send.assert_awaited_once()
+        # Calling followup must not turn channel.send into followup.send.
+        self.assertIs(channel.send, original_send)
+        await channel.send("direct")
+        self.assertEqual(original_send.await_count, 2)
+
     async def test_create_thread_from_starter_message(self):
         mod = load_cursor_plugin()
         starter = MagicMock()

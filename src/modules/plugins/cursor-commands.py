@@ -2488,7 +2488,11 @@ def _thread_idle_note() -> str:
 
 
 def _interaction_shim_from_message(message: discord.Message):
-    """Minimal interaction-like object for message-driven Cursor launches."""
+    """Minimal interaction-like object for message-driven Cursor launches.
+
+    Important: do **not** monkey-patch ``message.channel.send`` — that used to
+    recurse forever when followup.send aliased the channel itself.
+    """
 
     class _Resp:
         def __init__(self):
@@ -2503,6 +2507,19 @@ def _interaction_shim_from_message(message: discord.Message):
         async def defer(self, **k):
             return None
 
+    # Capture the bound send once. Never assign followup = channel then overwrite
+    # channel.send — that recurses (followup.send -> channel.send -> followup.send).
+    _channel_send = message.channel.send
+
+    class _Followup:
+        async def send(self, content, **kwargs):
+            kwargs.pop("wait", None)
+            kwargs.pop("ephemeral", None)
+            return await _channel_send(
+                content,
+                allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
+            )
+
     class _Shim:
         def __init__(self):
             self.user = message.author
@@ -2512,25 +2529,14 @@ def _interaction_shim_from_message(message: discord.Message):
             self.guild = message.guild
             self.client = _STATE.get("bot")
             self.response = _Resp()
-            self.followup = message.channel
+            self.followup = _Followup()
             self.id = message.id
             self._msg = None
 
         async def original_response(self):
             return self._msg
 
-    shim = _Shim()
-
-    async def _followup_send(content, **kwargs):
-        kwargs.pop("wait", None)
-        kwargs.pop("ephemeral", None)
-        return await message.channel.send(
-            content,
-            allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
-        )
-
-    shim.followup.send = _followup_send  # type: ignore
-    return shim
+    return _Shim()
 
 
 async def _create_public_agent_thread(
