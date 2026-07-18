@@ -2035,7 +2035,7 @@ async def handle_component(interaction: discord.Interaction) -> bool:
                         "Approved but launch failed unexpectedly. "
                         "Ask the requester to retry `/cursor run` or `$agent`.",
                     )
-            elif request.approval_message_id and interaction.message:
+            elif interaction.message:
                 try:
                     await interaction.message.edit(
                         content=f"### Approval {request.decision.value}\nRequest `{request.request_id}`",

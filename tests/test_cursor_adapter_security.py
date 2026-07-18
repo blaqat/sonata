@@ -16,7 +16,12 @@ sys.path.insert(0, str(ROOT / "src"))
 from cursor_cloud.access import AccessController, ImageRetentionStore, MemoryAccessStore
 from cursor_cloud.config import load_cursor_config
 from cursor_cloud.context import metas_from_images, metas_match
-from cursor_cloud.errors import AuthorizationError, ConfigurationError, ValidationError
+from cursor_cloud.errors import (
+    AuthorizationError,
+    ConfigurationError,
+    StaleStateError,
+    ValidationError,
+)
 from cursor_cloud.models import (
     AccessTier,
     AgentSession,
@@ -376,6 +381,115 @@ class TestImageMetaMatch(unittest.IsolatedAsyncioTestCase):
         }
         with self.assertRaises(ValidationError):
             await mod._rehydrate_pending_images(pending)
+
+
+class TestApprovalDecisionOverride(unittest.IsolatedAsyncioTestCase):
+    def _envelope(self, requester=T2, channel="2"):
+        return RunRequestEnvelope(
+            requester_id=requester,
+            scope=ScopeKey("1", channel, requester),
+            prompt_text="p",
+            model="m",
+            repository_url="https://github.com/o/r",
+            starting_ref="main",
+            agent_id=None,
+            is_follow_up=False,
+        )
+
+    async def test_deny_after_approve_once_overrides(self):
+        access = AccessController(_cfg(), MemoryAccessStore())
+        req = await access.create_approval_request(
+            self._envelope(), prompt_preview="p", images=[]
+        )
+        approved = await access.decide_request(GOD, req.request_id, mode="once")
+        self.assertEqual(approved.decision, ApprovalDecision.APPROVED_ONCE)
+        old_grant = await access.store.get_grant(approved.grant_id)
+        self.assertFalse(old_grant.revoked)
+
+        denied = await access.decide_request(GOD, req.request_id, mode="deny")
+        self.assertEqual(denied.decision, ApprovalDecision.DENIED)
+        old_grant = await access.store.get_grant(approved.grant_id)
+        self.assertTrue(old_grant.revoked)
+
+    async def test_once_to_timed_replaces_unused_grant(self):
+        access = AccessController(_cfg(), MemoryAccessStore())
+        req = await access.create_approval_request(
+            self._envelope(), prompt_preview="p", images=[]
+        )
+        once = await access.decide_request(GOD, req.request_id, mode="once")
+        old_gid = once.grant_id
+        timed = await access.decide_request(
+            GOD, req.request_id, mode="timed", minutes=10
+        )
+        self.assertEqual(timed.decision, ApprovalDecision.APPROVED_TIMED)
+        self.assertEqual(timed.grant_minutes, 10)
+        self.assertNotEqual(timed.grant_id, old_gid)
+        old_grant = await access.store.get_grant(old_gid)
+        self.assertTrue(old_grant.revoked)
+        new_grant = await access.store.get_grant(timed.grant_id)
+        self.assertEqual(new_grant.kind, "timed")
+        self.assertFalse(new_grant.revoked)
+
+    async def test_timed_to_once_replaces_unused_grant(self):
+        access = AccessController(_cfg(), MemoryAccessStore())
+        req = await access.create_approval_request(
+            self._envelope(), prompt_preview="p", images=[]
+        )
+        timed = await access.decide_request(
+            GOD, req.request_id, mode="timed", minutes=10
+        )
+        old_gid = timed.grant_id
+        once = await access.decide_request(GOD, req.request_id, mode="once")
+        self.assertEqual(once.decision, ApprovalDecision.APPROVED_ONCE)
+        self.assertIsNone(once.grant_minutes)
+        self.assertNotEqual(once.grant_id, old_gid)
+        self.assertTrue((await access.store.get_grant(old_gid)).revoked)
+
+    async def test_consumed_cannot_be_overridden(self):
+        access = AccessController(_cfg(), MemoryAccessStore())
+        env = self._envelope()
+        req = await access.create_approval_request(env, prompt_preview="p", images=[])
+        approved = await access.decide_request(GOD, req.request_id, mode="once")
+        grant = await access.store.get_grant(approved.grant_id)
+        await access.consume_grant_for_submit(grant, env)
+        reloaded = await access.store.get_request(req.request_id)
+        self.assertEqual(reloaded.decision, ApprovalDecision.CONSUMED)
+        with self.assertRaises(StaleStateError) as ctx:
+            await access.decide_request(GOD, req.request_id, mode="deny")
+        self.assertIn("already consumed", ctx.exception.user_message.lower())
+
+    async def test_decisions_are_per_request_id(self):
+        access = AccessController(_cfg(), MemoryAccessStore())
+        req_a = await access.create_approval_request(
+            self._envelope(channel="2"), prompt_preview="a", images=[]
+        )
+        req_b = await access.create_approval_request(
+            self._envelope(channel="3"), prompt_preview="b", images=[]
+        )
+        await access.decide_request(GOD, req_a.request_id, mode="once")
+        await access.decide_request(GOD, req_b.request_id, mode="deny")
+        a = await access.store.get_request(req_a.request_id)
+        b = await access.store.get_request(req_b.request_id)
+        self.assertEqual(a.decision, ApprovalDecision.APPROVED_ONCE)
+        self.assertEqual(b.decision, ApprovalDecision.DENIED)
+        # Override only A — B stays denied and cannot be re-approved.
+        await access.decide_request(GOD, req_a.request_id, mode="deny")
+        a = await access.store.get_request(req_a.request_id)
+        b = await access.store.get_request(req_b.request_id)
+        self.assertEqual(a.decision, ApprovalDecision.DENIED)
+        self.assertEqual(b.decision, ApprovalDecision.DENIED)
+        with self.assertRaises(StaleStateError):
+            await access.decide_request(GOD, req_b.request_id, mode="once")
+
+    async def test_denied_is_terminal(self):
+        access = AccessController(_cfg(), MemoryAccessStore())
+        req = await access.create_approval_request(
+            self._envelope(), prompt_preview="p", images=[]
+        )
+        await access.decide_request(GOD, req.request_id, mode="deny")
+        with self.assertRaises(StaleStateError) as ctx:
+            await access.decide_request(GOD, req.request_id, mode="once")
+        self.assertIn("already denied", ctx.exception.user_message.lower())
 
 
 class TestPendingPersistence(unittest.IsolatedAsyncioTestCase):

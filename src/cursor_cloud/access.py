@@ -502,6 +502,42 @@ class AccessController:
             )
             return request
 
+    async def _revoke_unused_request_grant(
+        self, request: ApprovalRequest
+    ) -> None:
+        """Revoke an unused grant on a request, or fail if already consumed.
+
+        Acquires the grant lock under the caller's request lock so a concurrent
+        ``consume_grant_for_submit`` cannot race an override into a launched run.
+        """
+        if not request.grant_id:
+            return
+        grant_lock = self.store.lock_for(f"grant:{request.grant_id}")
+        async with grant_lock:
+            # Re-check request — consume may have terminalized it without the
+            # request lock while we waited for the grant lock.
+            current = await self.store.get_request(request.request_id)
+            if current is None:
+                raise StaleStateError(user_message="Approval request not found.")
+            if current.decision == ApprovalDecision.CONSUMED:
+                raise StaleStateError(
+                    user_message=(
+                        "Cannot change decision after the run was launched."
+                    )
+                )
+            grant = await self.store.get_grant(request.grant_id)
+            if grant is None:
+                return
+            if grant.consumed:
+                raise StaleStateError(
+                    user_message=(
+                        "Cannot change decision after the run was launched."
+                    )
+                )
+            if not grant.revoked:
+                grant.revoked = True
+                await self.store.save_grant(grant)
+
     async def decide_request(
         self,
         actor_id: str | int,
@@ -510,6 +546,12 @@ class AccessController:
         mode: str,
         minutes: int | None = None,
     ) -> ApprovalRequest:
+        """Record or override an approval decision for one request_id.
+
+        Last actionable decision wins on the same request: Approve once /
+        Approve timed / Deny may supersede a prior unused approval. Terminal
+        states (consumed/denied/expired/revoked) and consumed grants fail closed.
+        """
         await self.require_approver(actor_id)
         lock = self.store.lock_for(f"request:{request_id}")
         async with lock:
@@ -517,29 +559,64 @@ class AccessController:
             if request is None:
                 raise StaleStateError(user_message="Approval request not found.")
             now = utcnow()
-            if request.decision != ApprovalDecision.PENDING:
+            if request.decision in {
+                ApprovalDecision.DENIED,
+                ApprovalDecision.EXPIRED,
+                ApprovalDecision.CONSUMED,
+                ApprovalDecision.REVOKED,
+            }:
+                raise StaleStateError(
+                    user_message=f"Request already {request.decision.value}."
+                )
+            if request.decision not in {
+                ApprovalDecision.PENDING,
+                ApprovalDecision.APPROVED_ONCE,
+                ApprovalDecision.APPROVED_TIMED,
+            }:
                 raise StaleStateError(
                     user_message=f"Request already {request.decision.value}."
                 )
             if request.expires_at and now >= request.expires_at:
+                if request.decision != ApprovalDecision.PENDING:
+                    await self._revoke_unused_request_grant(request)
                 request.decision = ApprovalDecision.EXPIRED
                 request.decided_at = now
                 await self.store.save_request(request)
                 await self.images.discard(request.request_id)
                 raise StaleStateError(user_message="Approval request expired.")
 
+            prior_decision = request.decision
+            # Superseding a prior unused approval: revoke old grant first.
+            if prior_decision in {
+                ApprovalDecision.APPROVED_ONCE,
+                ApprovalDecision.APPROVED_TIMED,
+            }:
+                await self._revoke_unused_request_grant(request)
+                request = await self.store.get_request(request_id)
+                if request is None:
+                    raise StaleStateError(user_message="Approval request not found.")
+                if request.decision == ApprovalDecision.CONSUMED:
+                    raise StaleStateError(
+                        user_message=(
+                            "Cannot change decision after the run was launched."
+                        )
+                    )
+
             mode_norm = str(mode).lower().strip()
             if mode_norm in {"deny", "denied"}:
                 request.decision = ApprovalDecision.DENIED
                 request.decided_at = now
                 request.decided_by = str(actor_id)
+                request.grant_minutes = None
                 await self.store.save_request(request)
                 await self.images.discard(request.request_id)
                 await self._audit(
                     actor_id,
                     "approval_denied",
                     target_id=request_id,
-                    detail={},
+                    detail={
+                        "prior_decision": prior_decision.value,
+                    },
                 )
                 return request
 
@@ -557,6 +634,7 @@ class AccessController:
                 await self.store.save_grant(grant)
                 request.decision = ApprovalDecision.APPROVED_ONCE
                 request.grant_id = grant.grant_id
+                request.grant_minutes = None
                 request.decided_at = now
                 request.decided_by = str(actor_id)
                 await self.store.save_request(request)
