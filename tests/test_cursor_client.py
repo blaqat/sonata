@@ -271,6 +271,22 @@ class TestCursorClient(unittest.IsolatedAsyncioTestCase):
             await self.client.create_agent("do thing")
         self.assertEqual(ctx.exception.code, "missing_run_id")
 
+    async def test_get_run_retries_not_found(self):
+        missing = self._resp(404, {"message": "Run not found"})
+        ok = self._resp(
+            200,
+            {"id": "run-1", "agentId": "bc-1", "status": "RUNNING"},
+        )
+        self.http.request = AsyncMock(side_effect=[missing, ok])
+        with patch("cursor_cloud.client.asyncio.sleep", new=AsyncMock()):
+            run = await self.client.get_run("bc-1", "run-1", retries=2, retry_delay_s=0)
+        self.assertEqual(run.id, "run-1")
+        self.assertEqual(self.http.request.await_count, 2)
+
+    async def test_get_run_empty_id_raises(self):
+        with self.assertRaises(ValidationError):
+            await self.client.get_run("bc-1", "")
+
 
 class TestReferenceFetchResilience(unittest.IsolatedAsyncioTestCase):
     async def test_get_next_reference_deleted_message_returns_none(self):

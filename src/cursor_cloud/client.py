@@ -314,8 +314,22 @@ class CursorCloudClient:
             "POST", f"/v1/agents/{agent_id}/runs", json_body=body
         )
         data = response.json()
-        run_data = data.get("run") or data
-        return RunRecord.from_api(run_data)
+        run_data = data.get("run") if isinstance(data.get("run"), dict) else data
+        if not isinstance(run_data, dict):
+            run_data = {}
+        run = RunRecord.from_api(run_data)
+        if not run.id:
+            raise ValidationError(
+                "create_run response missing run id",
+                user_message=(
+                    "Cursor accepted the follow-up but no run id was returned. "
+                    "Try again in a moment."
+                ),
+                code="missing_run_id",
+            )
+        if not run.agent_id:
+            run.agent_id = agent_id
+        return run
 
     async def get_agent(self, agent_id: str) -> AgentRecord:
         response = await self._request(
@@ -336,13 +350,56 @@ class CursorCloudClient:
         items = [AgentRecord.from_api(i) for i in data.get("items") or []]
         return items, data.get("nextCursor")
 
-    async def get_run(self, agent_id: str, run_id: str) -> RunRecord:
-        response = await self._request(
-            "GET",
-            f"/v1/agents/{agent_id}/runs/{run_id}",
-            idempotent=True,
-        )
-        return RunRecord.from_api(response.json())
+    @staticmethod
+    def _is_run_not_found(exc: Exception) -> bool:
+        text = " ".join(
+            str(part)
+            for part in (
+                exc,
+                getattr(exc, "user_message", ""),
+                getattr(exc, "code", ""),
+            )
+            if part
+        ).lower()
+        return "not found" in text or "404" in text
+
+    async def get_run(
+        self,
+        agent_id: str,
+        run_id: str,
+        *,
+        retries: int = 4,
+        retry_delay_s: float = 0.6,
+    ) -> RunRecord:
+        """GET run, retrying briefly on not-found (create can race read)."""
+        if not run_id:
+            raise ValidationError(
+                "missing run id",
+                user_message="No Cursor run id to fetch.",
+                code="missing_run_id",
+            )
+        last_exc: Exception | None = None
+        attempts = max(1, int(retries) + 1)
+        for attempt in range(attempts):
+            try:
+                response = await self._request(
+                    "GET",
+                    f"/v1/agents/{agent_id}/runs/{run_id}",
+                    idempotent=True,
+                )
+                run = RunRecord.from_api(response.json())
+                if not run.id:
+                    run.id = run_id
+                if not run.agent_id:
+                    run.agent_id = agent_id
+                return run
+            except CursorCloudError as exc:
+                last_exc = exc
+                if attempt + 1 >= attempts or not self._is_run_not_found(exc):
+                    raise
+                await asyncio.sleep(retry_delay_s * (attempt + 1))
+        assert last_exc is not None
+        raise last_exc
 
     async def cancel_run(self, agent_id: str, run_id: str) -> str:
         response = await self._request(

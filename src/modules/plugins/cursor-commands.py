@@ -2024,7 +2024,17 @@ async def handle_component(interaction: discord.Interaction) -> bool:
             )
             if request.decision.value.startswith("approved"):
                 # Auto-launch for the requester using retained images.
-                await _launch_approved_request(interaction, request)
+                # Launch failures must not surface as "Could not process that control"
+                # — decision already stuck; report launch errors explicitly.
+                try:
+                    await _launch_approved_request(interaction, request)
+                except Exception:
+                    logger.exception("Cursor approved launch crashed after decision")
+                    await _ephemeral(
+                        interaction,
+                        "Approved but launch failed unexpectedly. "
+                        "Ask the requester to retry `/cursor run` or `$agent`.",
+                    )
             elif request.approval_message_id and interaction.message:
                 try:
                     await interaction.message.edit(
@@ -2141,93 +2151,74 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
         )
         return
 
-    grant = None
-    if request.grant_id:
-        grant = await access.store.get_grant(request.grant_id)
-        if grant is not None and (grant.revoked or (grant.kind == "once" and grant.consumed)):
-            await _ephemeral(interaction, "Request already used or expired.")
+    try:
+        grant = None
+        if request.grant_id:
+            grant = await access.store.get_grant(request.grant_id)
+            if grant is not None and (
+                grant.revoked or (grant.kind == "once" and grant.consumed)
+            ):
+                await _ephemeral(interaction, "Request already used or expired.")
+                return
+
+        channel = await _resolve_discord_channel(
+            interaction.guild,
+            interaction.client,
+            envelope.scope.channel_id,
+        )
+        if channel is None:
+            channel = interaction.channel
+        if channel is None:
+            await _ephemeral(
+                interaction,
+                "Approved but could not resolve the target channel to launch.",
+            )
             return
 
-    channel = (
-        interaction.guild.get_channel(int(envelope.scope.channel_id))
-        if interaction.guild
-        else None
-    )
-    if channel is None:
-        try:
-            channel = await interaction.client.fetch_channel(int(envelope.scope.channel_id))
-        except Exception:
-            channel = interaction.channel
-
-    class _FakeInteraction:
-        def __init__(self):
-            self.user = type("U", (), {"id": int(envelope.requester_id), "roles": []})()
-            self.guild_id = int(envelope.scope.guild_id)
-            self.channel_id = int(envelope.scope.channel_id)
-            self.channel = channel
-            self.guild = interaction.guild
-            self.client = interaction.client
-            self.response = _Resp()
-            self.followup = channel
-            self._msg = None
-
-        async def original_response(self):
-            return self._msg
-
-    class _Resp:
-        def __init__(self):
-            self._done = False
-
-        def is_done(self):
-            return self._done
-
-        async def send_message(self, content, **kwargs):
-            self._done = True
-            msg = await channel.send(content, allowed_mentions=CONTENT_MENTIONS)
-            fake._msg = msg
-            return msg
-
-        async def defer(self, **kwargs):
-            self._done = True
-
-    fake = _FakeInteraction()
-
-    async def _followup_send(content, **kwargs):
-        kwargs.pop("wait", False)
-        msg = await channel.send(
-            content,
-            allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
+        # Same pattern as `_interaction_shim_from_message`: never alias followup to
+        # the channel and overwrite `.send` (RecursionError → broken Approve buttons).
+        fake = _interaction_shim_for_channel(
+            channel,
+            user_id=envelope.requester_id,
+            guild_id=envelope.scope.guild_id,
+            guild=interaction.guild,
+            client=interaction.client,
         )
-        fake._msg = msg
-        return msg
 
-    fake.followup.send = _followup_send  # type: ignore
+        sessions = _sessions()
+        active = await sessions.get_active(scope)
+        # Prefer request-carried thread metadata (first /cursor new approval has no
+        # session yet), then fall back to an existing bound active session.
+        thread_bound = bool(request.thread_bound or (active and active.thread_bound))
+        parent_channel_id = (
+            request.parent_channel_id
+            or (active.parent_channel_id if active else None)
+        )
+        pol_ch = resolve_policy_channel_id(
+            channel_id=scope.channel_id,
+            session=active,
+            parent_channel_id=parent_channel_id,
+        )
+        status_msg = None
+        status_message_id = request.status_message_id or (
+            active.status_message_id if active else None
+        )
+        status_channel_id = request.status_channel_id or (
+            active.status_channel_id if active else None
+        )
+        if thread_bound and status_message_id:
+            status_channel = channel
+            if status_channel_id and str(status_channel_id) != str(channel.id):
+                status_channel = await _resolve_discord_channel(
+                    interaction.guild,
+                    interaction.client,
+                    status_channel_id,
+                ) or channel
+            try:
+                status_msg = await status_channel.fetch_message(int(status_message_id))
+            except Exception:
+                status_msg = None
 
-    sessions = _sessions()
-    active = await sessions.get_active(scope)
-    # Prefer request-carried thread metadata (first /cursor new approval has no
-    # session yet), then fall back to an existing bound active session.
-    thread_bound = bool(request.thread_bound or (active and active.thread_bound))
-    parent_channel_id = (
-        request.parent_channel_id
-        or (active.parent_channel_id if active else None)
-    )
-    pol_ch = resolve_policy_channel_id(
-        channel_id=scope.channel_id,
-        session=active,
-        parent_channel_id=parent_channel_id,
-    )
-    status_msg = None
-    status_message_id = request.status_message_id or (
-        active.status_message_id if active else None
-    )
-    if thread_bound and status_message_id:
-        try:
-            status_msg = await channel.fetch_message(int(status_message_id))
-        except Exception:
-            status_msg = None
-
-    try:
         # Final auth check immediately before submit (inside _launch_run too).
         await _revalidate_run_auth(
             user_id=envelope.requester_id,
@@ -2281,13 +2272,11 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
         )
     except Exception as exc:
         logger.exception("Approved launch failed")
-        try:
-            await interaction.followup.send(
-                f"Approved but launch failed: {getattr(exc, 'user_message', exc)}",
-                ephemeral=True,
-            )
-        except Exception:
-            pass
+        detail = getattr(exc, "user_message", None) or str(exc)
+        await _ephemeral(
+            interaction,
+            f"Approved but launch failed: {detail}"[:2000],
+        )
 
 
 async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> None:
@@ -2681,29 +2670,62 @@ async def _maybe_rename_thread(channel, title: str | None) -> None:
         logger.debug("Could not rename Cursor thread to %r", name, exc_info=True)
 
 
-def _interaction_shim_from_message(message: discord.Message):
-    """Minimal interaction-like object for message-driven Cursor launches.
+async def _resolve_discord_channel(guild, client, channel_id: str | int):
+    """Resolve a channel or thread id (guild cache often misses threads)."""
+    try:
+        cid = int(channel_id)
+    except (TypeError, ValueError):
+        return None
+    ch = None
+    if guild is not None:
+        getter = getattr(guild, "get_channel", None)
+        if callable(getter):
+            ch = getter(cid)
+        if ch is None:
+            thread_getter = getattr(guild, "get_thread", None)
+            if callable(thread_getter):
+                ch = thread_getter(cid)
+    if ch is None and client is not None:
+        getter = getattr(client, "get_channel", None)
+        if callable(getter):
+            ch = getter(cid)
+    if ch is None and client is not None and hasattr(client, "fetch_channel"):
+        try:
+            ch = await client.fetch_channel(cid)
+        except Exception:
+            ch = None
+    return ch
 
-    Important: do **not** monkey-patch ``message.channel.send`` — that used to
-    recurse forever when followup.send aliased the channel itself.
-    """
+
+def _interaction_shim_for_channel(
+    channel,
+    *,
+    user_id: str | int,
+    guild_id: str | int = 0,
+    guild=None,
+    client=None,
+    response_done: bool = False,
+):
+    """Interaction-like shim that never monkey-patches ``channel.send``."""
 
     class _Resp:
         def __init__(self):
-            self._done = True
+            self._done = bool(response_done)
 
         def is_done(self):
-            return True
+            return self._done
 
-        async def send_message(self, *a, **k):
-            return None
+        async def send_message(self, content, **kwargs):
+            self._done = True
+            return await _channel_send(
+                content,
+                allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
+            )
 
-        async def defer(self, **k):
-            return None
+        async def defer(self, **kwargs):
+            self._done = True
 
-    # Capture the bound send once. Never assign followup = channel then overwrite
-    # channel.send — that recurses (followup.send -> channel.send -> followup.send).
-    _channel_send = message.channel.send
+    _channel_send = channel.send
 
     class _Followup:
         async def send(self, content, **kwargs):
@@ -2716,21 +2738,39 @@ def _interaction_shim_from_message(message: discord.Message):
 
     class _Shim:
         def __init__(self):
-            self.user = message.author
-            self.guild_id = message.guild.id if message.guild else 0
-            self.channel_id = message.channel.id
-            self.channel = message.channel
-            self.guild = message.guild
-            self.client = _STATE.get("bot")
+            self.user = type("U", (), {"id": int(user_id), "roles": []})()
+            self.guild_id = int(guild_id or 0)
+            self.channel_id = int(channel.id)
+            self.channel = channel
+            self.guild = guild
+            self.client = client if client is not None else _STATE.get("bot")
             self.response = _Resp()
             self.followup = _Followup()
-            self.id = message.id
             self._msg = None
 
         async def original_response(self):
             return self._msg
 
     return _Shim()
+
+
+def _interaction_shim_from_message(message: discord.Message):
+    """Minimal interaction-like object for message-driven Cursor launches.
+
+    Important: do **not** monkey-patch ``message.channel.send`` — that used to
+    recurse forever when followup.send aliased the channel itself.
+    """
+    shim = _interaction_shim_for_channel(
+        message.channel,
+        user_id=message.author.id,
+        guild_id=message.guild.id if message.guild else 0,
+        guild=message.guild,
+        client=_STATE.get("bot"),
+        response_done=True,
+    )
+    shim.user = message.author
+    shim.id = message.id
+    return shim
 
 
 async def _create_public_agent_thread(

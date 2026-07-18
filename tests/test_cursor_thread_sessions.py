@@ -746,16 +746,23 @@ class TestApprovalThreadBinding(unittest.IsolatedAsyncioTestCase):
         channel.id = 200
         channel.fetch_message = AsyncMock(return_value=activity)
         channel.send = AsyncMock(return_value=activity)
+        original_send = channel.send
 
         interaction = SimpleNamespace(
             user=SimpleNamespace(id=int(GOD), roles=[]),
             guild=SimpleNamespace(
                 id=1,
                 get_channel=MagicMock(return_value=channel),
+                get_thread=MagicMock(return_value=None),
             ),
             channel=channel,
-            client=SimpleNamespace(fetch_channel=AsyncMock(return_value=channel)),
+            client=SimpleNamespace(
+                get_channel=MagicMock(return_value=None),
+                fetch_channel=AsyncMock(return_value=channel),
+            ),
             message=None,
+            response=SimpleNamespace(is_done=MagicMock(return_value=True)),
+            followup=SimpleNamespace(send=AsyncMock()),
         )
 
         access.images.get = AsyncMock(return_value=[])
@@ -770,6 +777,30 @@ class TestApprovalThreadBinding(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(kwargs["parent_channel_id"], "100")
         self.assertTrue(kwargs["skip_status_post"])
         self.assertIs(kwargs["status_msg"], activity)
+        # Regression: approved launch must not monkey-patch channel.send.
+        fake = launch.await_args.args[0]
+        self.assertIsNot(fake.followup, channel)
+        self.assertIs(channel.send, original_send)
+
+    async def test_approved_launch_shim_does_not_patch_channel_send(self):
+        """Approve-once used to set followup=channel then overwrite send → RecursionError."""
+        mod = load_cursor_plugin()
+        channel = MagicMock()
+        channel.id = 200
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=1))
+        original_send = channel.send
+        shim = mod._interaction_shim_for_channel(
+            channel,
+            user_id=OWNER,
+            guild_id=1,
+            guild=SimpleNamespace(id=1),
+            client=None,
+        )
+        self.assertIs(channel.send, original_send)
+        self.assertIsNot(shim.followup, channel)
+        await shim.followup.send("hello")
+        self.assertIs(channel.send, original_send)
+        channel.send.assert_awaited()
 
 
 class TestSessionThreadFieldsCompat(unittest.TestCase):
