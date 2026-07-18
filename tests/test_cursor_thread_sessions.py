@@ -37,7 +37,6 @@ from cursor_cloud.thread_session import (
 )
 from cursor_cloud.thread_sink import ThreadActivitySink
 from cursor_cloud.thread_translate import (
-    DEFAULT_SONA_INSTRUCTIONS,
     atranslate_thread_final_for_sona,
     translate_thread_final_for_sona,
 )
@@ -218,20 +217,27 @@ class TestThreadRenderer(unittest.TestCase):
 
 
 class TestThreadTranslate(unittest.TestCase):
-    def test_translate_success_uses_runtime_ai_not_hardcoded_gemini(self):
+    def test_translate_selfcommand_shape_and_runtime_ai(self):
+        live_instructions = (
+            "LIVE SONATA INSTRUCTIONS: be witty, brief, and sound like sonata."
+        )
+
         def fake_send(prompt, *args, **kwargs):
-            self.assertIn("Preserve all factual content", prompt)
+            # SelfCommand-style: present agent output, ask to respond (not meta-rewrite).
+            self.assertIn("coding agent finished", prompt.lower())
+            self.assertIn("The bug was fixed in auth.py.", prompt)
+            self.assertIn("Respond to the user in your normal Discord voice", prompt)
+            self.assertNotIn("Rewrite the following", prompt)
             self.assertEqual(kwargs.get("AI"), "Claude")
-            # model omitted so PromptManager uses that AI's configured model
             self.assertNotIn("model", kwargs)
             cfg = kwargs.get("config") or {}
-            self.assertIn("sonata", (cfg.get("instructions") or "").lower())
+            self.assertEqual(cfg.get("instructions"), live_instructions)
             return "hey — fixed the bug with a grin"
 
         out = translate_thread_final_for_sona(
             "The bug was fixed in auth.py.",
             send=fake_send,
-            instructions=DEFAULT_SONA_INSTRUCTIONS,
+            instructions=live_instructions,
             ai="Claude",
         )
         self.assertEqual(out, "hey — fixed the bug with a grin")
@@ -296,24 +302,42 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(out, original)
 
-    async def test_plugin_translate_uses_runtime_chat_ai(self):
+    async def test_plugin_translate_uses_live_prompt_manager(self):
         mod = load_cursor_plugin()
-        cfg = SimpleNamespace(get=lambda key, *a: "Claude" if key == "AI" else None)
-        sona = SimpleNamespace(config=cfg)
-        bot = SimpleNamespace(sonata=sona)
-        mod._STATE["bot"] = bot
         seen = {}
+        live_instructions = "LIVE instructions from sonata.prompt_manager"
 
         def fake_send(prompt, *args, **kwargs):
+            seen["prompt"] = prompt
             seen.update(kwargs)
             return "sona voice"
 
-        with patch.object(mod, "PROMPT_MANAGER", SimpleNamespace(send=fake_send)):
-            with patch.object(mod, "_sona_thread_instructions", return_value="be sona"):
-                out = await mod._translate_thread_final_for_sona("cursor facts")
+        live_pm = SimpleNamespace(
+            send=fake_send,
+            get_instructions=lambda *a, **k: live_instructions,
+        )
+        cfg = SimpleNamespace(get=lambda key, *a: "Claude" if key == "AI" else None)
+        sona = SimpleNamespace(config=cfg, prompt_manager=live_pm)
+        mod._STATE["bot"] = SimpleNamespace(sonata=sona)
+
+        # Stale module-level PROMPT_MANAGER must not be used when live PM exists.
+        stale_calls = {"n": 0}
+
+        def stale_send(*_a, **_k):
+            stale_calls["n"] += 1
+            return "stale"
+
+        with patch.object(mod, "PROMPT_MANAGER", SimpleNamespace(send=stale_send)):
+            out = await mod._translate_thread_final_for_sona("cursor facts here")
+
         self.assertEqual(out, "sona voice")
+        self.assertEqual(stale_calls["n"], 0)
         self.assertEqual(seen.get("AI"), "Claude")
         self.assertNotIn("model", seen)
+        self.assertEqual((seen.get("config") or {}).get("instructions"), live_instructions)
+        self.assertIn("coding agent finished", seen["prompt"].lower())
+        self.assertIn("cursor facts here", seen["prompt"])
+        self.assertIs(mod._live_prompt_manager(), live_pm)
 
 
 class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):

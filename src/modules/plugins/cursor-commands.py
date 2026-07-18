@@ -2582,15 +2582,42 @@ async def _generate_session_title(prompt: str) -> str:
     return fallback
 
 
+def _live_sonata() -> Any | None:
+    """Main Sonata AI_Manager after plugin extend (not the lazy cursor CONTEXT)."""
+    bot = _STATE.get("bot")
+    if bot is not None:
+        sona = getattr(bot, "sonata", None)
+        if sona is not None:
+            return sona
+    return None
+
+
+def _live_prompt_manager():
+    """Live Sonata PromptManager — module-level PROMPT_MANAGER can be stale post-extend."""
+    sona = _live_sonata()
+    if sona is not None:
+        pm = getattr(sona, "prompt_manager", None)
+        if pm is not None:
+            return pm
+    # CONTEXT.prompt_manager is reassigned on extend; prefer it over module binding.
+    pm = getattr(CONTEXT, "prompt_manager", None)
+    if pm is not None:
+        return pm
+    return PROMPT_MANAGER
+
+
 def _sona_thread_instructions() -> str | None:
-    """Prefer live Sonata PromptManager instructions when the plugin is extended."""
+    """Live PromptManager.get_instructions() (same source chat.request uses)."""
+    pm = _live_prompt_manager()
     try:
-        text = PROMPT_MANAGER.get_instructions()
-        if text:
-            return str(text)
-        text = PROMPT_MANAGER.get("DefaultInstructions")
-        if text:
-            return str(text)
+        if hasattr(pm, "get_instructions"):
+            text = pm.get_instructions()
+            if text:
+                return str(text)
+        if hasattr(pm, "get"):
+            text = pm.get("DefaultInstructions")
+            if text:
+                return str(text)
     except Exception:
         logger.debug("Could not read Sonata instructions for thread translate", exc_info=True)
     return None
@@ -2598,9 +2625,7 @@ def _sona_thread_instructions() -> str | None:
 
 def _runtime_chat_ai() -> str | None:
     """AI provider currently selected for normal Sona chat (`$c`/`$o`/`$g`, etc.)."""
-    bot = _STATE.get("bot")
-    sona = getattr(bot, "sonata", None) if bot is not None else None
-    for source in (sona, MANAGER):
+    for source in (_live_sonata(), MANAGER):
         if source is None:
             continue
         try:
@@ -2616,14 +2641,16 @@ def _runtime_chat_ai() -> str | None:
 
 
 async def _translate_thread_final_for_sona(text: str) -> str:
-    """Route thread-bound finals through Sona's normal response style (fail-open).
+    """Route thread-bound finals through live Sonata PromptManager (fail-open).
 
-    Uses the runtime chat AI + that provider's configured model — not a hardcoded
-    Gemini flash call.
+    SelfCommand-style: live get_instructions() + agent output presented as
+    source material; runtime chat AI + that provider's configured model.
     """
+    pm = _live_prompt_manager()
+    send = getattr(pm, "send", None) or PROMPT_MANAGER.send
     return await atranslate_thread_final_for_sona(
         text,
-        send=PROMPT_MANAGER.send,
+        send=send,
         instructions=_sona_thread_instructions(),
         ai=_runtime_chat_ai(),
         model=None,

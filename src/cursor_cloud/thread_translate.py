@@ -12,8 +12,8 @@ from .thread_renderer import _normalize_headings
 
 logger = logging.getLogger("sonata.cursor")
 
-# Mirrors Sonata's default chat persona (index.PROMPT) so translation stays
-# available even when PromptManager instructions are not loaded (e.g. unit tests).
+# Last-resort only when live PromptManager instructions are unavailable
+# (unit tests / degraded boot). Production should pass live get_instructions().
 DEFAULT_SONA_INSTRUCTIONS = """
 As "sonata", a Discord bot created by blaqat and :sparkles:"powered by AI":sparkles:™️, your role is to engage with users.
 - You are a general expert on most subjects including math, coding, doctor, etc.
@@ -38,12 +38,17 @@ def _should_skip_translation(text: str) -> bool:
 
 
 def _build_user_prompt(text: str) -> str:
+    """SelfCommand-style: present agent output, ask Sona to respond normally."""
     return (
-        "Rewrite the following coding-agent final answer in your normal Discord chat voice.\n"
-        "Preserve all factual content, code fences, file paths, URLs, and technical details.\n"
-        "Keep Discord-friendly length. Do not mention that you rewrote anything.\n"
-        "Output only the rewritten message.\n\n"
-        f"---\n{text}"
+        "A coding agent finished a task. Here is its final answer/output:\n"
+        f"---\n{text}\n---\n\n"
+        "Respond to the user in your normal Discord voice using that information.\n"
+        "- Use the agent output to aid your response; do not invent facts.\n"
+        "- Preserve all factual content, code fences, file paths, URLs, and technical details.\n"
+        "- Include only relevant information from the output.\n"
+        "- If the output contains a link, use [link title](url).\n"
+        "- Do not mention rewriting, translating, or that an agent wrote this.\n"
+        "- Output only your reply message."
     )
 
 
