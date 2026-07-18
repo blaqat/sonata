@@ -27,6 +27,8 @@ from cursor_cloud.models import (
 from cursor_cloud.session_store import MemorySessionStore
 from cursor_cloud.thread_renderer import (
     THREAD_THINKING_INDICATOR,
+    format_thread_chat_info,
+    github_hint_from_snapshot,
     render_thread_activity,
     render_thread_final,
 )
@@ -160,6 +162,72 @@ class TestThreadRenderer(unittest.TestCase):
         self.assertNotIn("Run:", text)
         self.assertNotIn("Agent:", text)
         self.assertLessEqual(len(text), 2000)
+
+    def test_activity_lists_tools_before_thinking(self):
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.RUNNING,
+            thinking_text="planning the refactor",
+            tools=[ToolActivity("1", "Read", "running", "keys=path")],
+        )
+        text = render_thread_activity(snap)
+        self.assertLess(text.index("### Activity"), text.index("### Thinking"))
+
+    def test_format_thread_chat_info_compact(self):
+        line = format_thread_chat_info(
+            agent_id="bc-agent-1",
+            github="cursor/demo-branch",
+            model="claude-sonnet-4-6",
+        )
+        self.assertEqual(
+            line,
+            "Chat Info: id - bc-agent-1 | github cursor/demo-branch | claude-sonnet-4-6",
+        )
+
+    def test_github_hint_prefers_branch_then_repo(self):
+        from cursor_cloud.models import GitBranchInfo
+
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            git_branches=[GitBranchInfo(branch="cursor/feat", pr_url=None)],
+        )
+        self.assertEqual(
+            github_hint_from_snapshot(
+                snap,
+                repository_url="https://github.com/o/r",
+            ),
+            "cursor/feat",
+        )
+        self.assertEqual(
+            github_hint_from_snapshot(
+                RunSnapshot(run_id="r1", agent_id="a1", status=RunStatus.RUNNING),
+                repository_url="https://github.com/o/r.git",
+            ),
+            "o/r",
+        )
+
+    def test_final_prepends_chat_info_only_when_requested(self):
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text="hello world",
+        )
+        header = format_thread_chat_info(
+            agent_id="a1",
+            github="cursor/demo",
+            model="gpt-5",
+        )
+        with_header = render_thread_final(snap, chat_info=header)
+        without = render_thread_final(snap)
+        self.assertTrue(with_header.startswith("Chat Info:"))
+        self.assertIn("hello world", with_header)
+        self.assertNotIn("Chat Info:", without)
+        self.assertNotIn("### Git", with_header)
+        self.assertNotIn("Run:", with_header)
 
     def test_activity_idle_shows_thinking_indicator(self):
         snap = RunSnapshot(
@@ -436,6 +504,34 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         await sink.update_from_snapshot(snap, terminal=True)
         sent = channel.send.await_args.args[0]
         self.assertTrue(sent.startswith("sona:"))
+
+    async def test_first_final_includes_chat_info_once(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        sink = ThreadActivitySink(
+            channel,
+            activity,
+            edit_interval_ms=0,
+            include_chat_info=True,
+            chat_info_model="claude-sonnet-4-6",
+            chat_info_repository_url="https://github.com/o/r",
+        )
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="bc-agent-1",
+            status=RunStatus.FINISHED,
+            result_text="done",
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        await sink.update_from_snapshot(snap, terminal=True)
+        sent = channel.send.await_args.args[0]
+        self.assertIn("Chat Info:", sent)
+        self.assertIn("bc-agent-1", sent)
+        self.assertIn("claude-sonnet-4-6", sent)
+        self.assertIn("done", sent)
+        self.assertEqual(channel.send.await_count, 1)
 
     async def test_error_final_skips_translator(self):
         channel = MagicMock()
@@ -966,7 +1062,7 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
 
 
 class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
-    async def test_followup_sends_new_thinking_indicator_immediately(self):
+    async def test_followup_edits_visible_activity_immediately(self):
         mod = load_cursor_plugin()
         cfg = load_cursor_config(
             {
@@ -1005,13 +1101,15 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                 "handled_thread_messages": set(),
             }
         )
-        new_activity = MagicMock()
-        new_activity.id = 99
+        activity = MagicMock()
+        activity.id = 55
+        activity.content = "### Activity\n- `grep` (running) keys=pattern"
+        activity.edit = AsyncMock()
         channel = MagicMock()
         channel.id = 200
         channel.parent_id = 100
-        channel.send = AsyncMock(return_value=new_activity)
-        channel.fetch_message = AsyncMock()
+        channel.fetch_message = AsyncMock(return_value=activity)
+        channel.send = AsyncMock()
         message = MagicMock()
         message.id = 901
         message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
@@ -1032,6 +1130,84 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                     ) as launch:
                         ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
+        activity.edit.assert_awaited()
+        self.assertEqual(
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0],
+            THREAD_THINKING_INDICATOR,
+        )
+        channel.send.assert_not_awaited()
+        self.assertIs(launch.await_args.kwargs.get("status_msg"), activity)
+
+    async def test_followup_posts_fresh_activity_after_cleared_stub(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        sessions = MemorySessionStore()
+        scope = ScopeKey("1", "200", OWNER)
+        session = AgentSession(
+            scope=scope,
+            agent_id="bc-1",
+            owner_id=OWNER,
+            thread_bound=True,
+            parent_channel_id="100",
+            status_channel_id="200",
+            status_message_id="55",
+            active=True,
+        )
+        await sessions.upsert(session)
+        await sessions.set_active(scope, "bc-1")
+        mod._STATE.update(
+            {
+                "config": cfg,
+                "sessions": sessions,
+                "access": AccessController(
+                    cfg,
+                    MemoryAccessStore(),
+                    image_retention=ImageRetentionStore(max_total_bytes=1),
+                ),
+                "policy_manager": ParentAllowsChildDeniesPolicy(),
+                "require_policy": True,
+                "bot": MagicMock(),
+                "handled_thread_messages": set(),
+            }
+        )
+        cleared = MagicMock()
+        cleared.id = 55
+        cleared.content = "\u200b"
+        new_activity = MagicMock()
+        new_activity.id = 99
+        channel = MagicMock()
+        channel.id = 200
+        channel.parent_id = 100
+        channel.fetch_message = AsyncMock(return_value=cleared)
+        channel.send = AsyncMock(return_value=new_activity)
+        message = MagicMock()
+        message.id = 902
+        message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
+        message.content = "another follow up"
+        message.attachments = []
+        message.reference = None
+        message.channel = channel
+        message.guild = SimpleNamespace(id=1)
+        with patch.object(mod, "_channel_is_thread", return_value=True):
+            with patch.object(mod, "_revalidate_run_auth", new=AsyncMock()):
+                with patch.object(
+                    mod,
+                    "_build_context_from_message",
+                    new=AsyncMock(return_value=("another follow up", [], [])),
+                ):
+                    with patch.object(
+                        mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
+                    ) as launch:
+                        ok = await mod.handle_thread_message(message)
+        self.assertTrue(ok)
         channel.send.assert_awaited()
         self.assertEqual(
             channel.send.await_args.args[0]
@@ -1039,12 +1215,9 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
             else channel.send.await_args.kwargs.get("content"),
             THREAD_THINKING_INDICATOR,
         )
-        channel.fetch_message.assert_not_awaited()
         loaded = await sessions.get_session(scope, "bc-1")
-        self.assertIsNotNone(loaded)
         self.assertEqual(loaded.status_message_id, "99")
         self.assertIs(launch.await_args.kwargs.get("status_msg"), new_activity)
-        self.assertTrue(launch.await_args.kwargs.get("skip_status_post"))
 
 
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):

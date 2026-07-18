@@ -70,6 +70,42 @@ def _normalize_headings(text: str) -> str:
     return text
 
 
+def github_hint_from_snapshot(
+    snapshot: RunSnapshot,
+    *,
+    repository_url: str | None = None,
+) -> str | None:
+    """Compact github hint: branch name, else owner/repo from repository URL."""
+    for branch in list(snapshot.git_branches or []):
+        name = str(branch.branch or "").strip()
+        if name:
+            return name
+    url = str(repository_url or "").strip().rstrip("/")
+    if not url:
+        return None
+    if "github.com/" in url:
+        tail = url.split("github.com/", 1)[-1]
+        if tail.endswith(".git"):
+            tail = tail[:-4]
+        return tail or None
+    return url.rsplit("/", 1)[-1] or None
+
+
+def format_thread_chat_info(
+    *,
+    agent_id: str,
+    model: str | None = None,
+    github: str | None = None,
+) -> str:
+    """One-line session header for the first thread final only."""
+    parts = [f"id - {redact_untrusted(agent_id)[:80]}"]
+    if github:
+        parts.append(f"github {redact_untrusted(github)[:80]}")
+    if model:
+        parts.append(redact_untrusted(model)[:60])
+    return "Chat Info: " + " | ".join(parts)
+
+
 def render_thread_activity(
     snapshot: RunSnapshot,
     *,
@@ -86,18 +122,18 @@ def render_thread_activity(
         lines.append("### Error")
         lines.append(redact_untrusted(snapshot.error_message)[:500])
 
+    tools = list(snapshot.tools[-12:])
+    if tools:
+        lines.append("### Activity")
+        lines.extend(_coalesce_tools(tools))
+        has_live_progress = True
+
     if snapshot.status.is_active and snapshot.thinking_text:
         peek = redact_untrusted(snapshot.thinking_text.strip())[-220:]
         if peek:
             lines.append("### Thinking")
             lines.append(peek)
             has_live_progress = True
-
-    tools = list(snapshot.tools[-12:])
-    if tools:
-        lines.append("### Activity")
-        lines.extend(_coalesce_tools(tools))
-        has_live_progress = True
 
     if snapshot.status.is_active and snapshot.assistant_text:
         peek = redact_untrusted(snapshot.assistant_text.strip())[-200:]
@@ -135,6 +171,7 @@ def render_thread_final(
     *,
     agent_name: str | None = None,
     skipped_images: list[str] | None = None,
+    chat_info: str | None = None,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
     """Frozen final answer/error only — no Finished/Agent/Run/Git/Duration chrome."""
@@ -150,6 +187,8 @@ def render_thread_final(
         return "_No output._"
 
     text = redact_untrusted(body)
+    if chat_info:
+        text = f"{chat_info.strip()}\n\n{text}"
     if skipped_images:
         notes = "\n".join(
             f"- {redact_untrusted(note)[:160]}" for note in skipped_images[:5]

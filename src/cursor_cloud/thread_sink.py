@@ -6,7 +6,12 @@ import time
 from typing import Any, Awaitable, Callable, Protocol
 
 from .models import RunSnapshot, RunStatus
-from .thread_renderer import render_thread_activity, render_thread_final
+from .thread_renderer import (
+    format_thread_chat_info,
+    github_hint_from_snapshot,
+    render_thread_activity,
+    render_thread_final,
+)
 
 FinalTranslator = Callable[[str], Awaitable[str]]
 
@@ -32,12 +37,18 @@ class ThreadActivitySink:
         edit_interval_ms: int = 1200,
         allowed_mentions: Any = None,
         final_translator: FinalTranslator | None = None,
+        include_chat_info: bool = False,
+        chat_info_model: str | None = None,
+        chat_info_repository_url: str | None = None,
     ):
         self.channel = channel
         self.activity_message = activity_message
         self.edit_interval_ms = max(200, int(edit_interval_ms))
         self.allowed_mentions = allowed_mentions
         self.final_translator = final_translator
+        self._include_chat_info = bool(include_chat_info)
+        self._chat_info_model = chat_info_model
+        self._chat_info_repository_url = chat_info_repository_url
         self._last_edit = 0.0
         self._last_terminal_run_id: str | None = None
         self.degraded = False
@@ -71,10 +82,22 @@ class ThreadActivitySink:
             if self._last_terminal_run_id == snapshot.run_id:
                 return
             self._last_terminal_run_id = snapshot.run_id
+            chat_info = None
+            if self._include_chat_info and snapshot.status == RunStatus.FINISHED:
+                chat_info = format_thread_chat_info(
+                    agent_id=snapshot.agent_id,
+                    model=self._chat_info_model,
+                    github=github_hint_from_snapshot(
+                        snapshot,
+                        repository_url=self._chat_info_repository_url,
+                    ),
+                )
+                self._include_chat_info = False
             final = render_thread_final(
                 snapshot,
                 agent_name=agent_name,
                 skipped_images=skipped_images,
+                chat_info=chat_info,
             )
             if (
                 self.final_translator is not None
