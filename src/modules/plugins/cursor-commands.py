@@ -22,6 +22,7 @@ from typing import Any
 
 import discord
 from discord.commands import Option, SlashCommandGroup
+from discord.ext import commands as ext_commands
 
 from cursor_cloud.access import (
     AccessController,
@@ -1018,46 +1019,7 @@ async def handle_thread_message(message: discord.Message) -> bool:
     if not prompt and not message.attachments:
         return False
 
-    class _MsgInteraction:
-        def __init__(self):
-            self.user = message.author
-            self.guild_id = message.guild.id if message.guild else 0
-            self.channel_id = message.channel.id
-            self.channel = message.channel
-            self.guild = message.guild
-            self.client = _STATE.get("bot")
-            self.response = _Resp()
-            self.followup = message.channel
-            self.id = message.id
-
-        async def original_response(self):
-            return self._msg
-
-    class _Resp:
-        def __init__(self):
-            self._done = True
-
-        def is_done(self):
-            return True
-
-        async def send_message(self, *a, **k):
-            return None
-
-        async def defer(self, **k):
-            return None
-
-    fake = _MsgInteraction()
-    fake._msg = None
-
-    async def _followup_send(content, **kwargs):
-        kwargs.pop("wait", None)
-        kwargs.pop("ephemeral", None)
-        return await message.channel.send(
-            content,
-            allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
-        )
-
-    fake.followup.send = _followup_send  # type: ignore
+    fake = _interaction_shim_from_message(message)
 
     try:
         prompt_text, image_inputs, skipped = await _build_context_from_message(
@@ -2517,6 +2479,186 @@ async def cursor_run(
         await _ephemeral(interaction, f"Run failed: {exc}")
 
 
+def _thread_idle_note() -> str:
+    return (
+        f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
+        f"this bot archives idle sessions after "
+        f"{_cfg().session_idle_prompt_minutes} minutes._"
+    )
+
+
+def _interaction_shim_from_message(message: discord.Message):
+    """Minimal interaction-like object for message-driven Cursor launches."""
+
+    class _Resp:
+        def __init__(self):
+            self._done = True
+
+        def is_done(self):
+            return True
+
+        async def send_message(self, *a, **k):
+            return None
+
+        async def defer(self, **k):
+            return None
+
+    class _Shim:
+        def __init__(self):
+            self.user = message.author
+            self.guild_id = message.guild.id if message.guild else 0
+            self.channel_id = message.channel.id
+            self.channel = message.channel
+            self.guild = message.guild
+            self.client = _STATE.get("bot")
+            self.response = _Resp()
+            self.followup = message.channel
+            self.id = message.id
+            self._msg = None
+
+        async def original_response(self):
+            return self._msg
+
+    shim = _Shim()
+
+    async def _followup_send(content, **kwargs):
+        kwargs.pop("wait", None)
+        kwargs.pop("ephemeral", None)
+        return await message.channel.send(
+            content,
+            allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
+        )
+
+    shim.followup.send = _followup_send  # type: ignore
+    return shim
+
+
+async def _create_public_agent_thread(
+    *,
+    parent_channel,
+    starter_message: discord.Message | None,
+    thread_name: str,
+):
+    """Create a public thread; prefer message-rooted threads when possible."""
+    if starter_message is not None:
+        return await starter_message.create_thread(
+            name=thread_name,
+            auto_archive_duration=60,
+        )
+    return await parent_channel.create_thread(
+        name=thread_name,
+        type=discord.ChannelType.public_thread,
+        auto_archive_duration=60,
+        reason="Cursor agent thread session",
+    )
+
+
+async def _start_thread_bound_session(
+    *,
+    interaction,
+    prompt: str,
+    message_ref: str | None,
+    images: list[discord.Attachment | None],
+    parent_channel,
+    parent_channel_id: str,
+    user,
+    guild_id: str | int,
+    starter_message: discord.Message | None = None,
+    prebuilt: tuple[str, list[ImageInput], list[str]] | None = None,
+    notify,
+) -> None:
+    """Shared `/cursor new` + `$agent` launch: public thread session + Activity."""
+    thread_name = f"cursor-{getattr(user, 'display_name', None) or user.name}"[:90]
+    thread = None
+    activity_msg = None
+    try:
+        thread = await _create_public_agent_thread(
+            parent_channel=parent_channel,
+            starter_message=starter_message,
+            thread_name=thread_name,
+        )
+    except discord.Forbidden:
+        await notify("Cannot create a public thread here (missing permissions).")
+        return
+    except discord.HTTPException as exc:
+        await notify(f"Could not create thread: {exc}")
+        return
+
+    scope = ScopeKey(
+        guild_id=str(guild_id or 0),
+        channel_id=str(thread.id),
+        user_id=str(user.id),
+    )
+    try:
+        activity_msg = await thread.send(
+            initial_queued_message(),
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+    except discord.HTTPException as exc:
+        await notify(f"Thread created but could not post activity: {exc}")
+        try:
+            await thread.edit(archived=True, locked=True)
+        except Exception:
+            logger.debug(
+                "Failed to archive orphan Cursor thread %s", thread.id, exc_info=True
+            )
+        return
+
+    async def _abandon_thread(reason: str) -> None:
+        if activity_msg is not None:
+            try:
+                await activity_msg.edit(
+                    content=f"### Error\n{reason}"[:2000],
+                    allowed_mentions=CONTENT_MENTIONS,
+                )
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                await thread.edit(archived=True, locked=True)
+            except Exception:
+                logger.debug(
+                    "Failed to archive orphan Cursor thread %s",
+                    thread.id,
+                    exc_info=True,
+                )
+
+    try:
+        outcome = await _prepare_and_maybe_launch(
+            interaction,
+            prompt,
+            message_ref,
+            images,
+            force_new=True,
+            scope_override=scope,
+            policy_channel_id=parent_channel_id,
+            thread_bound=True,
+            parent_channel_id=parent_channel_id,
+            status_msg=activity_msg,
+            skip_status_post=True,
+            auth_subcommand="new",
+            prebuilt=prebuilt,
+        )
+        note = _thread_idle_note()
+        if outcome == "approval_pending":
+            await notify(
+                f"Thread {thread.mention} is ready; waiting for approval before launch.\n{note}"
+            )
+        elif outcome == "decision_pending":
+            await notify(
+                f"Thread {thread.mention} is ready; choose how to proceed in-channel."
+            )
+        else:
+            await notify(f"Started Cursor session in {thread.mention}.\n{note}")
+    except CursorCloudError as exc:
+        await _abandon_thread(exc.user_message)
+        await notify(exc.user_message)
+    except Exception as exc:
+        logger.exception("cursor thread session failed")
+        await _abandon_thread(str(exc))
+        await notify(f"Thread session failed: {exc}")
+
+
 @cursor_group.command(
     name="new",
     description="Start a Cursor agent in a new public thread (thread = session)",
@@ -2546,106 +2688,108 @@ async def cursor_new(
         return
     await _defer(interaction, ephemeral=True)
     parent_channel_id = str(interaction.channel_id)
-    thread_name = f"cursor-{interaction.user.display_name or interaction.user.name}"[:90]
-    thread = None
-    activity_msg = None
-    try:
-        thread = await interaction.channel.create_thread(
-            name=thread_name,
-            type=discord.ChannelType.public_thread,
-            auto_archive_duration=60,
-            reason="Cursor agent thread session",
-        )
-    except discord.Forbidden:
-        await _ephemeral(
-            interaction,
-            "Cannot create a public thread here (missing permissions).",
-        )
-        return
-    except discord.HTTPException as exc:
-        await _ephemeral(interaction, f"Could not create thread: {exc}")
-        return
 
-    scope = ScopeKey(
-        guild_id=str(interaction.guild_id or 0),
-        channel_id=str(thread.id),
-        user_id=str(interaction.user.id),
+    async def _notify(content: str) -> None:
+        await _ephemeral(interaction, content)
+
+    await _start_thread_bound_session(
+        interaction=interaction,
+        prompt=prompt,
+        message_ref=message,
+        images=[image1, image2, image3, image4, image5],
+        parent_channel=interaction.channel,
+        parent_channel_id=parent_channel_id,
+        user=interaction.user,
+        guild_id=interaction.guild_id or 0,
+        starter_message=None,
+        notify=_notify,
     )
-    try:
-        activity_msg = await thread.send(
-            initial_queued_message(),
+
+
+async def handle_agent_prefix(ctx: ext_commands.Context, prompt: str) -> None:
+    """`$agent <prompt>` — same as `/cursor new`, rooted on the start message."""
+    prompt_text = (prompt or "").strip()
+    message = ctx.message
+    if not prompt_text and not message.attachments:
+        await message.reply(
+            "Usage: `$agent <prompt>` (optional image attachments).",
+            mention_author=False,
             allowed_mentions=CONTENT_MENTIONS,
         )
-    except discord.HTTPException as exc:
-        await _ephemeral(interaction, f"Thread created but could not post activity: {exc}")
-        try:
-            await thread.edit(archived=True, locked=True)
-        except Exception:
-            logger.debug("Failed to archive orphan Cursor thread %s", thread.id, exc_info=True)
+        return
+    if isinstance(ctx.channel, discord.Thread) or _channel_is_thread(ctx.channel):
+        await message.reply(
+            "Use `$agent` from the parent channel, not inside a thread.",
+            mention_author=False,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
         return
 
-    async def _abandon_thread(reason: str) -> None:
-        if activity_msg is not None:
-            try:
-                await activity_msg.edit(
-                    content=f"### Error\n{reason}"[:2000],
-                    allowed_mentions=CONTENT_MENTIONS,
-                )
-            except Exception:
-                pass
-        if thread is not None:
-            try:
-                await thread.edit(archived=True, locked=True)
-            except Exception:
-                logger.debug(
-                    "Failed to archive orphan Cursor thread %s",
-                    thread.id,
-                    exc_info=True,
-                )
-
-    try:
-        outcome = await _prepare_and_maybe_launch(
-            interaction,
-            prompt,
-            message,
-            [image1, image2, image3, image4, image5],
-            force_new=True,
-            scope_override=scope,
-            policy_channel_id=parent_channel_id,
-            thread_bound=True,
-            parent_channel_id=parent_channel_id,
-            status_msg=activity_msg,
-            skip_status_post=True,
-            auth_subcommand="new",
+    cfg = _cfg()
+    if cfg is None or not cfg.enabled:
+        await message.reply(
+            "Cursor commands are disabled.",
+            mention_author=False,
+            allowed_mentions=CONTENT_MENTIONS,
         )
-        if outcome == "approval_pending":
-            await _ephemeral(
-                interaction,
-                f"Thread {thread.mention} is ready; waiting for approval before launch.\n"
-                f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
-                f"this bot archives idle sessions after "
-                f"{_cfg().session_idle_prompt_minutes} minutes._",
-            )
-        elif outcome == "decision_pending":
-            await _ephemeral(
-                interaction,
-                f"Thread {thread.mention} is ready; choose how to proceed in-channel.",
-            )
-        else:
-            await _ephemeral(
-                interaction,
-                f"Started Cursor session in {thread.mention}.\n"
-                f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
-                f"this bot archives idle sessions after "
-                f"{_cfg().session_idle_prompt_minutes} minutes._",
-            )
+        return
+
+    parent_channel_id = str(ctx.channel.id)
+    try:
+        await _revalidate_run_auth(
+            user_id=ctx.author.id,
+            guild_id=ctx.guild.id if ctx.guild else 0,
+            channel_id=ctx.channel.id,
+            role_ids=_role_ids(ctx.author),
+            subcommand="new",
+            interaction=None,
+            policy_channel_id=parent_channel_id,
+        )
     except CursorCloudError as exc:
-        await _abandon_thread(exc.user_message)
-        await _ephemeral(interaction, exc.user_message)
-    except Exception as exc:
-        logger.exception("cursor new failed")
-        await _abandon_thread(str(exc))
-        await _ephemeral(interaction, f"Thread session failed: {exc}")
+        await message.reply(
+            exc.user_message[:2000],
+            mention_author=False,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+        return
+
+    shim = _interaction_shim_from_message(message)
+    try:
+        prebuilt = await _build_context_from_message(
+            message, prompt_text or "(see attachments)"
+        )
+    except Exception:
+        logger.exception("cursor $agent context failed")
+        await message.reply(
+            "Could not build run context from that message.",
+            mention_author=False,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+        return
+
+    async def _notify(content: str) -> None:
+        try:
+            await message.reply(
+                content[:2000],
+                mention_author=False,
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+        except discord.HTTPException:
+            await ctx.channel.send(content[:2000], allowed_mentions=CONTENT_MENTIONS)
+
+    await _start_thread_bound_session(
+        interaction=shim,
+        prompt=prompt_text or "(see attachments)",
+        message_ref=None,
+        images=[],
+        parent_channel=ctx.channel,
+        parent_channel_id=parent_channel_id,
+        user=ctx.author,
+        guild_id=ctx.guild.id if ctx.guild else 0,
+        starter_message=message,
+        prebuilt=prebuilt,
+        notify=_notify,
+    )
 
 
 @cursor_group.command(name="stop", description="Cancel your active Cursor run in this channel")
@@ -3118,14 +3262,39 @@ async def cursor_deny(
 # ---------------------------------------------------------------------------
 
 
+def _register_prefix_commands(bot: discord.Bot) -> None:
+    """Register `$agent` (message-rooted `/cursor new`) on the prefix command bot."""
+    if getattr(bot, "_cursor_agent_prefix_registered", False):
+        return
+    if not hasattr(bot, "add_command") or not hasattr(bot, "get_command"):
+        logger.warning("Cursor $agent prefix skipped: bot has no prefix command API")
+        return
+    if bot.get_command("agent") is not None:
+        bot._cursor_agent_prefix_registered = True
+        return
+
+    @ext_commands.command(
+        name="agent",
+        help="Start a Cursor agent thread from this message (same as /cursor new).",
+    )
+    async def agent_prefix_command(
+        ctx: ext_commands.Context, *, prompt: str = ""
+    ) -> None:
+        await handle_agent_prefix(ctx, prompt)
+
+    bot.add_command(agent_prefix_command)
+    bot._cursor_agent_prefix_registered = True
+    logger.info("Registered Cursor prefix command $agent")
+
+
 def _register_commands(bot: discord.Bot) -> None:
-    # Avoid duplicate registration across reconnects / repeated ready.
+    # Avoid duplicate slash registration across reconnects / repeated ready.
     pending = list(getattr(bot, "pending_application_commands", []) or [])
     attached = list(getattr(bot, "application_commands", []) or [])
-    for cmd in pending + attached:
-        if getattr(cmd, "name", None) == "cursor":
-            return
-    bot.add_application_command(cursor_group)
+    has_cursor = any(getattr(cmd, "name", None) == "cursor" for cmd in pending + attached)
+    if not has_cursor:
+        bot.add_application_command(cursor_group)
+    _register_prefix_commands(bot)
 
 
 async def _pending_rehydratable(pending: dict[str, Any] | None) -> bool:

@@ -9,6 +9,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import discord
+
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -538,6 +540,111 @@ class TestSessionThreadFieldsCompat(unittest.TestCase):
         )
         self.assertFalse(legacy.thread_bound)
         self.assertIsNone(legacy.parent_channel_id)
+
+
+class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
+    async def test_create_thread_from_starter_message(self):
+        mod = load_cursor_plugin()
+        starter = MagicMock()
+        starter.create_thread = AsyncMock(return_value=SimpleNamespace(id=999, mention="<#999>"))
+        parent = MagicMock()
+        parent.create_thread = AsyncMock()
+        thread = await mod._create_public_agent_thread(
+            parent_channel=parent,
+            starter_message=starter,
+            thread_name="cursor-test",
+        )
+        self.assertEqual(thread.id, 999)
+        starter.create_thread.assert_awaited_once()
+        parent.create_thread.assert_not_called()
+        kwargs = starter.create_thread.await_args.kwargs
+        self.assertEqual(kwargs["name"], "cursor-test")
+        self.assertEqual(kwargs["auto_archive_duration"], 60)
+
+    async def test_create_thread_without_starter_uses_channel(self):
+        mod = load_cursor_plugin()
+        parent = MagicMock()
+        parent.create_thread = AsyncMock(return_value=SimpleNamespace(id=888))
+        thread = await mod._create_public_agent_thread(
+            parent_channel=parent,
+            starter_message=None,
+            thread_name="cursor-slash",
+        )
+        self.assertEqual(thread.id, 888)
+        parent.create_thread.assert_awaited_once()
+
+    async def test_agent_prefix_roots_thread_on_start_message(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        mod._STATE.update(
+            {
+                "config": cfg,
+                "sessions": MemorySessionStore(),
+                "access": AccessController(
+                    cfg,
+                    MemoryAccessStore(),
+                    image_retention=ImageRetentionStore(max_total_bytes=1),
+                ),
+                "policy_manager": ParentAllowsChildDeniesPolicy(),
+                "require_policy": True,
+                "bot": MagicMock(),
+            }
+        )
+        message = MagicMock()
+        message.id = 42
+        message.content = "$agent fix the flaky test"
+        message.attachments = []
+        message.author = SimpleNamespace(id=int(T2), roles=[], display_name="Karma", name="karma")
+        message.guild = SimpleNamespace(id=1)
+        message.channel = SimpleNamespace(id=100, send=AsyncMock())
+        message.reply = AsyncMock()
+        ctx = SimpleNamespace(
+            message=message,
+            author=message.author,
+            guild=message.guild,
+            channel=message.channel,
+        )
+        with patch.object(mod, "_revalidate_run_auth", new=AsyncMock(return_value=None)):
+            with patch.object(
+                mod,
+                "_build_context_from_message",
+                new=AsyncMock(return_value=("fix the flaky test", [], [])),
+            ):
+                with patch.object(
+                    mod, "_start_thread_bound_session", new=AsyncMock()
+                ) as start:
+                    await mod.handle_agent_prefix(ctx, "fix the flaky test")
+        start.assert_awaited_once()
+        kwargs = start.await_args.kwargs
+        self.assertIs(kwargs["starter_message"], message)
+        self.assertEqual(kwargs["parent_channel_id"], "100")
+        self.assertEqual(kwargs["prompt"], "fix the flaky test")
+        self.assertEqual(kwargs["prebuilt"][0], "fix the flaky test")
+
+    async def test_agent_prefix_rejects_inside_thread(self):
+        mod = load_cursor_plugin()
+        message = MagicMock()
+        message.attachments = []
+        message.reply = AsyncMock()
+        thread_channel = MagicMock(spec=discord.Thread)
+        thread_channel.parent_id = 100
+        ctx = SimpleNamespace(
+            message=message,
+            channel=thread_channel,
+            author=SimpleNamespace(id=int(T2)),
+            guild=SimpleNamespace(id=1),
+        )
+        with patch.object(mod, "_start_thread_bound_session", new=AsyncMock()) as start:
+            await mod.handle_agent_prefix(ctx, "hello")
+        start.assert_not_awaited()
+        message.reply.assert_awaited()
 
 
 if __name__ == "__main__":
