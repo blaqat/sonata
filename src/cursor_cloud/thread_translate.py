@@ -61,9 +61,14 @@ def translate_thread_final_for_sona(
     *,
     send: SendFn | None = None,
     instructions: str | None = None,
+    ai: str | None = None,
+    model: str | None = None,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
     """Rewrite a thread final answer into Sona's voice.
+
+    Uses the runtime chat AI (``ai``) and that provider's configured model when
+    ``model`` is omitted — same resolution path as normal Sona chat replies.
 
     Fail-open: returns the original ``text`` when translation is skipped,
     unavailable, empty, or raises.
@@ -79,16 +84,20 @@ def translate_thread_final_for_sona(
         return original
 
     try:
-        raw = send(
-            _build_user_prompt(original.strip()),
-            AI="Gemini",
-            model="gemini-2.5-flash",
-            config={
+        send_kwargs: dict[str, Any] = {
+            "config": {
                 "instructions": instr,
                 "temp": 0.5,
                 "max_tokens": 1500,
             },
-        )
+        }
+        if ai is not None:
+            send_kwargs["AI"] = ai
+        # Omit model unless explicitly set so PromptManager uses the AI type's
+        # runtime-configured model (matches chat.request behavior).
+        if model is not None:
+            send_kwargs["model"] = model
+        raw = send(_build_user_prompt(original.strip()), **send_kwargs)
         rewritten = str(raw or "").strip()
         if not rewritten:
             return original
@@ -106,6 +115,8 @@ async def atranslate_thread_final_for_sona(
     *,
     send: SendFn | None = None,
     instructions: str | None = None,
+    ai: str | None = None,
+    model: str | None = None,
     timeout: float = TRANSLATE_TIMEOUT_S,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
@@ -117,6 +128,8 @@ async def atranslate_thread_final_for_sona(
                 text,
                 send=send,
                 instructions=instructions,
+                ai=ai,
+                model=model,
                 limit=limit,
             ),
             timeout=timeout,

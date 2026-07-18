@@ -2596,12 +2596,37 @@ def _sona_thread_instructions() -> str | None:
     return None
 
 
+def _runtime_chat_ai() -> str | None:
+    """AI provider currently selected for normal Sona chat (`$c`/`$o`/`$g`, etc.)."""
+    bot = _STATE.get("bot")
+    sona = getattr(bot, "sonata", None) if bot is not None else None
+    for source in (sona, MANAGER):
+        if source is None:
+            continue
+        try:
+            cfg = getattr(source, "config", None)
+            if cfg is None:
+                continue
+            ai = cfg.get("AI") if hasattr(cfg, "get") else None
+            if ai:
+                return str(ai)
+        except Exception:
+            logger.debug("Could not read runtime chat AI from %r", source, exc_info=True)
+    return None
+
+
 async def _translate_thread_final_for_sona(text: str) -> str:
-    """Route thread-bound finals through Sona's normal response style (fail-open)."""
+    """Route thread-bound finals through Sona's normal response style (fail-open).
+
+    Uses the runtime chat AI + that provider's configured model — not a hardcoded
+    Gemini flash call.
+    """
     return await atranslate_thread_final_for_sona(
         text,
         send=PROMPT_MANAGER.send,
         instructions=_sona_thread_instructions(),
+        ai=_runtime_chat_ai(),
+        model=None,
     )
 
 

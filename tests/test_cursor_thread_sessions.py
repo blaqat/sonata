@@ -207,11 +207,12 @@ class TestThreadRenderer(unittest.TestCase):
 
 
 class TestThreadTranslate(unittest.TestCase):
-    def test_translate_success_uses_send_result(self):
+    def test_translate_success_uses_runtime_ai_not_hardcoded_gemini(self):
         def fake_send(prompt, *args, **kwargs):
             self.assertIn("Preserve all factual content", prompt)
-            self.assertEqual(kwargs.get("AI"), "Gemini")
-            self.assertEqual(kwargs.get("model"), "gemini-2.5-flash")
+            self.assertEqual(kwargs.get("AI"), "Claude")
+            # model omitted so PromptManager uses that AI's configured model
+            self.assertNotIn("model", kwargs)
             cfg = kwargs.get("config") or {}
             self.assertIn("sonata", (cfg.get("instructions") or "").lower())
             return "hey — fixed the bug with a grin"
@@ -220,8 +221,23 @@ class TestThreadTranslate(unittest.TestCase):
             "The bug was fixed in auth.py.",
             send=fake_send,
             instructions=DEFAULT_SONA_INSTRUCTIONS,
+            ai="Claude",
         )
         self.assertEqual(out, "hey — fixed the bug with a grin")
+
+    def test_translate_passes_explicit_model_when_set(self):
+        def fake_send(prompt, *args, **kwargs):
+            self.assertEqual(kwargs.get("AI"), "OpenAI")
+            self.assertEqual(kwargs.get("model"), "gpt-test")
+            return "rewritten"
+
+        out = translate_thread_final_for_sona(
+            "original",
+            send=fake_send,
+            ai="OpenAI",
+            model="gpt-test",
+        )
+        self.assertEqual(out, "rewritten")
 
     def test_translate_fallback_on_send_failure(self):
         def boom(*_a, **_k):
@@ -268,6 +284,25 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
             timeout=0.01,
         )
         self.assertEqual(out, original)
+
+    async def test_plugin_translate_uses_runtime_chat_ai(self):
+        mod = load_cursor_plugin()
+        cfg = SimpleNamespace(get=lambda key, *a: "Claude" if key == "AI" else None)
+        sona = SimpleNamespace(config=cfg)
+        bot = SimpleNamespace(sonata=sona)
+        mod._STATE["bot"] = bot
+        seen = {}
+
+        def fake_send(prompt, *args, **kwargs):
+            seen.update(kwargs)
+            return "sona voice"
+
+        with patch.object(mod, "PROMPT_MANAGER", SimpleNamespace(send=fake_send)):
+            with patch.object(mod, "_sona_thread_instructions", return_value="be sona"):
+                out = await mod._translate_thread_final_for_sona("cursor facts")
+        self.assertEqual(out, "sona voice")
+        self.assertEqual(seen.get("AI"), "Claude")
+        self.assertNotIn("model", seen)
 
 
 class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
