@@ -324,6 +324,10 @@ class AgentSession:
     latest_run_status: RunStatus = RunStatus.QUEUED
     status_channel_id: str | None = None
     status_message_id: str | None = None
+    # Discord thread-session binding (SONA-105). Scope.channel_id is the thread id;
+    # parent_channel_id is the parent text channel used for channel policy.
+    thread_bound: bool = False
+    parent_channel_id: str | None = None
     summary: str = ""
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
@@ -345,6 +349,8 @@ class AgentSession:
             "latest_run_status": self.latest_run_status.value,
             "status_channel_id": self.status_channel_id,
             "status_message_id": self.status_message_id,
+            "thread_bound": self.thread_bound,
+            "parent_channel_id": self.parent_channel_id,
             "summary": self.summary,
             "created_at": dt_to_iso(self.created_at),
             "updated_at": dt_to_iso(self.updated_at),
@@ -375,6 +381,12 @@ class AgentSession:
             status_message_id=(
                 str(data["status_message_id"])
                 if data.get("status_message_id") is not None
+                else None
+            ),
+            thread_bound=bool(data.get("thread_bound")),
+            parent_channel_id=(
+                str(data["parent_channel_id"])
+                if data.get("parent_channel_id") is not None
                 else None
             ),
             summary=str(data.get("summary") or "")[:500],

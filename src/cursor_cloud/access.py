@@ -310,6 +310,7 @@ class AccessController:
         # Tier 2
         allowed = {
             "run",
+            "new",
             "stop",
             "sessions",
             "session",

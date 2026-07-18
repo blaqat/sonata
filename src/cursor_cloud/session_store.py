@@ -61,6 +61,8 @@ class SessionStore(Protocol):
 
     async def all_sessions(self) -> list[AgentSession]: ...
 
+    async def find_thread_session(self, thread_id: str) -> AgentSession | None: ...
+
     def lock_for(self, scope: ScopeKey) -> asyncio.Lock: ...
 
 
@@ -241,6 +243,23 @@ class MemorySessionStore:
         for bucket in self._sessions.values():
             out.extend(bucket.values())
         return out
+
+    async def find_thread_session(self, thread_id: str) -> AgentSession | None:
+        """Return the immutable thread-bound session for a Discord thread id."""
+        needle = str(thread_id)
+        found: AgentSession | None = None
+        for session in await self.all_sessions():
+            if not session.thread_bound:
+                continue
+            if session.scope.channel_id != needle:
+                continue
+            if found is not None and found.agent_id != session.agent_id:
+                # Defensive: prefer active binding if duplicates ever exist.
+                if session.active and not found.active:
+                    found = session
+                continue
+            found = session
+        return found
 
     def export_state(self) -> dict[str, Any]:
         return {

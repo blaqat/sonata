@@ -79,6 +79,12 @@ from cursor_cloud.session_store import (
     session_is_idle,
 )
 from cursor_cloud.status_renderer import initial_queued_message, redact_untrusted
+from cursor_cloud.thread_session import (
+    owner_reply_to_human,
+    policy_channel_id as resolve_policy_channel_id,
+    thread_session_immutable_violation,
+)
+from cursor_cloud.thread_sink import ThreadActivitySink
 from modules.AI_manager import AI_Manager
 from modules.utils import get_reference_chain, get_reference_message_chain
 
@@ -106,6 +112,7 @@ _STATE: dict[str, Any] = {
     "expiry_task": None,
     "reconcile_task": None,
     "policy_manager": None,  # injectable for tests / resolved from Sonata
+    "handled_thread_messages": set(),
 }
 
 
@@ -138,11 +145,30 @@ def _client() -> CursorCloudClient:
     return _STATE["client"]
 
 
+def _channel_is_thread(channel) -> bool:
+    if isinstance(channel, discord.Thread):
+        return True
+    return bool(getattr(channel, "parent_id", None))
+
+
 def _scope_from_interaction(interaction: discord.Interaction) -> ScopeKey:
     guild_id = str(interaction.guild_id or 0)
     channel_id = str(interaction.channel_id or 0)
     user_id = str(interaction.user.id)
     return ScopeKey(guild_id=guild_id, channel_id=channel_id, user_id=user_id)
+
+
+def _policy_channel_id_from_interaction(interaction: discord.Interaction) -> str:
+    channel = getattr(interaction, "channel", None)
+    if _channel_is_thread(channel):
+        return str(getattr(channel, "parent_id", interaction.channel_id))
+    return str(interaction.channel_id or 0)
+
+
+def _scope_from_message(message: discord.Message, *, user_id: str | int) -> ScopeKey:
+    guild_id = str(message.guild.id if message.guild else 0)
+    channel_id = str(message.channel.id)
+    return ScopeKey(guild_id=guild_id, channel_id=channel_id, user_id=str(user_id))
 
 
 def _role_ids(user: discord.abc.User) -> list[str]:
@@ -198,21 +224,23 @@ def _policy_allowed_for(
     role_ids: list[str],
     subcommand: str,
     interaction: discord.Interaction | None = None,
+    policy_channel_id: str | None = None,
 ) -> bool:
     """Evaluate channel policy. Returns False if manager missing and required."""
     policy_manager = _resolve_policy_manager(interaction)
     if policy_manager is None:
         return not _require_policy_manager()
+    policy_ch = str(policy_channel_id or channel_id)
     if not policy_manager.can_speak(
         guild_id=guild_id,
-        channel_id=channel_id,
+        channel_id=policy_ch,
         user_id=user_id,
         role_ids=role_ids,
     ):
         return False
     return policy_manager.is_command_allowed(
         guild_id=guild_id,
-        channel_id=channel_id,
+        channel_id=policy_ch,
         command=f"cursor.{subcommand}",
         user_id=user_id,
         role_ids=role_ids,
@@ -227,6 +255,7 @@ async def _policy_allowed(interaction: discord.Interaction, subcommand: str) -> 
         role_ids=_role_ids(interaction.user),
         subcommand=subcommand,
         interaction=interaction,
+        policy_channel_id=_policy_channel_id_from_interaction(interaction),
     )
 
 
@@ -255,6 +284,7 @@ async def _revalidate_run_auth(
     subcommand: str = "run",
     interaction: discord.Interaction | None = None,
     minimum: AccessTier = AccessTier.APPROVAL,
+    policy_channel_id: str | None = None,
 ) -> AccessTier:
     """Fail-closed tier + policy check used at every deferred boundary and before submit."""
     cfg = _cfg()
@@ -276,6 +306,10 @@ async def _revalidate_run_auth(
                 "Cursor channel policy is not configured; refusing to run."
             ),
         )
+    pol_ch = resolve_policy_channel_id(
+        channel_id=str(channel_id),
+        parent_channel_id=policy_channel_id,
+    )
     if not _policy_allowed_for(
         guild_id=guild_id,
         channel_id=channel_id,
@@ -283,6 +317,7 @@ async def _revalidate_run_auth(
         role_ids=role_ids or [],
         subcommand=subcommand,
         interaction=interaction,
+        policy_channel_id=pol_ch,
     ):
         raise AuthorizationError(
             user_message="Cursor is not allowed in this channel."
@@ -314,6 +349,7 @@ async def _gate(interaction: discord.Interaction, subcommand: str) -> AccessTier
             subcommand=subcommand,
             interaction=interaction,
             minimum=AccessTier.APPROVAL,
+            policy_channel_id=_policy_channel_id_from_interaction(interaction),
         )
     except AuthorizationError as exc:
         await _ephemeral(interaction, exc.user_message)
@@ -836,6 +872,247 @@ async def _build_context_for_run(
     return built.text, built.images, built.skipped_images
 
 
+async def _build_context_from_message(
+    message: discord.Message,
+    prompt: str,
+    *,
+    message_ref: str | None = None,
+    image_attachments: list[discord.Attachment | None] | None = None,
+) -> tuple[str, list[ImageInput], list[str]]:
+    cfg = _cfg()
+    missing: list[str] = []
+    chain_messages = []
+    ref_chain = None
+
+    channel_id, ref_message_id = parse_message_reference(
+        message_ref,
+        current_guild_id=message.guild.id if message.guild else None,
+        current_channel_id=message.channel.id,
+    )
+    target_message = message
+    if ref_message_id and str(ref_message_id) != str(message.id):
+        channel = message.channel
+        if channel_id and str(channel_id) != str(message.channel.id):
+            channel = message.guild.get_channel(int(channel_id)) if message.guild else None
+            if channel is None and message.guild:
+                try:
+                    channel = await message.guild.fetch_channel(int(channel_id))
+                except Exception:
+                    channel = None
+        if channel is None:
+            missing.append(f"Could not access channel for message {ref_message_id}.")
+        else:
+            try:
+                target_message = await channel.fetch_message(int(ref_message_id))
+            except Exception:
+                missing.append(f"Message {ref_message_id} missing or inaccessible.")
+
+    if target_message is not None:
+        try:
+            ref_chain = await get_reference_chain(
+                target_message, max_length=cfg.chain_depth, include_message=True
+            )
+        except Exception:
+            ref_chain = None
+            missing.append("Failed to resolve full reply chain text.")
+        try:
+            msg_objs = await get_reference_message_chain(
+                target_message, max_length=cfg.chain_depth, include_message=True
+            )
+            chain_messages = collect_chain_attachments(msg_objs, max_depth=cfg.chain_depth)
+        except Exception:
+            missing.append("Failed to resolve reply-chain attachments.")
+
+    direct: list[ImageInput] = []
+    for att in list(message.attachments) + list(image_attachments or []):
+        if att is None:
+            continue
+        direct.extend(
+            images_from_discord_attachments(
+                [att], source_message_id=str(message.id)
+            )
+        )
+
+    built = build_run_prompt(
+        prompt,
+        reference_chain=ref_chain,
+        chain_messages=chain_messages,
+        direct_images=direct,
+        missing_refs=missing,
+        max_images=cfg.max_images,
+        max_bytes=cfg.max_image_bytes,
+    )
+    return built.text, built.images, built.skipped_images
+
+
+async def _maybe_unarchive_thread(thread: discord.Thread) -> None:
+    if not getattr(thread, "archived", False):
+        return
+    try:
+        await thread.edit(archived=False)
+    except Exception:
+        logger.debug("Could not unarchive Cursor thread %s", thread.id, exc_info=True)
+
+
+async def handle_thread_message(message: discord.Message) -> bool:
+    """Owner plain messages in bound threads become agent follow-ups."""
+    if message.author.bot:
+        return False
+    if not _channel_is_thread(message.channel):
+        return False
+    if not message.content and not message.attachments:
+        return False
+
+    sessions = _sessions()
+    session = await sessions.find_thread_session(str(message.channel.id))
+    if session is None:
+        return False
+
+    seen: set[str] = _STATE.setdefault("handled_thread_messages", set())
+    msg_key = str(message.id)
+    if msg_key in seen:
+        return True
+    if len(seen) > 5000:
+        seen.clear()
+    seen.add(msg_key)
+
+    owner_id = session.owner_id
+    if str(message.author.id) != owner_id:
+        return True
+
+    if owner_reply_to_human(message, owner_id):
+        return True
+
+    await _maybe_unarchive_thread(message.channel)
+
+    scope = _scope_from_message(message, user_id=owner_id)
+    pol_ch = resolve_policy_channel_id(
+        channel_id=scope.channel_id,
+        session=session,
+    )
+    role_ids = _role_ids(message.author)
+    try:
+        await _revalidate_run_auth(
+            user_id=owner_id,
+            guild_id=scope.guild_id,
+            channel_id=scope.channel_id,
+            role_ids=role_ids,
+            subcommand="run",
+            interaction=None,
+            policy_channel_id=pol_ch,
+        )
+    except CursorCloudError:
+        return False
+
+    prompt = (message.content or "").strip()
+    if not prompt and not message.attachments:
+        return False
+
+    class _MsgInteraction:
+        def __init__(self):
+            self.user = message.author
+            self.guild_id = message.guild.id if message.guild else 0
+            self.channel_id = message.channel.id
+            self.channel = message.channel
+            self.guild = message.guild
+            self.client = _STATE.get("bot")
+            self.response = _Resp()
+            self.followup = message.channel
+            self.id = message.id
+
+        async def original_response(self):
+            return self._msg
+
+    class _Resp:
+        def __init__(self):
+            self._done = True
+
+        def is_done(self):
+            return True
+
+        async def send_message(self, *a, **k):
+            return None
+
+        async def defer(self, **k):
+            return None
+
+    fake = _MsgInteraction()
+    fake._msg = None
+
+    async def _followup_send(content, **kwargs):
+        kwargs.pop("wait", None)
+        kwargs.pop("ephemeral", None)
+        return await message.channel.send(
+            content,
+            allowed_mentions=kwargs.get("allowed_mentions", CONTENT_MENTIONS),
+        )
+
+    fake.followup.send = _followup_send  # type: ignore
+
+    try:
+        prompt_text, image_inputs, skipped = await _build_context_from_message(
+            message, prompt or "(see attachments)"
+        )
+    except Exception:
+        logger.exception("Cursor thread follow-up context failed")
+        return True
+
+    activity_msg = None
+    if session.status_channel_id and session.status_message_id:
+        try:
+            ch = message.channel
+            activity_msg = await ch.fetch_message(int(session.status_message_id))
+        except Exception:
+            activity_msg = None
+    if activity_msg is None:
+        try:
+            activity_msg = await message.channel.send(
+                initial_queued_message(),
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+            session.status_channel_id = str(message.channel.id)
+            session.status_message_id = str(activity_msg.id)
+            await sessions.upsert(session)
+        except Exception:
+            logger.exception("Cursor thread activity message create failed")
+            return True
+
+    try:
+        await _prepare_and_maybe_launch(
+            fake,  # type: ignore
+            prompt or "(see attachments)",
+            None,
+            [],
+            force_new=False,
+            scope_override=scope,
+            policy_channel_id=pol_ch,
+            thread_bound=True,
+            parent_channel_id=session.parent_channel_id,
+            status_msg=activity_msg,
+            skip_status_post=True,
+            prebuilt=(prompt_text, image_inputs, skipped),
+        )
+    except BusyRunError:
+        try:
+            await message.channel.send(
+                f"### Busy\n{BusyRunError().user_message}"[:2000],
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+        except Exception:
+            pass
+    except CursorCloudError as exc:
+        try:
+            await message.channel.send(
+                f"### Error\n{exc.user_message}"[:2000],
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+        except Exception:
+            pass
+    except Exception:
+        logger.exception("Cursor thread follow-up failed")
+    return True
+
+
 async def _launch_run(
     interaction: discord.Interaction,
     *,
@@ -851,6 +1128,9 @@ async def _launch_run(
     role_ids: list[str] | None = None,
     skip_status_post: bool = False,
     status_msg: discord.Message | None = None,
+    thread_bound: bool = False,
+    parent_channel_id: str | None = None,
+    policy_channel_id: str | None = None,
 ) -> AgentSession:
     cfg = _cfg()
     scope = scope or _scope_from_interaction(interaction)
@@ -858,6 +1138,11 @@ async def _launch_run(
     client = _client()
     role_ids = role_ids if role_ids is not None else _role_ids(getattr(interaction, "user", None) or type("U", (), {"roles": []})())
     interaction_obj = interaction if isinstance(interaction, discord.Interaction) else None
+    pol_ch = resolve_policy_channel_id(
+        channel_id=scope.channel_id,
+        parent_channel_id=policy_channel_id or parent_channel_id,
+    )
+    auth_subcommand = "new" if thread_bound and force_new else "run"
 
     # Final fail-closed auth immediately before consume/submit.
     await _revalidate_run_auth(
@@ -865,8 +1150,9 @@ async def _launch_run(
         guild_id=scope.guild_id,
         channel_id=scope.channel_id,
         role_ids=role_ids,
-        subcommand="run",
+        subcommand=auth_subcommand,
         interaction=interaction_obj,
+        policy_channel_id=pol_ch,
     )
 
     # Pre-check busy under the scope lock BEFORE posting public Queued status,
@@ -877,10 +1163,18 @@ async def _launch_run(
             guild_id=scope.guild_id,
             channel_id=scope.channel_id,
             role_ids=role_ids,
-            subcommand="run",
+            subcommand=auth_subcommand,
             interaction=interaction_obj,
+            policy_channel_id=pol_ch,
         )
         active = await sessions.get_active(scope)
+        if thread_bound and active is not None and thread_session_immutable_violation(
+            active, force_new=force_new, agent_id=agent_id
+        ):
+            raise ValidationError(
+                "Thread session immutable",
+                user_message="This thread is already bound to a Cursor session.",
+            )
         resolved_agent = agent_id
         if not force_new and resolved_agent is None and active is not None:
             resolved_agent = active.agent_id
@@ -906,10 +1200,18 @@ async def _launch_run(
                 guild_id=scope.guild_id,
                 channel_id=scope.channel_id,
                 role_ids=role_ids,
-                subcommand="run",
+                subcommand=auth_subcommand,
                 interaction=interaction_obj,
+                policy_channel_id=pol_ch,
             )
             active = await sessions.get_active(scope)
+            if thread_bound and active is not None and thread_session_immutable_violation(
+                active, force_new=force_new, agent_id=agent_id
+            ):
+                raise ValidationError(
+                    "Thread session immutable",
+                    user_message="This thread is already bound to a Cursor session.",
+                )
             if not force_new and agent_id is None and active is not None:
                 agent_id = active.agent_id
 
@@ -975,6 +1277,8 @@ async def _launch_run(
                             str(status_msg.channel.id) if status_msg else None
                         ),
                         status_message_id=str(status_msg.id) if status_msg else None,
+                        thread_bound=thread_bound,
+                        parent_channel_id=parent_channel_id,
                         summary=prompt_text[:200],
                         active=True,
                         last_meaningful_activity_at=utcnow(),
@@ -1059,7 +1363,17 @@ async def _launch_run(
         except Exception:
             logger.debug("Failed to append Cursor prompt log", exc_info=True)
 
-        sink = DiscordStatusSink(status_msg)
+        sink: DiscordStatusSink | ThreadActivitySink
+        if thread_bound or session.thread_bound:
+            channel = status_msg.channel if status_msg else interaction.channel
+            sink = ThreadActivitySink(
+                channel,
+                status_msg,
+                edit_interval_ms=cfg.status_edit_interval_ms,
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+        else:
+            sink = DiscordStatusSink(status_msg)
         tracker = RunTracker(
             client,
             sink,
@@ -1079,7 +1393,7 @@ async def _launch_run(
                     initial_status=session.latest_run_status,
                 )
                 session.latest_run_status = snap.status
-                session.degraded = snap.degraded
+                session.degraded = snap.degraded or getattr(sink, "degraded", False)
                 if snap.status.is_terminal:
                     session.last_meaningful_activity_at = utcnow()
                 await sessions.upsert(session)
@@ -1325,11 +1639,23 @@ async def _prepare_and_maybe_launch(
     skip_model: bool = False,
     model_override_choice: ModelChoice | None = None,
     prebuilt: tuple[str, list[ImageInput], list[str]] | None = None,
+    scope_override: ScopeKey | None = None,
+    policy_channel_id: str | None = None,
+    thread_bound: bool = False,
+    parent_channel_id: str | None = None,
+    status_msg: discord.Message | None = None,
+    skip_status_post: bool = False,
+    auth_subcommand: str | None = None,
 ) -> None:
-    scope = _scope_from_interaction(interaction)
+    scope = scope_override or _scope_from_interaction(interaction)
     sessions = _sessions()
     cfg = _cfg()
     role_ids = _role_ids(interaction.user)
+    pol_ch = resolve_policy_channel_id(
+        channel_id=scope.channel_id,
+        parent_channel_id=policy_channel_id or parent_channel_id,
+    )
+    subcommand = auth_subcommand or ("new" if thread_bound and force_new else "run")
 
     # Gate DENIED / Tier3 and policy before any work.
     tier = await _revalidate_run_auth(
@@ -1337,8 +1663,9 @@ async def _prepare_and_maybe_launch(
         guild_id=scope.guild_id,
         channel_id=scope.channel_id,
         role_ids=role_ids,
-        subcommand="run",
+        subcommand=subcommand,
         interaction=interaction,
+        policy_channel_id=pol_ch,
     )
 
     if prebuilt is None:
@@ -1357,6 +1684,17 @@ async def _prepare_and_maybe_launch(
         preferred = await sessions.get_model_pref(scope) or cfg.default_model or None
 
     want_new = bool(force_new)
+    if thread_bound:
+        active = await sessions.get_active(scope)
+        if active is not None and thread_session_immutable_violation(
+            active, force_new=want_new, agent_id=None
+        ):
+            raise ValidationError(
+                "Thread session immutable",
+                user_message="This thread is already bound to a Cursor session.",
+            )
+        if active is not None and not want_new:
+            want_new = False
 
     # Model mismatch before idle + approval hashing.
     if (
@@ -1511,6 +1849,11 @@ async def _prepare_and_maybe_launch(
         envelope=envelope,
         scope=scope,
         role_ids=role_ids,
+        skip_status_post=skip_status_post,
+        status_msg=status_msg,
+        thread_bound=thread_bound,
+        parent_channel_id=parent_channel_id,
+        policy_channel_id=pol_ch,
     )
 
 
@@ -1754,6 +2097,22 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
 
     fake.followup.send = _followup_send  # type: ignore
 
+    sessions = _sessions()
+    active = await sessions.get_active(scope)
+    thread_bound = bool(active and active.thread_bound)
+    parent_channel_id = active.parent_channel_id if active else None
+    pol_ch = resolve_policy_channel_id(
+        channel_id=scope.channel_id,
+        session=active,
+    )
+    status_msg = None
+    if thread_bound and active and active.status_message_id and active.status_channel_id:
+        try:
+            ch = channel
+            status_msg = await ch.fetch_message(int(active.status_message_id))
+        except Exception:
+            status_msg = None
+
     try:
         # Final auth check immediately before submit (inside _launch_run too).
         await _revalidate_run_auth(
@@ -1761,8 +2120,9 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             guild_id=scope.guild_id,
             channel_id=scope.channel_id,
             role_ids=role_ids,
-            subcommand="run",
+            subcommand="new" if thread_bound and not envelope.is_follow_up else "run",
             interaction=interaction,
+            policy_channel_id=pol_ch,
         )
         await _launch_run(
             fake,  # type: ignore
@@ -1776,6 +2136,11 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             envelope=envelope,
             scope=scope,
             role_ids=role_ids,
+            thread_bound=thread_bound,
+            parent_channel_id=parent_channel_id,
+            policy_channel_id=pol_ch,
+            skip_status_post=thread_bound,
+            status_msg=status_msg,
         )
         await access.images.discard(request.request_id)
         if interaction.message:
@@ -1870,6 +2235,12 @@ async def _complete_idle(interaction, decision_id: str, choice: IdleChoice) -> N
             except discord.HTTPException:
                 pass
         return
+
+    active = await sessions.get_active(decision.scope)
+    if active and active.thread_bound and choice == IdleChoice.NEW:
+        raise ValidationError(
+            user_message="Thread sessions cannot start a new agent in this thread.",
+        )
 
     try:
         images = await _rehydrate_pending_images(pending)
@@ -1967,6 +2338,12 @@ async def _complete_model(interaction, decision_id: str, choice: ModelChoice) ->
                 pass
         return
 
+    active = await sessions.get_active(decision.scope)
+    if active and active.thread_bound and choice == ModelChoice.NEW_SESSION:
+        raise ValidationError(
+            user_message="Thread sessions cannot start a new agent in this thread.",
+        )
+
     try:
         images = await _rehydrate_pending_images(pending)
     except ValidationError:
@@ -2040,6 +2417,96 @@ async def cursor_run(
     except Exception as exc:
         logger.exception("cursor run failed")
         await _ephemeral(interaction, f"Run failed: {exc}")
+
+
+@cursor_group.command(
+    name="new",
+    description="Start a Cursor agent in a new public thread (thread = session)",
+)
+async def cursor_new(
+    ctx: discord.ApplicationContext,
+    prompt: str = Option(str, "Instruction for the agent"),
+    message: str = Option(
+        str, "Message URL or ID for reply-chain context", required=False
+    ),
+    image1: discord.Attachment = Option(discord.Attachment, "Image 1", required=False),
+    image2: discord.Attachment = Option(discord.Attachment, "Image 2", required=False),
+    image3: discord.Attachment = Option(discord.Attachment, "Image 3", required=False),
+    image4: discord.Attachment = Option(discord.Attachment, "Image 4", required=False),
+    image5: discord.Attachment = Option(discord.Attachment, "Image 5", required=False),
+):
+    interaction = ctx.interaction
+    if await _gate(interaction, "new") is None:
+        return
+    if isinstance(interaction.channel, discord.Thread) or _channel_is_thread(
+        interaction.channel
+    ):
+        await _ephemeral(
+            interaction,
+            "Use `/cursor new` from the parent channel, not inside a thread.",
+        )
+        return
+    await _defer(interaction, ephemeral=True)
+    parent_channel_id = str(interaction.channel_id)
+    thread_name = f"cursor-{interaction.user.display_name or interaction.user.name}"[:90]
+    try:
+        thread = await interaction.channel.create_thread(
+            name=thread_name,
+            type=discord.ChannelType.public_thread,
+            auto_archive_duration=60,
+            reason="Cursor agent thread session",
+        )
+    except discord.Forbidden:
+        await _ephemeral(
+            interaction,
+            "Cannot create a public thread here (missing permissions).",
+        )
+        return
+    except discord.HTTPException as exc:
+        await _ephemeral(interaction, f"Could not create thread: {exc}")
+        return
+
+    scope = ScopeKey(
+        guild_id=str(interaction.guild_id or 0),
+        channel_id=str(thread.id),
+        user_id=str(interaction.user.id),
+    )
+    try:
+        activity_msg = await thread.send(
+            initial_queued_message(),
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+    except discord.HTTPException as exc:
+        await _ephemeral(interaction, f"Thread created but could not post activity: {exc}")
+        return
+
+    try:
+        await _prepare_and_maybe_launch(
+            interaction,
+            prompt,
+            message,
+            [image1, image2, image3, image4, image5],
+            force_new=True,
+            scope_override=scope,
+            policy_channel_id=parent_channel_id,
+            thread_bound=True,
+            parent_channel_id=parent_channel_id,
+            status_msg=activity_msg,
+            skip_status_post=True,
+            auth_subcommand="new",
+        )
+        await _ephemeral(
+            interaction,
+            f"Started Cursor session in {thread.mention}.\n"
+            f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
+            f"this bot archives idle sessions after "
+            f"{_cfg().session_idle_prompt_minutes} minutes._",
+        )
+    except CursorCloudError as exc:
+        await _ephemeral(interaction, exc.user_message)
+    except Exception as exc:
+        logger.exception("cursor new failed")
+        await _ephemeral(interaction, f"Thread session failed: {exc}")
 
 
 @cursor_group.command(name="stop", description="Cancel your active Cursor run in this channel")
@@ -2594,11 +3061,37 @@ async def _reconcile_runs() -> None:
                         channel = await bot.fetch_channel(int(session.status_channel_id))
                     msg = await channel.fetch_message(int(session.status_message_id))
                 except Exception:
-                    session.degraded = True
-                    await sessions.upsert(session)
-                    continue
+                    if session.thread_bound:
+                        try:
+                            channel = bot.get_channel(int(session.scope.channel_id))
+                            if channel is None:
+                                channel = await bot.fetch_channel(int(session.scope.channel_id))
+                            msg = await channel.send(
+                                initial_queued_message(),
+                                allowed_mentions=CONTENT_MENTIONS,
+                            )
+                            session.status_channel_id = str(channel.id)
+                            session.status_message_id = str(msg.id)
+                            session.degraded = True
+                            await sessions.upsert(session)
+                        except Exception:
+                            session.degraded = True
+                            await sessions.upsert(session)
+                            continue
+                    else:
+                        session.degraded = True
+                        await sessions.upsert(session)
+                        continue
 
-                sink = DiscordStatusSink(msg)
+                if session.thread_bound:
+                    sink = ThreadActivitySink(
+                        msg.channel,
+                        msg,
+                        edit_interval_ms=_cfg().status_edit_interval_ms,
+                        allowed_mentions=CONTENT_MENTIONS,
+                    )
+                else:
+                    sink = DiscordStatusSink(msg)
                 tracker = RunTracker(
                     client,
                     sink,
@@ -2727,6 +3220,36 @@ async def _expire_stale_decisions() -> None:
         await access.images.purge_expired()
 
 
+async def _archive_idle_threads() -> None:
+    """Archive bound threads after session idle (Discord min native archive is 60m)."""
+    cfg = _cfg()
+    sessions = _sessions()
+    bot = _STATE.get("bot")
+    if not cfg or not sessions or not bot:
+        return
+    for session in await sessions.all_sessions():
+        if not session.thread_bound:
+            continue
+        if run_is_busy(session.latest_run_status):
+            continue
+        if not session_is_idle(session, idle_minutes=cfg.session_idle_prompt_minutes):
+            continue
+        try:
+            channel = bot.get_channel(int(session.scope.channel_id))
+            if channel is None:
+                channel = await bot.fetch_channel(int(session.scope.channel_id))
+            if isinstance(channel, discord.Thread) and not channel.archived:
+                await channel.edit(archived=True)
+            elif _channel_is_thread(channel) and not getattr(channel, "archived", False):
+                await channel.edit(archived=True)
+        except Exception:
+            logger.debug(
+                "Could not auto-archive idle Cursor thread %s",
+                session.scope.channel_id,
+                exc_info=True,
+            )
+
+
 async def _expiry_loop() -> None:
     while True:
         try:
@@ -2735,6 +3258,7 @@ async def _expiry_loop() -> None:
                 for request in expired:
                     await _edit_approval_expired_message(request)
             await _expire_stale_decisions()
+            await _archive_idle_threads()
         except Exception:
             logger.exception("Cursor approval expiry loop failed")
         await asyncio.sleep(60)
@@ -2822,6 +3346,17 @@ def cursor_register(context):
             await handle_component(interaction)
 
         bot._cursor_component_hook = True
+
+    if not getattr(bot, "_cursor_thread_message_hook", False):
+
+        @bot.listen("on_message")
+        async def _cursor_thread_message(message: discord.Message):
+            try:
+                await handle_thread_message(message)
+            except Exception:
+                logger.exception("Cursor thread message handler failed")
+
+        bot._cursor_thread_message_hook = True
 
 
 async def setup_cursor_runtime(sonata: AI_Manager, bot: discord.Bot) -> None:

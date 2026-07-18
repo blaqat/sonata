@@ -63,6 +63,7 @@ class TestCommandRegistration(unittest.TestCase):
         names = {c.name for c in mod.cursor_group.walk_commands()}
         for required in {
             "run",
+            "new",
             "stop",
             "sessions",
             "session",
@@ -120,6 +121,7 @@ class TestPolicyCommandNames(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await ctrl.resolve_tier(t2), AccessTier.APPROVAL)
         self.assertTrue(await ctrl.can_use_command(t2, "status"))
         self.assertTrue(await ctrl.can_use_command(t2, "run"))
+        self.assertTrue(await ctrl.can_use_command(t2, "new"))
         self.assertFalse(await ctrl.can_use_command(t2, "access"))
         self.assertFalse(await ctrl.can_use_command(other, "run"))
 

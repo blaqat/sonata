@@ -336,13 +336,23 @@ class RunTracker:
             return
         if terminal or self._pending_log_kinds:
             await self._flush_pending_text_logs()
-        content = render_status(
-            self.snapshot,
-            agent_name=self.agent_name,
-            skipped_images=self.skipped_images,
-        )
+        # Snapshot-aware sinks (thread chat-room UX) bypass classic single-message render.
+        update_snap = getattr(self.sink, "update_from_snapshot", None)
         try:
-            await self.sink.update(content, terminal=terminal)
+            if callable(update_snap):
+                await update_snap(
+                    self.snapshot,
+                    terminal=terminal,
+                    agent_name=self.agent_name,
+                    skipped_images=self.skipped_images,
+                )
+            else:
+                content = render_status(
+                    self.snapshot,
+                    agent_name=self.agent_name,
+                    skipped_images=self.skipped_images,
+                )
+                await self.sink.update(content, terminal=terminal)
         except Exception:
             self.snapshot.degraded = True
 
