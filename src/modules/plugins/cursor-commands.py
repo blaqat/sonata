@@ -88,6 +88,7 @@ from cursor_cloud.thread_session import (
 )
 from cursor_cloud.thread_renderer import THREAD_THINKING_INDICATOR
 from cursor_cloud.thread_sink import ThreadActivitySink
+from cursor_cloud.thread_translate import atranslate_thread_final_for_sona
 from modules.AI_manager import AI_Manager
 from modules.utils import get_reference_chain, get_reference_message_chain
 
@@ -1376,6 +1377,7 @@ async def _launch_run(
                 status_msg,
                 edit_interval_ms=cfg.status_edit_interval_ms,
                 allowed_mentions=CONTENT_MENTIONS,
+                final_translator=_translate_thread_final_for_sona,
             )
         else:
             sink = DiscordStatusSink(status_msg)
@@ -2580,6 +2582,29 @@ async def _generate_session_title(prompt: str) -> str:
     return fallback
 
 
+def _sona_thread_instructions() -> str | None:
+    """Prefer live Sonata PromptManager instructions when the plugin is extended."""
+    try:
+        text = PROMPT_MANAGER.get_instructions()
+        if text:
+            return str(text)
+        text = PROMPT_MANAGER.get("DefaultInstructions")
+        if text:
+            return str(text)
+    except Exception:
+        logger.debug("Could not read Sonata instructions for thread translate", exc_info=True)
+    return None
+
+
+async def _translate_thread_final_for_sona(text: str) -> str:
+    """Route thread-bound finals through Sona's normal response style (fail-open)."""
+    return await atranslate_thread_final_for_sona(
+        text,
+        send=PROMPT_MANAGER.send,
+        instructions=_sona_thread_instructions(),
+    )
+
+
 async def _maybe_rename_thread(channel, title: str | None) -> None:
     if not title or not _channel_is_thread(channel):
         return
@@ -3603,6 +3628,7 @@ async def _reconcile_runs() -> None:
                         msg,
                         edit_interval_ms=_cfg().status_edit_interval_ms,
                         allowed_mentions=CONTENT_MENTIONS,
+                        final_translator=_translate_thread_final_for_sona,
                     )
                 else:
                     sink = DiscordStatusSink(msg)

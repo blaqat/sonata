@@ -28,7 +28,7 @@ _TOOL_FAMILY_ALIASES: dict[str, str] = {
 }
 
 # Immediate ack while a thread follow-up is preparing / waiting on the API.
-THREAD_THINKING_INDICATOR = "### Thinking\n…"
+THREAD_THINKING_INDICATOR = "<a:aithinking:1527850620273430548> *thinking...*"
 
 
 def tool_family(name: str) -> str:

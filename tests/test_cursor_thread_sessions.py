@@ -36,6 +36,11 @@ from cursor_cloud.thread_session import (
     thread_session_immutable_violation,
 )
 from cursor_cloud.thread_sink import ThreadActivitySink
+from cursor_cloud.thread_translate import (
+    DEFAULT_SONA_INSTRUCTIONS,
+    atranslate_thread_final_for_sona,
+    translate_thread_final_for_sona,
+)
 
 
 GOD = "100000000000000001"
@@ -132,6 +137,12 @@ class TestThreadSessionHelpers(unittest.TestCase):
 
 
 class TestThreadRenderer(unittest.TestCase):
+    def test_thinking_indicator_uses_animated_emoji(self):
+        self.assertEqual(
+            THREAD_THINKING_INDICATOR,
+            "<a:aithinking:1527850620273430548> *thinking...*",
+        )
+
     def test_activity_coalesces_tool_families(self):
         snap = RunSnapshot(
             run_id="r1",
@@ -159,6 +170,18 @@ class TestThreadRenderer(unittest.TestCase):
         text = render_thread_activity(snap)
         self.assertEqual(text, THREAD_THINKING_INDICATOR)
 
+    def test_activity_thinking_peek_still_renders(self):
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.RUNNING,
+            thinking_text="considering the approach",
+        )
+        text = render_thread_activity(snap)
+        self.assertIn("### Thinking", text)
+        self.assertIn("considering the approach", text)
+        self.assertNotEqual(text, THREAD_THINKING_INDICATOR)
+
     def test_final_is_body_only_no_chrome(self):
         snap = RunSnapshot(
             run_id="r1",
@@ -181,6 +204,70 @@ class TestThreadRenderer(unittest.TestCase):
         self.assertNotIn("Run:", final)
         self.assertNotIn("### Git", final)
         self.assertNotIn("Duration:", final)
+
+
+class TestThreadTranslate(unittest.TestCase):
+    def test_translate_success_uses_send_result(self):
+        def fake_send(prompt, *args, **kwargs):
+            self.assertIn("Preserve all factual content", prompt)
+            self.assertEqual(kwargs.get("AI"), "Gemini")
+            self.assertEqual(kwargs.get("model"), "gemini-2.5-flash")
+            cfg = kwargs.get("config") or {}
+            self.assertIn("sonata", (cfg.get("instructions") or "").lower())
+            return "hey — fixed the bug with a grin"
+
+        out = translate_thread_final_for_sona(
+            "The bug was fixed in auth.py.",
+            send=fake_send,
+            instructions=DEFAULT_SONA_INSTRUCTIONS,
+        )
+        self.assertEqual(out, "hey — fixed the bug with a grin")
+
+    def test_translate_fallback_on_send_failure(self):
+        def boom(*_a, **_k):
+            raise RuntimeError("ai down")
+
+        original = "The bug was fixed in auth.py."
+        out = translate_thread_final_for_sona(original, send=boom)
+        self.assertEqual(out, original)
+
+    def test_translate_skips_errors_and_empty(self):
+        calls = {"n": 0}
+
+        def fake_send(*_a, **_k):
+            calls["n"] += 1
+            return "should not run"
+
+        self.assertEqual(
+            translate_thread_final_for_sona("### Error\nbad", send=fake_send),
+            "### Error\nbad",
+        )
+        self.assertEqual(
+            translate_thread_final_for_sona("_No output._", send=fake_send),
+            "_No output._",
+        )
+        self.assertEqual(calls["n"], 0)
+
+    def test_translate_fallback_when_send_missing(self):
+        original = "plain cursor final"
+        self.assertEqual(translate_thread_final_for_sona(original), original)
+
+
+class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
+    async def test_atranslate_timeout_falls_back(self):
+        def slow_send(*_a, **_k):
+            import time
+
+            time.sleep(0.2)
+            return "too late"
+
+        original = "cursor final text"
+        out = await atranslate_thread_final_for_sona(
+            original,
+            send=slow_send,
+            timeout=0.01,
+        )
+        self.assertEqual(out, original)
 
 
 class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
@@ -216,6 +303,55 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         await sink.update_from_snapshot(snap, terminal=True)
         self.assertEqual(channel.send.await_count, 1)
         self.assertTrue(sink.degraded)
+
+    async def test_finished_final_uses_translator(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+
+        async def translate(text: str) -> str:
+            return f"sona:{text}"
+
+        sink = ThreadActivitySink(
+            channel,
+            activity,
+            edit_interval_ms=0,
+            final_translator=translate,
+        )
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text="done",
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        sent = channel.send.await_args.args[0]
+        self.assertTrue(sent.startswith("sona:"))
+
+    async def test_error_final_skips_translator(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        translator = AsyncMock(return_value="witty fail")
+        sink = ThreadActivitySink(
+            channel,
+            activity,
+            edit_interval_ms=0,
+            final_translator=translator,
+        )
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.ERROR,
+            error_message="boom",
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        translator.assert_not_awaited()
+        sent = channel.send.await_args.args[0]
+        self.assertIn("Error", sent)
+        self.assertIn("boom", sent)
 
 
 class TestFindThreadSession(unittest.IsolatedAsyncioTestCase):

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
-from .models import RunSnapshot
+from .models import RunSnapshot, RunStatus
 from .thread_renderer import render_thread_activity, render_thread_final
+
+FinalTranslator = Callable[[str], Awaitable[str]]
 
 
 class MessageLike(Protocol):
@@ -29,11 +31,13 @@ class ThreadActivitySink:
         *,
         edit_interval_ms: int = 1200,
         allowed_mentions: Any = None,
+        final_translator: FinalTranslator | None = None,
     ):
         self.channel = channel
         self.activity_message = activity_message
         self.edit_interval_ms = max(200, int(edit_interval_ms))
         self.allowed_mentions = allowed_mentions
+        self.final_translator = final_translator
         self._last_edit = 0.0
         self._last_terminal_run_id: str | None = None
         self.degraded = False
@@ -72,6 +76,15 @@ class ThreadActivitySink:
                 agent_name=agent_name,
                 skipped_images=skipped_images,
             )
+            if (
+                self.final_translator is not None
+                and snapshot.status == RunStatus.FINISHED
+            ):
+                try:
+                    final = await self.final_translator(final)
+                except Exception:
+                    # Translator must fail open; keep original final text.
+                    pass
             kwargs: dict[str, Any] = {}
             if self.allowed_mentions is not None:
                 kwargs["allowed_mentions"] = self.allowed_mentions
