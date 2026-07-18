@@ -3131,23 +3131,28 @@ async def cursor_sessions(ctx: discord.ApplicationContext):
     scope = _scope_from_interaction(interaction)
     sessions = _sessions()
     items = list(await sessions.list_sessions(scope))
-    # Thread-bound sessions live under the thread channel id, so they are
-    # invisible from the parent channel unless we also surface them here.
-    seen = {s.agent_id for s in items}
-    try:
-        for s in await sessions.all_sessions():
-            if s.agent_id in seen:
-                continue
-            if s.owner_id != scope.user_id:
-                continue
-            if s.scope.guild_id != scope.guild_id:
-                continue
-            if not s.thread_bound:
-                continue
-            items.append(s)
-            seen.add(s.agent_id)
-    except Exception:
-        logger.debug("Failed listing cross-channel thread sessions", exc_info=True)
+    # Thread-bound sessions live under the thread channel id. From a parent
+    # channel, surface only threads rooted on *this* parent (not guild-wide).
+    if not _channel_is_thread(getattr(interaction, "channel", None)):
+        seen = {s.agent_id for s in items}
+        try:
+            for s in await sessions.all_sessions():
+                if s.agent_id in seen:
+                    continue
+                if s.owner_id != scope.user_id:
+                    continue
+                if s.scope.guild_id != scope.guild_id:
+                    continue
+                if not s.thread_bound:
+                    continue
+                if str(s.parent_channel_id or "") != str(scope.channel_id):
+                    continue
+                items.append(s)
+                seen.add(s.agent_id)
+        except Exception:
+            logger.debug(
+                "Failed listing parent-channel thread sessions", exc_info=True
+            )
     if not items:
         await _ephemeral(interaction, "No owned sessions in this channel.")
         return

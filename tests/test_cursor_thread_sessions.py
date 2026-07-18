@@ -1133,5 +1133,78 @@ class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
         message.reply.assert_awaited()
 
 
+class TestCursorSessionsParentFilter(unittest.IsolatedAsyncioTestCase):
+    async def test_parent_lists_only_this_channels_thread_sessions(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        sessions = MemorySessionStore()
+        await sessions.upsert(
+            AgentSession(
+                scope=ScopeKey("1", "200", OWNER),
+                agent_id="bc-here",
+                owner_id=OWNER,
+                thread_bound=True,
+                parent_channel_id="100",
+                name="here",
+                active=True,
+            )
+        )
+        await sessions.upsert(
+            AgentSession(
+                scope=ScopeKey("1", "300", OWNER),
+                agent_id="bc-other-parent",
+                owner_id=OWNER,
+                thread_bound=True,
+                parent_channel_id="999",
+                name="elsewhere",
+                active=True,
+            )
+        )
+        mod._STATE.update(
+            {
+                "config": cfg,
+                "sessions": sessions,
+                "access": AccessController(
+                    cfg,
+                    MemoryAccessStore(),
+                    image_retention=ImageRetentionStore(max_total_bytes=1),
+                ),
+                "policy_manager": ParentAllowsChildDeniesPolicy(),
+                "require_policy": True,
+                "bot": MagicMock(),
+            }
+        )
+        parent = MagicMock()
+        parent.id = 100
+        interaction = MagicMock()
+        interaction.user = SimpleNamespace(id=int(OWNER), roles=[])
+        interaction.guild_id = 1
+        interaction.channel_id = 100
+        interaction.channel = parent
+        interaction.guild = SimpleNamespace(id=1)
+        ctx = SimpleNamespace(interaction=interaction)
+        seen = {}
+
+        async def capture_ephemeral(_interaction, content):
+            seen["content"] = content
+
+        with patch.object(mod, "_gate", new=AsyncMock(return_value=True)):
+            with patch.object(mod, "_channel_is_thread", return_value=False):
+                with patch.object(mod, "_ephemeral", new=capture_ephemeral):
+                    await mod.cursor_sessions(ctx)
+
+        body = seen.get("content") or ""
+        self.assertIn("bc-here", body)
+        self.assertNotIn("bc-other-parent", body)
+        self.assertIn("thread", body.lower())
+
+
 if __name__ == "__main__":
     unittest.main()
