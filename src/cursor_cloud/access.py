@@ -409,6 +409,10 @@ class AccessController:
         *,
         prompt_preview: str,
         images: list[ImageInput] | None = None,
+        thread_bound: bool = False,
+        parent_channel_id: str | None = None,
+        status_channel_id: str | None = None,
+        status_message_id: str | None = None,
     ) -> ApprovalRequest:
         now = utcnow()
         expires = now + timedelta(hours=self.access_config.approval_timeout_hours)
@@ -420,6 +424,16 @@ class AccessController:
             created_at=now,
             expires_at=expires,
             prompt_preview=prompt_preview[:400],
+            thread_bound=bool(thread_bound),
+            parent_channel_id=(
+                str(parent_channel_id) if parent_channel_id is not None else None
+            ),
+            status_channel_id=(
+                str(status_channel_id) if status_channel_id is not None else None
+            ),
+            status_message_id=(
+                str(status_message_id) if status_message_id is not None else None
+            ),
         )
         await self.store.save_request(request)
         if images:

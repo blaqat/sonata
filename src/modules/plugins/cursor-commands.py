@@ -980,7 +980,16 @@ async def handle_thread_message(message: discord.Message) -> bool:
     if str(message.author.id) != owner_id:
         return True
 
-    if owner_reply_to_human(message, owner_id):
+    resolved_reply = None
+    ref = getattr(message, "reference", None)
+    if ref is not None and getattr(ref, "message_id", None) is not None:
+        resolved_reply = getattr(ref, "resolved", None)
+        if resolved_reply is None:
+            try:
+                resolved_reply = await message.channel.fetch_message(int(ref.message_id))
+            except Exception:
+                resolved_reply = None
+    if owner_reply_to_human(message, owner_id, resolved_message=resolved_reply):
         return True
 
     await _maybe_unarchive_thread(message.channel)
@@ -1002,7 +1011,8 @@ async def handle_thread_message(message: discord.Message) -> bool:
             policy_channel_id=pol_ch,
         )
     except CursorCloudError:
-        return False
+        # Already marked seen — do not let other handlers re-process as unbound.
+        return True
 
     prompt = (message.content or "").strip()
     if not prompt and not message.attachments:
@@ -1138,8 +1148,15 @@ async def _launch_run(
     client = _client()
     role_ids = role_ids if role_ids is not None else _role_ids(getattr(interaction, "user", None) or type("U", (), {"roles": []})())
     interaction_obj = interaction if isinstance(interaction, discord.Interaction) else None
+    # Inherit binding from an existing active session when callers omit flags
+    # (e.g. classic /cursor run inside a bound thread).
+    active_for_bind = await sessions.get_active(scope)
+    if active_for_bind is not None and active_for_bind.thread_bound:
+        thread_bound = True
+        parent_channel_id = parent_channel_id or active_for_bind.parent_channel_id
     pol_ch = resolve_policy_channel_id(
         channel_id=scope.channel_id,
+        session=active_for_bind,
         parent_channel_id=policy_channel_id or parent_channel_id,
     )
     auth_subcommand = "new" if thread_bound and force_new else "run"
@@ -1646,13 +1663,38 @@ async def _prepare_and_maybe_launch(
     status_msg: discord.Message | None = None,
     skip_status_post: bool = False,
     auth_subcommand: str | None = None,
-) -> None:
+) -> str:
+    """Prepare auth/context and launch (or post approval/decision).
+
+    Returns one of: ``launched``, ``approval_pending``, ``decision_pending``.
+    """
     scope = scope_override or _scope_from_interaction(interaction)
     sessions = _sessions()
     cfg = _cfg()
     role_ids = _role_ids(interaction.user)
+
+    # Inherit immutable thread binding + parent policy when already bound,
+    # or when the interaction channel is a Discord thread.
+    active_early = await sessions.get_active(scope)
+    if active_early is not None and active_early.thread_bound:
+        thread_bound = True
+        parent_channel_id = parent_channel_id or active_early.parent_channel_id
+        if status_msg is None and active_early.status_message_id:
+            try:
+                ch = getattr(interaction, "channel", None)
+                if ch is not None:
+                    status_msg = await ch.fetch_message(int(active_early.status_message_id))
+                    skip_status_post = True
+            except Exception:
+                status_msg = None
+    if policy_channel_id is None and parent_channel_id is None:
+        channel = getattr(interaction, "channel", None)
+        if _channel_is_thread(channel) and getattr(channel, "parent_id", None):
+            parent_channel_id = str(channel.parent_id)
+
     pol_ch = resolve_policy_channel_id(
         channel_id=scope.channel_id,
+        session=active_early,
         parent_channel_id=policy_channel_id or parent_channel_id,
     )
     subcommand = auth_subcommand or ("new" if thread_bound and force_new else "run")
@@ -1684,8 +1726,11 @@ async def _prepare_and_maybe_launch(
         preferred = await sessions.get_model_pref(scope) or cfg.default_model or None
 
     want_new = bool(force_new)
-    if thread_bound:
-        active = await sessions.get_active(scope)
+    if thread_bound or (active is not None and active.thread_bound):
+        thread_bound = True
+        parent_channel_id = parent_channel_id or (
+            active.parent_channel_id if active else None
+        )
         if active is not None and thread_session_immutable_violation(
             active, force_new=want_new, agent_id=None
         ):
@@ -1718,7 +1763,7 @@ async def _prepare_and_maybe_launch(
             skipped=skipped,
         )
         if posted:
-            return
+            return "decision_pending"
         # Condition cleared under lock (race); refresh and continue.
         active = await sessions.get_active(scope)
 
@@ -1746,7 +1791,7 @@ async def _prepare_and_maybe_launch(
             skipped=skipped,
         )
         if posted:
-            return
+            return "decision_pending"
         active = await sessions.get_active(scope)
 
     # Activity refresh only after idle/model gates have passed.
@@ -1788,10 +1833,24 @@ async def _prepare_and_maybe_launch(
                     "Image metadata mismatch",
                     user_message="Image set changed during preparation; please resubmit.",
                 )
+            status_channel_id = None
+            status_message_id = None
+            if status_msg is not None:
+                status_channel_id = str(status_msg.channel.id)
+                status_message_id = str(status_msg.id)
+            elif active is not None:
+                status_channel_id = active.status_channel_id
+                status_message_id = active.status_message_id
             request = await _access().create_approval_request(
                 envelope,
                 prompt_preview=redact_preview(prompt),
                 images=retained,
+                thread_bound=thread_bound,
+                parent_channel_id=(
+                    (parent_channel_id or pol_ch) if thread_bound else parent_channel_id
+                ),
+                status_channel_id=status_channel_id,
+                status_message_id=status_message_id,
             )
             approvers = await _access().current_approver_ids()
             mentions = " ".join(f"<@{uid}>" for uid in approvers)
@@ -1815,7 +1874,22 @@ async def _prepare_and_maybe_launch(
                 interaction,
                 f"Approval pending (`{request.request_id}`). Approvers have been notified.",
             )
-            msg = await interaction.channel.send(
+            # Post approval in the parent channel for thread-bound new sessions
+            # so approvers see it outside the private-feeling agent thread.
+            approve_channel = interaction.channel
+            if thread_bound and parent_channel_id:
+                bot = _STATE.get("bot")
+                try:
+                    parent = None
+                    if bot is not None:
+                        parent = bot.get_channel(int(parent_channel_id))
+                        if parent is None:
+                            parent = await bot.fetch_channel(int(parent_channel_id))
+                    if parent is not None:
+                        approve_channel = parent
+                except Exception:
+                    approve_channel = interaction.channel
+            msg = await approve_channel.send(
                 summary[:2000], view=view, allowed_mentions=approve_mentions
             )
             request.approval_channel_id = str(msg.channel.id)
@@ -1824,7 +1898,7 @@ async def _prepare_and_maybe_launch(
             bot = _STATE.get("bot")
             if bot:
                 bot.add_view(ApprovalView(request.request_id))
-            return
+            return "approval_pending"
 
     if not interaction.response.is_done():
         await interaction.response.defer()
@@ -1849,12 +1923,13 @@ async def _prepare_and_maybe_launch(
         envelope=envelope,
         scope=scope,
         role_ids=role_ids,
-        skip_status_post=skip_status_post,
+        skip_status_post=skip_status_post or (thread_bound and status_msg is not None),
         status_msg=status_msg,
         thread_bound=thread_bound,
         parent_channel_id=parent_channel_id,
         policy_channel_id=pol_ch,
     )
+    return "launched"
 
 
 # ---------------------------------------------------------------------------
@@ -1890,8 +1965,16 @@ async def handle_component(interaction: discord.Interaction) -> bool:
                             role_ids=await _role_ids_for_user(
                                 interaction.guild, env.requester_id
                             ),
-                            subcommand="run",
+                            subcommand=(
+                                "new"
+                                if pending_req.thread_bound and not env.is_follow_up
+                                else "run"
+                            ),
                             interaction=interaction,
+                            policy_channel_id=resolve_policy_channel_id(
+                                channel_id=env.scope.channel_id,
+                                parent_channel_id=pending_req.parent_channel_id,
+                            ),
                         )
                     except (AuthorizationError, ConfigurationError) as exc:
                         await _access().deny_unauthorized_request(
@@ -1976,6 +2059,10 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
     envelope = request.envelope
     scope = envelope.scope
     role_ids = await _role_ids_for_user(interaction.guild, envelope.requester_id)
+    early_pol_ch = resolve_policy_channel_id(
+        channel_id=scope.channel_id,
+        parent_channel_id=request.parent_channel_id,
+    )
 
     try:
         await _revalidate_run_auth(
@@ -1983,8 +2070,11 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             guild_id=scope.guild_id,
             channel_id=scope.channel_id,
             role_ids=role_ids,
-            subcommand="run",
+            subcommand=(
+                "new" if request.thread_bound and not envelope.is_follow_up else "run"
+            ),
             interaction=interaction,
+            policy_channel_id=early_pol_ch,
         )
     except (AuthorizationError, ConfigurationError) as exc:
         await access.deny_unauthorized_request(
@@ -2099,17 +2189,25 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
 
     sessions = _sessions()
     active = await sessions.get_active(scope)
-    thread_bound = bool(active and active.thread_bound)
-    parent_channel_id = active.parent_channel_id if active else None
+    # Prefer request-carried thread metadata (first /cursor new approval has no
+    # session yet), then fall back to an existing bound active session.
+    thread_bound = bool(request.thread_bound or (active and active.thread_bound))
+    parent_channel_id = (
+        request.parent_channel_id
+        or (active.parent_channel_id if active else None)
+    )
     pol_ch = resolve_policy_channel_id(
         channel_id=scope.channel_id,
         session=active,
+        parent_channel_id=parent_channel_id,
     )
     status_msg = None
-    if thread_bound and active and active.status_message_id and active.status_channel_id:
+    status_message_id = request.status_message_id or (
+        active.status_message_id if active else None
+    )
+    if thread_bound and status_message_id:
         try:
-            ch = channel
-            status_msg = await ch.fetch_message(int(active.status_message_id))
+            status_msg = await channel.fetch_message(int(status_message_id))
         except Exception:
             status_msg = None
 
@@ -2139,7 +2237,7 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             thread_bound=thread_bound,
             parent_channel_id=parent_channel_id,
             policy_channel_id=pol_ch,
-            skip_status_post=thread_bound,
+            skip_status_post=thread_bound and status_msg is not None,
             status_msg=status_msg,
         )
         await access.images.discard(request.request_id)
@@ -2449,6 +2547,8 @@ async def cursor_new(
     await _defer(interaction, ephemeral=True)
     parent_channel_id = str(interaction.channel_id)
     thread_name = f"cursor-{interaction.user.display_name or interaction.user.name}"[:90]
+    thread = None
+    activity_msg = None
     try:
         thread = await interaction.channel.create_thread(
             name=thread_name,
@@ -2478,10 +2578,33 @@ async def cursor_new(
         )
     except discord.HTTPException as exc:
         await _ephemeral(interaction, f"Thread created but could not post activity: {exc}")
+        try:
+            await thread.edit(archived=True, locked=True)
+        except Exception:
+            logger.debug("Failed to archive orphan Cursor thread %s", thread.id, exc_info=True)
         return
 
+    async def _abandon_thread(reason: str) -> None:
+        if activity_msg is not None:
+            try:
+                await activity_msg.edit(
+                    content=f"### Error\n{reason}"[:2000],
+                    allowed_mentions=CONTENT_MENTIONS,
+                )
+            except Exception:
+                pass
+        if thread is not None:
+            try:
+                await thread.edit(archived=True, locked=True)
+            except Exception:
+                logger.debug(
+                    "Failed to archive orphan Cursor thread %s",
+                    thread.id,
+                    exc_info=True,
+                )
+
     try:
-        await _prepare_and_maybe_launch(
+        outcome = await _prepare_and_maybe_launch(
             interaction,
             prompt,
             message,
@@ -2495,17 +2618,33 @@ async def cursor_new(
             skip_status_post=True,
             auth_subcommand="new",
         )
-        await _ephemeral(
-            interaction,
-            f"Started Cursor session in {thread.mention}.\n"
-            f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
-            f"this bot archives idle sessions after "
-            f"{_cfg().session_idle_prompt_minutes} minutes._",
-        )
+        if outcome == "approval_pending":
+            await _ephemeral(
+                interaction,
+                f"Thread {thread.mention} is ready; waiting for approval before launch.\n"
+                f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
+                f"this bot archives idle sessions after "
+                f"{_cfg().session_idle_prompt_minutes} minutes._",
+            )
+        elif outcome == "decision_pending":
+            await _ephemeral(
+                interaction,
+                f"Thread {thread.mention} is ready; choose how to proceed in-channel.",
+            )
+        else:
+            await _ephemeral(
+                interaction,
+                f"Started Cursor session in {thread.mention}.\n"
+                f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
+                f"this bot archives idle sessions after "
+                f"{_cfg().session_idle_prompt_minutes} minutes._",
+            )
     except CursorCloudError as exc:
+        await _abandon_thread(exc.user_message)
         await _ephemeral(interaction, exc.user_message)
     except Exception as exc:
         logger.exception("cursor new failed")
+        await _abandon_thread(str(exc))
         await _ephemeral(interaction, f"Thread session failed: {exc}")
 
 
@@ -2599,16 +2738,30 @@ async def cursor_session(
     scope = _scope_from_interaction(interaction)
     try:
         # Validate ownership locally first — never expose org-wide agents.
-        session = await _sessions().get_session(scope, agent_id)
+        sessions = _sessions()
+        active = await sessions.get_active(scope)
+        if active is not None and active.thread_bound and active.agent_id != agent_id:
+            await _ephemeral(
+                interaction,
+                "This thread is bound to a single Cursor session; agent switching is disabled.",
+            )
+            return
+        session = await sessions.get_session(scope, agent_id)
         if session is None:
             raise OwnershipError()
+        if session.thread_bound and active is not None and active.agent_id != agent_id:
+            await _ephemeral(
+                interaction,
+                "This thread is bound to a single Cursor session; agent switching is disabled.",
+            )
+            return
         # Optional API check that it still exists.
         try:
             await _client().get_agent(agent_id)
         except CursorCloudError:
             pass
-        await _sessions().set_active(scope, agent_id)
-        await _sessions().touch_activity(scope, agent_id)
+        await sessions.set_active(scope, agent_id)
+        await sessions.touch_activity(scope, agent_id)
         await _ephemeral(interaction, f"Active session set to `{agent_id}`.")
     except CursorCloudError as exc:
         await _ephemeral(interaction, exc.user_message)

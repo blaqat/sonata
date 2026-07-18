@@ -104,14 +104,25 @@ class TestThreadSessionHelpers(unittest.TestCase):
         ref_human = SimpleNamespace(message_id=1, resolved=SimpleNamespace(author=human))
         ref_bot = SimpleNamespace(message_id=2, resolved=SimpleNamespace(author=bot))
         ref_self = SimpleNamespace(message_id=3, resolved=SimpleNamespace(author=owner))
+        ref_unresolved = SimpleNamespace(message_id=4, resolved=None)
         msg_to_human = SimpleNamespace(reference=ref_human)
         msg_to_bot = SimpleNamespace(reference=ref_bot)
         msg_to_self = SimpleNamespace(reference=ref_self)
         msg_plain = SimpleNamespace(reference=None)
+        msg_unresolved = SimpleNamespace(reference=ref_unresolved)
         self.assertTrue(owner_reply_to_human(msg_to_human, OWNER))
         self.assertFalse(owner_reply_to_human(msg_to_bot, OWNER))
         self.assertFalse(owner_reply_to_human(msg_to_self, OWNER))
         self.assertFalse(owner_reply_to_human(msg_plain, OWNER))
+        # Unresolved reply references fail closed (skip follow-up).
+        self.assertTrue(owner_reply_to_human(msg_unresolved, OWNER))
+        self.assertFalse(
+            owner_reply_to_human(
+                msg_unresolved,
+                OWNER,
+                resolved_message=SimpleNamespace(author=bot),
+            )
+        )
 
 
 class TestThreadRenderer(unittest.TestCase):
@@ -160,6 +171,22 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         await sink.update_from_snapshot(snap, terminal=True)
         self.assertEqual(channel.send.await_count, 1)
         self.assertGreaterEqual(activity.edit.await_count, 1)
+
+    async def test_final_still_posts_when_activity_edit_fails(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock(side_effect=RuntimeError("edit failed"))
+        sink = ThreadActivitySink(channel, activity, edit_interval_ms=0)
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text="done",
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        self.assertEqual(channel.send.await_count, 1)
+        self.assertTrue(sink.degraded)
 
 
 class TestFindThreadSession(unittest.IsolatedAsyncioTestCase):
@@ -359,6 +386,158 @@ class TestParentPolicyInheritance(unittest.IsolatedAsyncioTestCase):
                 subcommand="run",
                 policy_channel_id="999",
             )
+
+
+class TestApprovalThreadBinding(unittest.IsolatedAsyncioTestCase):
+    async def test_approval_request_persists_thread_metadata(self):
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        access = AccessController(
+            cfg, MemoryAccessStore(), image_retention=ImageRetentionStore(max_total_bytes=1)
+        )
+        from cursor_cloud.models import RunRequestEnvelope, ScopeKey as SK
+
+        env = RunRequestEnvelope(
+            requester_id=OWNER,
+            scope=SK("1", "200", OWNER),
+            prompt_text="do the thing",
+            model=None,
+            repository_url="https://github.com/o/r",
+            starting_ref="main",
+            agent_id=None,
+            is_follow_up=False,
+            image_metas=[],
+        )
+        req = await access.create_approval_request(
+            env,
+            prompt_preview="do the thing",
+            thread_bound=True,
+            parent_channel_id="100",
+            status_channel_id="200",
+            status_message_id="555",
+        )
+        loaded = await access.store.get_request(req.request_id)
+        self.assertTrue(loaded.thread_bound)
+        self.assertEqual(loaded.parent_channel_id, "100")
+        self.assertEqual(loaded.status_message_id, "555")
+        # Round-trip serialization must keep UX fields (Beacon restart).
+        restored = type(loaded).from_dict(loaded.to_dict())
+        self.assertTrue(restored.thread_bound)
+        self.assertEqual(restored.parent_channel_id, "100")
+
+    async def test_launch_approved_uses_request_thread_binding(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        sessions = MemorySessionStore()
+        store = MemoryAccessStore()
+        access = AccessController(
+            cfg, store, image_retention=ImageRetentionStore(max_total_bytes=1)
+        )
+        mod._STATE.update(
+            {
+                "config": cfg,
+                "sessions": sessions,
+                "access": access,
+                "access_store": store,
+                "policy_manager": ParentAllowsChildDeniesPolicy(),
+                "require_policy": True,
+                "client": MagicMock(),
+                "bot": MagicMock(),
+            }
+        )
+        from cursor_cloud.models import (
+            ApprovalDecision,
+            RunRequestEnvelope,
+            ScopeKey as SK,
+        )
+
+        env = RunRequestEnvelope(
+            requester_id=OWNER,
+            scope=SK("1", "200", OWNER),
+            prompt_text="do the thing",
+            model=None,
+            repository_url="https://github.com/o/r",
+            starting_ref="main",
+            agent_id=None,
+            is_follow_up=False,
+            image_metas=[],
+        )
+        req = await access.create_approval_request(
+            env,
+            prompt_preview="do",
+            thread_bound=True,
+            parent_channel_id="100",
+            status_channel_id="200",
+            status_message_id="555",
+        )
+        req.decision = ApprovalDecision.APPROVED_ONCE
+        await store.save_request(req)
+
+        activity = SimpleNamespace(id=555, channel=SimpleNamespace(id=200))
+        channel = MagicMock()
+        channel.id = 200
+        channel.fetch_message = AsyncMock(return_value=activity)
+        channel.send = AsyncMock(return_value=activity)
+
+        interaction = SimpleNamespace(
+            user=SimpleNamespace(id=int(GOD), roles=[]),
+            guild=SimpleNamespace(
+                id=1,
+                get_channel=MagicMock(return_value=channel),
+            ),
+            channel=channel,
+            client=SimpleNamespace(fetch_channel=AsyncMock(return_value=channel)),
+            message=None,
+        )
+
+        access.images.get = AsyncMock(return_value=[])
+        access.images.discard = AsyncMock()
+        with patch.object(mod, "_launch_run", new=AsyncMock()) as launch:
+            with patch.object(mod, "_ephemeral", new=AsyncMock()):
+                await mod._launch_approved_request(interaction, req)
+
+        launch.assert_awaited_once()
+        kwargs = launch.await_args.kwargs
+        self.assertTrue(kwargs["thread_bound"])
+        self.assertEqual(kwargs["parent_channel_id"], "100")
+        self.assertTrue(kwargs["skip_status_post"])
+        self.assertIs(kwargs["status_msg"], activity)
+
+
+class TestSessionThreadFieldsCompat(unittest.TestCase):
+    def test_agent_session_roundtrip_and_legacy(self):
+        session = AgentSession(
+            scope=ScopeKey("1", "200", OWNER),
+            agent_id="bc-1",
+            owner_id=OWNER,
+            thread_bound=True,
+            parent_channel_id="100",
+        )
+        restored = AgentSession.from_dict(session.to_dict())
+        self.assertTrue(restored.thread_bound)
+        self.assertEqual(restored.parent_channel_id, "100")
+        legacy = AgentSession.from_dict(
+            {
+                "scope": {"guild_id": "1", "channel_id": "200", "user_id": OWNER},
+                "agent_id": "bc-legacy",
+                "owner_id": OWNER,
+            }
+        )
+        self.assertFalse(legacy.thread_bound)
+        self.assertIsNone(legacy.parent_channel_id)
 
 
 if __name__ == "__main__":

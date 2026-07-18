@@ -55,7 +55,13 @@ class ThreadActivitySink:
             agent_name=agent_name,
             skipped_images=skipped_images,
         )
-        await self._edit_activity(activity, force=terminal or snapshot.status.is_terminal)
+        try:
+            await self._edit_activity(
+                activity, force=terminal or snapshot.status.is_terminal
+            )
+        except Exception:
+            # Activity edit failures must not suppress the frozen final response.
+            self.degraded = True
 
         if terminal and snapshot.status.is_terminal:
             if self._last_terminal_run_id == snapshot.run_id:

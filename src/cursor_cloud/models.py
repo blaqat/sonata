@@ -444,6 +444,11 @@ class ApprovalRequest:
     grant_id: str | None = None
     prompt_preview: str = ""
     grant_minutes: int | None = None
+    # Discord UX metadata (not part of envelope hash).
+    thread_bound: bool = False
+    parent_channel_id: str | None = None
+    status_channel_id: str | None = None
+    status_message_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -460,6 +465,10 @@ class ApprovalRequest:
             "grant_id": self.grant_id,
             "prompt_preview": self.prompt_preview,
             "grant_minutes": self.grant_minutes,
+            "thread_bound": self.thread_bound,
+            "parent_channel_id": self.parent_channel_id,
+            "status_channel_id": self.status_channel_id,
+            "status_message_id": self.status_message_id,
         }
 
     @classmethod
@@ -499,6 +508,22 @@ class ApprovalRequest:
             grant_id=data.get("grant_id"),
             prompt_preview=str(data.get("prompt_preview") or ""),
             grant_minutes=data.get("grant_minutes"),
+            thread_bound=bool(data.get("thread_bound")),
+            parent_channel_id=(
+                str(data["parent_channel_id"])
+                if data.get("parent_channel_id") is not None
+                else None
+            ),
+            status_channel_id=(
+                str(data["status_channel_id"])
+                if data.get("status_channel_id") is not None
+                else None
+            ),
+            status_message_id=(
+                str(data["status_message_id"])
+                if data.get("status_message_id") is not None
+                else None
+            ),
         )
 
 

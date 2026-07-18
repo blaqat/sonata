@@ -21,17 +21,24 @@ def policy_channel_id(
     return str(channel_id)
 
 
-def owner_reply_to_human(message: Any, owner_id: str) -> bool:
-    """True when owner replied to another human (not bot/self) — skip agent follow-up."""
+def owner_reply_to_human(
+    message: Any, owner_id: str, *, resolved_message: Any | None = None
+) -> bool:
+    """True when owner replied to another human (not bot/self) — skip agent follow-up.
+
+    Pass ``resolved_message`` when Discord left ``reference.resolved`` unset
+    (common when the replied-to message is not in cache).
+    """
     ref = getattr(message, "reference", None)
     if ref is None or getattr(ref, "message_id", None) is None:
         return False
-    resolved = getattr(ref, "resolved", None)
+    resolved = resolved_message if resolved_message is not None else getattr(ref, "resolved", None)
     if resolved is None:
-        return False
+        # Unresolved reply: fail closed and skip agent follow-up.
+        return True
     author = getattr(resolved, "author", None)
     if author is None:
-        return False
+        return True
     if getattr(author, "bot", False):
         return False
     if str(getattr(author, "id", "")) == str(owner_id):
