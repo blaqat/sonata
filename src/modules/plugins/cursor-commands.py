@@ -1879,10 +1879,13 @@ async def _prepare_and_maybe_launch(
             approve_mentions = discord.AllowedMentions(
                 everyone=False, users=True, roles=False, replied_user=False
             )
-            await _ephemeral(
-                interaction,
-                f"Approval pending (`{request.request_id}`). Approvers have been notified.",
-            )
+            # Thread-bound approvals are posted publicly (with buttons); skip the
+            # extra "waiting for approval" ack — it's redundant with the card.
+            if not thread_bound:
+                await _ephemeral(
+                    interaction,
+                    f"Approval pending (`{request.request_id}`). Approvers have been notified.",
+                )
             # Post approval in the parent channel for thread-bound new sessions
             # so approvers see it outside the private-feeling agent thread.
             approve_channel = interaction.channel
@@ -2528,14 +2531,6 @@ async def cursor_run(
         await _ephemeral(interaction, f"Run failed: {exc}")
 
 
-def _thread_idle_note() -> str:
-    return (
-        f"_Note: Discord's minimum thread auto-archive is 60 minutes; "
-        f"this bot archives idle sessions after "
-        f"{_cfg().session_idle_prompt_minutes} minutes._"
-    )
-
-
 def _sanitize_thread_title(text: str, *, fallback: str = "cursor-session") -> str:
     """Discord thread names: short, no newlines/mentions, <= 100 chars."""
     cleaned = redact_untrusted(str(text or ""))
@@ -2880,18 +2875,12 @@ async def _start_thread_bound_session(
             prebuilt=prebuilt,
             agent_display_name=thread_name,
         )
-        # `$agent` already shows the thread under the start message — no success spam.
-        # Slash `/cursor new` still gets a short ephemeral ack (no archive note).
-        if outcome == "approval_pending":
-            await notify(
-                f"Thread {thread.mention} is ready; waiting for approval before launch.\n"
-                f"{_thread_idle_note()}"
-            )
-        elif outcome == "decision_pending":
-            await notify(
-                f"Thread {thread.mention} is ready; choose how to proceed in-channel."
-            )
-        elif starter_message is None:
+        # Thread + approval/decision UI already show state; don't spam replies/ephemerals.
+        # Slash `/cursor new` still gets a short ephemeral ack when launch starts immediately.
+        if (
+            starter_message is None
+            and outcome not in {"approval_pending", "decision_pending"}
+        ):
             await notify(f"Started Cursor session in {thread.mention}.")
     except CursorCloudError as exc:
         await _abandon_thread(exc.user_message)

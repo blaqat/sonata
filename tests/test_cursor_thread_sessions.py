@@ -922,6 +922,48 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Started Cursor session", notify.await_args.args[0])
         self.assertNotIn("auto-archive", notify.await_args.args[0])
 
+    async def test_start_skips_approval_pending_notify(self):
+        mod = load_cursor_plugin()
+        notify = AsyncMock()
+        thread = SimpleNamespace(
+            id=999, mention="<#999>", send=AsyncMock(return_value=SimpleNamespace(id=1))
+        )
+        thread.send.return_value.channel = thread
+        with patch.object(mod, "_generate_session_title", new=AsyncMock(return_value="t")):
+            with patch.object(
+                mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
+            ):
+                with patch.object(
+                    mod,
+                    "_prepare_and_maybe_launch",
+                    new=AsyncMock(return_value="approval_pending"),
+                ):
+                    await mod._start_thread_bound_session(
+                        interaction=SimpleNamespace(),
+                        prompt="hello",
+                        message_ref=None,
+                        images=[],
+                        parent_channel=MagicMock(),
+                        parent_channel_id="100",
+                        user=SimpleNamespace(id=1, name="u", display_name="U"),
+                        guild_id=1,
+                        starter_message=MagicMock(),
+                        notify=notify,
+                    )
+                    await mod._start_thread_bound_session(
+                        interaction=SimpleNamespace(),
+                        prompt="hello",
+                        message_ref=None,
+                        images=[],
+                        parent_channel=MagicMock(),
+                        parent_channel_id="100",
+                        user=SimpleNamespace(id=1, name="u", display_name="U"),
+                        guild_id=1,
+                        starter_message=None,
+                        notify=notify,
+                    )
+        notify.assert_not_awaited()
+
 
 class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
     async def test_followup_sends_new_thinking_indicator_immediately(self):
