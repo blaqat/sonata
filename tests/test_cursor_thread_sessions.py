@@ -542,6 +542,81 @@ class TestSessionThreadFieldsCompat(unittest.TestCase):
         self.assertIsNone(legacy.parent_channel_id)
 
 
+class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
+    def test_title_from_prompt_slug(self):
+        mod = load_cursor_plugin()
+        self.assertEqual(
+            mod._title_from_prompt("briefly explain how the ispy plugin works"),
+            "briefly explain how the ispy plugin works",
+        )
+        self.assertEqual(
+            mod._title_from_prompt("Fix flaky CI. Then deploy."),
+            "Fix flaky CI",
+        )
+        self.assertEqual(mod._sanitize_thread_title('  "Hello\nWorld"  '), "Hello World")
+
+    async def test_start_skips_success_notify_for_starter_message(self):
+        mod = load_cursor_plugin()
+        notify = AsyncMock()
+        thread = SimpleNamespace(
+            id=999, mention="<#999>", send=AsyncMock(return_value=SimpleNamespace(id=1, channel=None))
+        )
+        thread.send.return_value.channel = thread
+        starter = MagicMock()
+        with patch.object(mod, "_generate_session_title", new=AsyncMock(return_value="ispy overview")):
+            with patch.object(
+                mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
+            ):
+                with patch.object(
+                    mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
+                ) as prep:
+                    await mod._start_thread_bound_session(
+                        interaction=SimpleNamespace(),
+                        prompt="explain ispy",
+                        message_ref=None,
+                        images=[],
+                        parent_channel=MagicMock(),
+                        parent_channel_id="100",
+                        user=SimpleNamespace(id=1, name="u", display_name="U"),
+                        guild_id=1,
+                        starter_message=starter,
+                        notify=notify,
+                    )
+        prep.assert_awaited_once()
+        self.assertEqual(prep.await_args.kwargs["agent_display_name"], "ispy overview")
+        notify.assert_not_awaited()
+
+    async def test_start_notifies_success_for_slash_new(self):
+        mod = load_cursor_plugin()
+        notify = AsyncMock()
+        thread = SimpleNamespace(
+            id=999, mention="<#999>", send=AsyncMock(return_value=SimpleNamespace(id=1))
+        )
+        thread.send.return_value.channel = thread
+        with patch.object(mod, "_generate_session_title", new=AsyncMock(return_value="slash title")):
+            with patch.object(
+                mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
+            ):
+                with patch.object(
+                    mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
+                ):
+                    await mod._start_thread_bound_session(
+                        interaction=SimpleNamespace(),
+                        prompt="hello",
+                        message_ref=None,
+                        images=[],
+                        parent_channel=MagicMock(),
+                        parent_channel_id="100",
+                        user=SimpleNamespace(id=1, name="u", display_name="U"),
+                        guild_id=1,
+                        starter_message=None,
+                        notify=notify,
+                    )
+        notify.assert_awaited_once()
+        self.assertIn("Started Cursor session", notify.await_args.args[0])
+        self.assertNotIn("auto-archive", notify.await_args.args[0])
+
+
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
     async def test_interaction_shim_does_not_patch_channel_send(self):
         """Regression: followup must not alias/overwrite channel.send (RecursionError)."""

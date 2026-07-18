@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import timedelta
 from typing import Any
 
@@ -1103,6 +1104,7 @@ async def _launch_run(
     thread_bound: bool = False,
     parent_channel_id: str | None = None,
     policy_channel_id: str | None = None,
+    agent_display_name: str | None = None,
 ) -> AgentSession:
     cfg = _cfg()
     scope = scope or _scope_from_interaction(interaction)
@@ -1233,6 +1235,11 @@ async def _launch_run(
             api_images = [img.to_api() for img in images]
             try:
                 if force_new or not agent_id:
+                    suggested_name = (
+                        _sanitize_thread_title(agent_display_name)
+                        if agent_display_name
+                        else None
+                    )
                     agent, run = await client.create_agent(
                         prompt_text,
                         images=api_images or None,
@@ -1240,12 +1247,14 @@ async def _launch_run(
                         repository_url=cfg.default_repository_url,
                         starting_ref=cfg.default_ref,
                         auto_create_pr=cfg.auto_create_pr,
+                        name=suggested_name,
                     )
+                    session_name = (agent.name or suggested_name or "").strip()
                     session = AgentSession(
                         scope=scope,
                         agent_id=agent.id,
                         owner_id=scope.user_id,
-                        name=agent.name,
+                        name=session_name,
                         model=model or cfg.default_model or agent.model,
                         preferred_model=model or cfg.default_model or None,
                         repository_url=cfg.default_repository_url,
@@ -1263,6 +1272,11 @@ async def _launch_run(
                         last_meaningful_activity_at=utcnow(),
                     )
                     await sessions.upsert(session)
+                    if thread_bound and status_msg is not None:
+                        # Prefer API-provided agent name when present.
+                        await _maybe_rename_thread(
+                            status_msg.channel, agent.name or suggested_name
+                        )
                 else:
                     run = await client.create_run(
                         agent_id, prompt_text, images=api_images or None
@@ -1625,6 +1639,7 @@ async def _prepare_and_maybe_launch(
     status_msg: discord.Message | None = None,
     skip_status_post: bool = False,
     auth_subcommand: str | None = None,
+    agent_display_name: str | None = None,
 ) -> str:
     """Prepare auth/context and launch (or post approval/decision).
 
@@ -1890,6 +1905,7 @@ async def _prepare_and_maybe_launch(
         thread_bound=thread_bound,
         parent_channel_id=parent_channel_id,
         policy_channel_id=pol_ch,
+        agent_display_name=agent_display_name,
     )
     return "launched"
 
@@ -2184,6 +2200,9 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             interaction=interaction,
             policy_channel_id=pol_ch,
         )
+        approved_title = None
+        if thread_bound and status_msg is not None:
+            approved_title = getattr(status_msg.channel, "name", None)
         await _launch_run(
             fake,  # type: ignore
             prompt_text=envelope.prompt_text,
@@ -2201,6 +2220,7 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             policy_channel_id=pol_ch,
             skip_status_post=thread_bound and status_msg is not None,
             status_msg=status_msg,
+            agent_display_name=approved_title,
         )
         await access.images.discard(request.request_id)
         if interaction.message:
@@ -2487,6 +2507,74 @@ def _thread_idle_note() -> str:
     )
 
 
+def _sanitize_thread_title(text: str, *, fallback: str = "cursor-session") -> str:
+    """Discord thread names: short, no newlines/mentions, <= 100 chars."""
+    cleaned = redact_untrusted(str(text or ""))
+    cleaned = cleaned.replace("\n", " ").replace("\r", " ").strip()
+    cleaned = cleaned.strip(" \"'`")
+    cleaned = re.sub(r"\s+", " ", cleaned)
+    cleaned = cleaned.lstrip("#").strip()
+    if not cleaned:
+        cleaned = fallback
+    return cleaned[:100]
+
+
+def _title_from_prompt(prompt: str) -> str:
+    """Fast offline fallback title from the user prompt."""
+    text = re.sub(r"\s+", " ", (prompt or "").strip())
+    if not text:
+        return "cursor-session"
+    # Prefer the first sentence / clause.
+    for sep in (". ", "? ", "! ", " — ", " - "):
+        if sep in text:
+            text = text.split(sep, 1)[0]
+            break
+    words = text.split()
+    if len(words) > 8:
+        text = " ".join(words[:8])
+    return _sanitize_thread_title(text)
+
+
+async def _generate_session_title(prompt: str) -> str:
+    """Prefer a tiny/fast model title; fall back to a prompt slug."""
+    fallback = _title_from_prompt(prompt)
+
+    def _call() -> str:
+        raw = PROMPT_MANAGER.send(
+            (
+                "Return ONLY a short Discord thread title for this coding agent task. "
+                "Rules: 3-7 words, no quotes, no trailing punctuation, no emojis.\n\n"
+                f"Task:\n{(prompt or '')[:500]}"
+            ),
+            AI="Gemini",
+            model="gemini-2.5-flash",
+        )
+        return str(raw or "")
+
+    try:
+        raw = await asyncio.wait_for(asyncio.to_thread(_call), timeout=4.0)
+        title = _sanitize_thread_title(raw, fallback=fallback)
+        # Reject model fluff / refusals that are too long or empty of substance.
+        if title and title.lower() not in {"cursor-session", "untitled", "title"}:
+            return title
+    except Exception:
+        logger.debug("Cursor session title generation failed; using prompt slug", exc_info=True)
+    return fallback
+
+
+async def _maybe_rename_thread(channel, title: str | None) -> None:
+    if not title or not _channel_is_thread(channel):
+        return
+    name = _sanitize_thread_title(title)
+    current = str(getattr(channel, "name", "") or "")
+    if not name or name == current:
+        return
+    try:
+        await channel.edit(name=name)
+    except Exception:
+        logger.debug("Could not rename Cursor thread to %r", name, exc_info=True)
+
+
 def _interaction_shim_from_message(message: discord.Message):
     """Minimal interaction-like object for message-driven Cursor launches.
 
@@ -2574,7 +2662,7 @@ async def _start_thread_bound_session(
     notify,
 ) -> None:
     """Shared `/cursor new` + `$agent` launch: public thread session + Activity."""
-    thread_name = f"cursor-{getattr(user, 'display_name', None) or user.name}"[:90]
+    thread_name = await _generate_session_title(prompt)
     thread = None
     activity_msg = None
     try:
@@ -2644,18 +2732,21 @@ async def _start_thread_bound_session(
             skip_status_post=True,
             auth_subcommand="new",
             prebuilt=prebuilt,
+            agent_display_name=thread_name,
         )
-        note = _thread_idle_note()
+        # `$agent` already shows the thread under the start message — no success spam.
+        # Slash `/cursor new` still gets a short ephemeral ack (no archive note).
         if outcome == "approval_pending":
             await notify(
-                f"Thread {thread.mention} is ready; waiting for approval before launch.\n{note}"
+                f"Thread {thread.mention} is ready; waiting for approval before launch.\n"
+                f"{_thread_idle_note()}"
             )
         elif outcome == "decision_pending":
             await notify(
                 f"Thread {thread.mention} is ready; choose how to proceed in-channel."
             )
-        else:
-            await notify(f"Started Cursor session in {thread.mention}.\n{note}")
+        elif starter_message is None:
+            await notify(f"Started Cursor session in {thread.mention}.")
     except CursorCloudError as exc:
         await _abandon_thread(exc.user_message)
         await notify(exc.user_message)
