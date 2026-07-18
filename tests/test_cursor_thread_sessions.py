@@ -855,7 +855,7 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
 
 
 class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
-    async def test_followup_edits_activity_to_thinking_immediately(self):
+    async def test_followup_sends_new_thinking_indicator_immediately(self):
         mod = load_cursor_plugin()
         cfg = load_cursor_config(
             {
@@ -894,13 +894,13 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                 "handled_thread_messages": set(),
             }
         )
-        activity = MagicMock()
-        activity.id = 55
-        activity.edit = AsyncMock()
+        new_activity = MagicMock()
+        new_activity.id = 99
         channel = MagicMock()
         channel.id = 200
         channel.parent_id = 100
-        channel.fetch_message = AsyncMock(return_value=activity)
+        channel.send = AsyncMock(return_value=new_activity)
+        channel.fetch_message = AsyncMock()
         message = MagicMock()
         message.id = 901
         message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
@@ -918,15 +918,22 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                 ):
                     with patch.object(
                         mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
-                    ):
+                    ) as launch:
                         ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
-        activity.edit.assert_awaited()
+        channel.send.assert_awaited()
         self.assertEqual(
-            activity.edit.await_args.kwargs.get("content")
-            or activity.edit.await_args.args[0],
+            channel.send.await_args.args[0]
+            if channel.send.await_args.args
+            else channel.send.await_args.kwargs.get("content"),
             THREAD_THINKING_INDICATOR,
         )
+        channel.fetch_message.assert_not_awaited()
+        loaded = await sessions.get_session(scope, "bc-1")
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.status_message_id, "99")
+        self.assertIs(launch.await_args.kwargs.get("status_msg"), new_activity)
+        self.assertTrue(launch.await_args.kwargs.get("skip_status_post"))
 
 
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):

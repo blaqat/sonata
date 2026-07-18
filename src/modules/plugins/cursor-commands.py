@@ -1002,36 +1002,19 @@ async def handle_thread_message(message: discord.Message) -> bool:
     if not prompt and not message.attachments:
         return False
 
-    # Immediate thinking indicator so follow-ups don't look stuck while we
-    # auth / build context / hit the Cursor API (slash Queued equivalent).
-    activity_msg = None
-    if session.status_channel_id and session.status_message_id:
-        try:
-            activity_msg = await message.channel.fetch_message(
-                int(session.status_message_id)
-            )
-        except Exception:
-            activity_msg = None
-    if activity_msg is None:
-        try:
-            activity_msg = await message.channel.send(
-                THREAD_THINKING_INDICATOR,
-                allowed_mentions=CONTENT_MENTIONS,
-            )
-            session.status_channel_id = str(message.channel.id)
-            session.status_message_id = str(activity_msg.id)
-            await sessions.upsert(session)
-        except Exception:
-            logger.exception("Cursor thread activity message create failed")
-            return True
-    else:
-        try:
-            await activity_msg.edit(
-                content=THREAD_THINKING_INDICATOR,
-                allowed_mentions=CONTENT_MENTIONS,
-            )
-        except Exception:
-            logger.debug("Cursor thread thinking indicator edit failed", exc_info=True)
+    # Immediate thinking indicator at the bottom of the thread so follow-ups
+    # don't look stuck (editing the prior cleared Activity is easy to miss).
+    try:
+        activity_msg = await message.channel.send(
+            THREAD_THINKING_INDICATOR,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+        session.status_channel_id = str(message.channel.id)
+        session.status_message_id = str(activity_msg.id)
+        await sessions.upsert(session)
+    except Exception:
+        logger.exception("Cursor thread activity message create failed")
+        return True
 
     scope = _scope_from_message(message, user_id=owner_id)
     pol_ch = resolve_policy_channel_id(
