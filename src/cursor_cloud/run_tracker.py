@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any, Protocol
 
@@ -21,6 +22,10 @@ from .models import (
 from .run_log import RunLogStore, sanitize_log_summary
 from .session_store import is_meaningful_stream_event
 from .status_renderer import render_status, safe_tool_summary
+
+# When SSE dies while the run is still active, poll GET run until terminal.
+DEFAULT_POLL_INTERVAL_S = 2.0
+DEFAULT_POLL_MAX_S = 900.0
 
 
 class StatusSink(Protocol):
@@ -61,6 +66,8 @@ class RunTracker:
         on_meaningful_activity: OnActivity | None = None,
         run_log: RunLogStore | None = None,
         scope: ScopeKey | None = None,
+        poll_interval_s: float = DEFAULT_POLL_INTERVAL_S,
+        poll_max_s: float = DEFAULT_POLL_MAX_S,
     ):
         self.client = client
         self.sink = sink
@@ -70,12 +77,15 @@ class RunTracker:
         self.on_meaningful_activity = on_meaningful_activity
         self.run_log = run_log
         self.scope = scope
+        self.poll_interval_s = max(0.05, float(poll_interval_s))
+        self.poll_max_s = max(self.poll_interval_s, float(poll_max_s))
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self._pending_render = False
         self._last_edit = 0.0
         self.snapshot: RunSnapshot | None = None
         self._pending_log_kinds: set[str] = set()
+        self._logged_result_text: str | None = None
 
     def apply_event(self, snapshot: RunSnapshot, event: StreamEvent) -> RunSnapshot:
         if event.id:
@@ -200,12 +210,9 @@ class RunTracker:
             return
         run = await self.client.get_run(agent_id, run_id)
         self.apply_run_record(self.snapshot, run)
-        await self._log(
-            "system",
-            f"Reconciled from API: {run.status.value}",
-            detail={"status": run.status.value},
-        )
-        if run.result:
+        # Only persist the final answer once — skip RUNNING reconcile spam.
+        if run.result and run.result != self._logged_result_text:
+            self._logged_result_text = run.result
             await self._log("result", sanitize_log_summary(run.result))
 
     async def _log(
@@ -254,9 +261,9 @@ class RunTracker:
             return
         await self._flush_pending_text_logs()
         if name == "status":
-            status = str(data.get("status") or "")
-            await self._log("status", status or "status update")
-        elif name == "tool_call":
+            # Skip CREATING/RUNNING noise; terminal status is covered by result/error.
+            return
+        if name == "tool_call":
             tool_name = str(data.get("name") or "tool")
             status = str(data.get("status") or "")
             summary = safe_tool_summary(
@@ -270,27 +277,59 @@ class RunTracker:
             await self._log("tool_call", f"{status} {summary}".strip())
         elif name == "result":
             text = str(data.get("text") or data.get("status") or "result")
-            await self._log("result", sanitize_log_summary(text))
+            if text != self._logged_result_text:
+                self._logged_result_text = text
+                await self._log("result", sanitize_log_summary(text))
         elif name == "error":
             if is_stream_unavailable_error(data):
-                await self._log(
-                    "system",
-                    "Stream unavailable; reconciling",
-                    detail={"code": str(data.get("code") or "")},
+                # Stream drop is operational; follow via GET run — don't clutter history.
+                return
+            await self._log(
+                "error",
+                sanitize_log_summary(
+                    str(data.get("message") or data.get("code") or "error")
+                ),
+            )
+        elif name in {"done", "heartbeat"}:
+            return
+        # Ignore unknown event kinds in history (keeps focus on tools/thinking/result).
+
+    async def _follow_until_terminal(self, agent_id: str, run_id: str) -> None:
+        """Poll GET run until the agent finishes after the SSE stream drops."""
+        if self.snapshot is None:
+            return
+        deadline = time.monotonic() + self.poll_max_s
+        while not self._stop.is_set() and time.monotonic() < deadline:
+            try:
+                await self._reconcile_from_api(agent_id, run_id)
+            except CursorCloudError as exc:
+                self.snapshot.status = RunStatus.ERROR
+                self.snapshot.error_message = exc.user_message
+                self._pending_render = False
+                await self._emit(terminal=True)
+                return
+            if self.snapshot.status.is_terminal:
+                self._pending_render = False
+                await self._emit(terminal=True)
+                return
+            self._pending_render = False
+            await self._emit(terminal=False)
+            await asyncio.sleep(self.poll_interval_s)
+
+        if self.snapshot and not self.snapshot.status.is_terminal and not self._stop.is_set():
+            try:
+                await self._reconcile_from_api(agent_id, run_id)
+            except CursorCloudError as exc:
+                self.snapshot.status = RunStatus.ERROR
+                self.snapshot.error_message = exc.user_message
+            if not self.snapshot.status.is_terminal:
+                self.snapshot.status = RunStatus.ERROR
+                self.snapshot.error_message = (
+                    self.snapshot.error_message
+                    or "Timed out waiting for run to finish after stream ended."
                 )
-            else:
-                await self._log(
-                    "error",
-                    sanitize_log_summary(
-                        str(data.get("message") or data.get("code") or "error")
-                    ),
-                )
-        elif name == "done":
-            await self._log("done", "done")
-        elif name == "heartbeat":
-            pass
-        else:
-            await self._log("system", sanitize_log_summary(name))
+            self._pending_render = False
+            await self._emit(terminal=True)
 
     async def _emit(self, *, terminal: bool = False) -> None:
         if self.snapshot is None:
@@ -354,13 +393,22 @@ class RunTracker:
                 await self._notify_activity(event.event)
 
                 if stream_gone:
+                    # Stream ended; GET run may still be RUNNING — keep following.
                     try:
                         await self._reconcile_from_api(agent_id, run_id)
                     except CursorCloudError as exc:
                         self.snapshot.status = RunStatus.ERROR
                         self.snapshot.error_message = exc.user_message
-                    self._pending_render = False
-                    await self._emit(terminal=True)
+                        self._pending_render = False
+                        await self._emit(terminal=True)
+                        break
+                    if self.snapshot.status.is_terminal:
+                        self._pending_render = False
+                        await self._emit(terminal=True)
+                    else:
+                        self._pending_render = False
+                        await self._emit(terminal=False)
+                        await self._follow_until_terminal(agent_id, run_id)
                     break
 
                 if self.snapshot.status.is_terminal or event.event in {
@@ -376,27 +424,17 @@ class RunTracker:
                 else:
                     self._pending_render = True
 
-            # Stream ended without a terminal snapshot — poll once.
+            # Stream ended without a terminal snapshot — poll until finished.
             if (
                 self.snapshot
                 and not self.snapshot.status.is_terminal
                 and not self._stop.is_set()
             ):
-                try:
-                    await self._reconcile_from_api(agent_id, run_id)
-                except CursorCloudError as exc:
-                    self.snapshot.status = RunStatus.ERROR
-                    self.snapshot.error_message = exc.user_message
-                await self._emit(terminal=True)
+                await self._follow_until_terminal(agent_id, run_id)
         except StreamExpiredError:
-            # Fallback should have handled; if not, poll once.
-            try:
-                await self._reconcile_from_api(agent_id, run_id)
-                await self._emit(terminal=True)
-            except CursorCloudError as exc:
-                self.snapshot.status = RunStatus.ERROR
-                self.snapshot.error_message = exc.user_message
-                await self._emit(terminal=True)
+            # Fallback should have handled; if not, follow via GET run.
+            if self.snapshot and not self.snapshot.status.is_terminal:
+                await self._follow_until_terminal(agent_id, run_id)
         except CursorCloudError as exc:
             self.snapshot.status = RunStatus.ERROR
             self.snapshot.error_message = exc.user_message

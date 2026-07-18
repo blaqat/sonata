@@ -67,6 +67,7 @@ from cursor_cloud.models import (
     utcnow,
 )
 from cursor_cloud.run_log import (
+    HISTORY_FOCUS_KINDS,
     MemoryRunLogStore,
     format_history_message,
     sanitize_log_summary,
@@ -2221,6 +2222,12 @@ async def cursor_history(
         "Page number (1-based)",
         required=False,
     ),
+    verbose: bool = Option(
+        bool,
+        "Include status/system noise (default: tools/thinking/result only)",
+        required=False,
+        default=False,
+    ),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "history") is None:
@@ -2236,7 +2243,8 @@ async def cursor_history(
     page_num = max(1, int(page or 1))
     page_size = 12
     logs = _run_logs()
-    total = await logs.entry_count(scope, target_run)
+    kinds = None if verbose else HISTORY_FOCUS_KINDS
+    total = await logs.entry_count(scope, target_run, kinds=kinds)
     if total == 0:
         # Soft hint: list recent run ids if any.
         recent = await logs.list_run_ids(scope)
@@ -2251,7 +2259,7 @@ async def cursor_history(
         return
     offset = (page_num - 1) * page_size
     entries = await logs.get_entries(
-        scope, target_run, offset=offset, limit=page_size
+        scope, target_run, offset=offset, limit=page_size, kinds=kinds
     )
     text = format_history_message(
         entries,

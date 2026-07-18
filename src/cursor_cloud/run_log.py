@@ -23,6 +23,18 @@ LOG_KINDS = frozenset(
     }
 )
 
+# Default /cursor history view: skip status/system/done noise.
+HISTORY_FOCUS_KINDS = frozenset(
+    {
+        "prompt",
+        "thinking",
+        "tool_call",
+        "assistant",
+        "result",
+        "error",
+    }
+)
+
 DEFAULT_MAX_RUNS_PER_SCOPE = 10
 DEFAULT_MAX_ENTRIES_PER_RUN = 200
 SUMMARY_LIMIT = 240
@@ -76,11 +88,18 @@ class RunLogStore(Protocol):
         *,
         offset: int = 0,
         limit: int = 40,
+        kinds: frozenset[str] | set[str] | None = None,
     ) -> list[RunLogEntry]: ...
 
     async def list_run_ids(self, scope: ScopeKey) -> list[str]: ...
 
-    async def entry_count(self, scope: ScopeKey, run_id: str) -> int: ...
+    async def entry_count(
+        self,
+        scope: ScopeKey,
+        run_id: str,
+        *,
+        kinds: frozenset[str] | set[str] | None = None,
+    ) -> int: ...
 
 
 class MemoryRunLogStore:
@@ -190,11 +209,14 @@ class MemoryRunLogStore:
         *,
         offset: int = 0,
         limit: int = 40,
+        kinds: frozenset[str] | set[str] | None = None,
     ) -> list[RunLogEntry]:
         meta = (self._runs.get(scope.as_str()) or {}).get(run_id)
         if not meta:
             return []
-        entries: list[RunLogEntry] = meta.get("entries") or []
+        entries: list[RunLogEntry] = list(meta.get("entries") or [])
+        if kinds is not None:
+            entries = [e for e in entries if e.kind in kinds]
         start = max(0, int(offset))
         end = start + max(1, min(int(limit), 80))
         return list(entries[start:end])
@@ -204,11 +226,20 @@ class MemoryRunLogStore:
         order = list(self._order.get(scope.as_str()) or [])
         return list(reversed(order))
 
-    async def entry_count(self, scope: ScopeKey, run_id: str) -> int:
+    async def entry_count(
+        self,
+        scope: ScopeKey,
+        run_id: str,
+        *,
+        kinds: frozenset[str] | set[str] | None = None,
+    ) -> int:
         meta = (self._runs.get(scope.as_str()) or {}).get(run_id)
         if not meta:
             return 0
-        return len(meta.get("entries") or [])
+        entries: list[RunLogEntry] = meta.get("entries") or []
+        if kinds is not None:
+            return sum(1 for e in entries if e.kind in kinds)
+        return len(entries)
 
 
 def format_history_message(

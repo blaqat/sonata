@@ -177,6 +177,7 @@ class TestTracker(unittest.IsolatedAsyncioTestCase):
             edit_interval_ms=10_000,
             run_log=logs,
             scope=scope,
+            poll_interval_s=0.01,
         )
         snap = await tracker.track("bc", "r1")
         self.assertEqual(snap.status, RunStatus.FINISHED)
@@ -193,6 +194,79 @@ class TestTracker(unittest.IsolatedAsyncioTestCase):
         self.assertIn("tool_call", kinds)
         self.assertIn("thinking", kinds)
         self.assertIn("result", kinds)
+        self.assertNotIn("status", kinds)
+        self.assertNotIn("system", kinds)
+
+    async def test_stream_unavailable_while_running_polls_until_finished(self):
+        """Regression: stream drop while RUNNING must not freeze status on Running."""
+
+        class FakeClient:
+            def __init__(self):
+                self.polls = 0
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent("status", {"runId": "r1", "status": "CREATING"})
+                yield StreamEvent("status", {"runId": "r1", "status": "RUNNING"})
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_expired",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def get_run(self, agent_id, run_id):
+                self.polls += 1
+                if self.polls < 3:
+                    return RunRecord(
+                        id=run_id,
+                        agent_id=agent_id,
+                        status=RunStatus.RUNNING,
+                    )
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="final from poll",
+                    duration_ms=50,
+                )
+
+        scope = ScopeKey("1", "2", "3")
+        logs = MemoryRunLogStore()
+        sink = MemoryStatusSink()
+        client = FakeClient()
+        tracker = RunTracker(
+            client,
+            sink,
+            edit_interval_ms=10_000,
+            run_log=logs,
+            scope=scope,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        snap = await tracker.track("bc", "r1")
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertEqual(snap.result_text, "final from poll")
+        self.assertGreaterEqual(client.polls, 3)
+        final = sink.updates[-1][0]
+        self.assertTrue(final.startswith("### Finished"))
+        self.assertIn("final from poll", final)
+        # Intermediate Running updates should not have been terminal.
+        non_terminal_running = [
+            content for content, terminal in sink.updates if (not terminal and "Running" in content)
+        ]
+        self.assertTrue(non_terminal_running)
+
+        entries = await logs.get_entries(scope, "r1", limit=50, kinds=None)
+        kinds = [e.kind for e in entries]
+        self.assertIn("result", kinds)
+        self.assertEqual(kinds.count("result"), 1)
+        self.assertNotIn("status", kinds)
+        self.assertNotIn("system", kinds)
+        focused = await logs.get_entries(
+            scope, "r1", limit=50, kinds={"prompt", "thinking", "tool_call", "assistant", "result", "error"}
+        )
+        self.assertEqual([e.kind for e in focused], ["result"])
 
     async def test_stream_exit_non_terminal_polls_get_run(self):
         class FakeClient:
@@ -209,7 +283,12 @@ class TestTracker(unittest.IsolatedAsyncioTestCase):
                 )
 
         sink = MemoryStatusSink()
-        tracker = RunTracker(FakeClient(), sink, edit_interval_ms=10_000)
+        tracker = RunTracker(
+            FakeClient(),
+            sink,
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+        )
         snap = await tracker.track("bc", "r1")
         self.assertEqual(snap.status, RunStatus.FINISHED)
         self.assertIn("polled result", sink.updates[-1][0])
