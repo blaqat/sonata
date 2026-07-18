@@ -93,11 +93,12 @@ class ThreadActivitySink:
                     ),
                 )
                 self._include_chat_info = False
+            # Translate the answer body only — Chat Info must stay a stable header.
             final = render_thread_final(
                 snapshot,
                 agent_name=agent_name,
                 skipped_images=skipped_images,
-                chat_info=chat_info,
+                chat_info=None,
             )
             if (
                 self.final_translator is not None
@@ -108,6 +109,8 @@ class ThreadActivitySink:
                 except Exception:
                     # Translator must fail open; keep original final text.
                     pass
+            if chat_info:
+                final = f"{chat_info.strip()}\n\n{final}"
             kwargs: dict[str, Any] = {}
             if self.allowed_mentions is not None:
                 kwargs["allowed_mentions"] = self.allowed_mentions

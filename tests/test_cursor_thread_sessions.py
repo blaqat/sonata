@@ -533,6 +533,39 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         self.assertIn("done", sent)
         self.assertEqual(channel.send.await_count, 1)
 
+    async def test_chat_info_survives_sona_translator(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        seen: list[str] = []
+
+        async def translate(text: str) -> str:
+            seen.append(text)
+            return f"sona:{text}"
+
+        sink = ThreadActivitySink(
+            channel,
+            activity,
+            edit_interval_ms=0,
+            final_translator=translate,
+            include_chat_info=True,
+            chat_info_model="claude-sonnet-4-6",
+            chat_info_repository_url="https://github.com/o/r",
+        )
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="bc-agent-1",
+            status=RunStatus.FINISHED,
+            result_text="done",
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        self.assertEqual(seen, ["done"])
+        sent = channel.send.await_args.args[0]
+        self.assertTrue(sent.startswith("Chat Info:"))
+        self.assertIn("bc-agent-1", sent)
+        self.assertIn("sona:done", sent)
+
     async def test_error_final_skips_translator(self):
         channel = MagicMock()
         channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
