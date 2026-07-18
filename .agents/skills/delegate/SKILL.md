@@ -15,7 +15,11 @@ user's task is done.
 
 ## Hard constraints
 
-You may use **only** the `Task` tool (to create/resume subagents). **Only the orchestrator may delegate.** Delegated workers must **not** launch their own subagents or `Task` calls — this prevents hidden model selection and extra API usage. If a worker needs more help, it must return a blocker or recommendation to you; you decide whether to spawn a follow-up worker.
+You may use **only** the `Task` tool (to create/resume subagents).
+
+Nested `Task` calls are allowed: workers may launch their own subagents when helpful.
+**At every nesting level**, every `Task` launch must set `model` explicitly to one of
+the two allowlisted slugs below. No other models — ever — for delegated work.
 
 You must **not**:
 
@@ -39,14 +43,17 @@ Every delegated task at **every nesting level** may use **only** these two model
 
 Default: if unsure whether thinking is needed, use **Cursor Grok 4.5 High Fast**.
 
-When launching a subagent, set `model` explicitly to one of the two slugs above. **Prohibited for delegated work:** Claude Sonnet, Claude Opus, Claude Fable, GPT, Gemini, or any other model slug. Do not omit `model` and hope the child inherits yours.
+When launching a subagent (including nested launches by workers), set `model`
+explicitly to one of the two slugs above. **Prohibited for delegated work:** Claude
+Sonnet, Claude Opus, Claude Fable, GPT, Gemini, or any other model slug. Do not omit
+`model` and hope the child inherits yours.
 
 ## Preflight checklist (before every `Task` call)
 
-Verify before each launch:
+Verify before each launch (orchestrator and nested workers):
 
 - [ ] `model` is explicitly set to `composer-2.5-fast` or `cursor-grok-4.5-high-fast` — never omitted, never another slug
-- [ ] Worker prompt includes: **do not launch subagents or `Task` calls**; return blockers or recommendations to the orchestrator instead
+- [ ] If this worker may nest-delegate, its prompt repeats the same two-model allowlist for any child `Task` calls
 
 ## Subagent type guidance
 
@@ -65,7 +72,7 @@ Prefer parallel `Task` calls when workstreams are independent.
    - Exactly what to do / what to return
    - Relevant paths, ticket IDs, branch rules, and repo conventions you already know from the conversation
    - What *not* to change
-   - **No nested delegation:** do not launch subagents or `Task` calls; return blockers or recommendations to the orchestrator if more help is needed
+   - **Model allowlist for any nested `Task`:** only `composer-2.5-fast` or `cursor-grok-4.5-high-fast`, set explicitly on every launch
    - Required output format (summary, files touched, test results, blockers)
 4. **Pick model + subagent_type** using the tables above.
 5. **Launch** one or more subagents via `Task`.
