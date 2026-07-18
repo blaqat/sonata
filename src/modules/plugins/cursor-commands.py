@@ -86,6 +86,7 @@ from cursor_cloud.thread_session import (
     policy_channel_id as resolve_policy_channel_id,
     thread_session_immutable_violation,
 )
+from cursor_cloud.thread_renderer import THREAD_THINKING_INDICATOR
 from cursor_cloud.thread_sink import ThreadActivitySink
 from modules.AI_manager import AI_Manager
 from modules.utils import get_reference_chain, get_reference_message_chain
@@ -996,6 +997,41 @@ async def handle_thread_message(message: discord.Message) -> bool:
 
     await _maybe_unarchive_thread(message.channel)
 
+    prompt = (message.content or "").strip()
+    if not prompt and not message.attachments:
+        return False
+
+    # Immediate thinking indicator so follow-ups don't look stuck while we
+    # auth / build context / hit the Cursor API (slash Queued equivalent).
+    activity_msg = None
+    if session.status_channel_id and session.status_message_id:
+        try:
+            activity_msg = await message.channel.fetch_message(
+                int(session.status_message_id)
+            )
+        except Exception:
+            activity_msg = None
+    if activity_msg is None:
+        try:
+            activity_msg = await message.channel.send(
+                THREAD_THINKING_INDICATOR,
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+            session.status_channel_id = str(message.channel.id)
+            session.status_message_id = str(activity_msg.id)
+            await sessions.upsert(session)
+        except Exception:
+            logger.exception("Cursor thread activity message create failed")
+            return True
+    else:
+        try:
+            await activity_msg.edit(
+                content=THREAD_THINKING_INDICATOR,
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+        except Exception:
+            logger.debug("Cursor thread thinking indicator edit failed", exc_info=True)
+
     scope = _scope_from_message(message, user_id=owner_id)
     pol_ch = resolve_policy_channel_id(
         channel_id=scope.channel_id,
@@ -1016,10 +1052,6 @@ async def handle_thread_message(message: discord.Message) -> bool:
         # Already marked seen — do not let other handlers re-process as unbound.
         return True
 
-    prompt = (message.content or "").strip()
-    if not prompt and not message.attachments:
-        return False
-
     fake = _interaction_shim_from_message(message)
 
     try:
@@ -1029,26 +1061,6 @@ async def handle_thread_message(message: discord.Message) -> bool:
     except Exception:
         logger.exception("Cursor thread follow-up context failed")
         return True
-
-    activity_msg = None
-    if session.status_channel_id and session.status_message_id:
-        try:
-            ch = message.channel
-            activity_msg = await ch.fetch_message(int(session.status_message_id))
-        except Exception:
-            activity_msg = None
-    if activity_msg is None:
-        try:
-            activity_msg = await message.channel.send(
-                initial_queued_message(),
-                allowed_mentions=CONTENT_MENTIONS,
-            )
-            session.status_channel_id = str(message.channel.id)
-            session.status_message_id = str(activity_msg.id)
-            await sessions.upsert(session)
-        except Exception:
-            logger.exception("Cursor thread activity message create failed")
-            return True
 
     try:
         await _prepare_and_maybe_launch(
@@ -1389,6 +1401,12 @@ async def _launch_run(
                 session.degraded = snap.degraded or getattr(sink, "degraded", False)
                 if snap.status.is_terminal:
                     session.last_meaningful_activity_at = utcnow()
+                    branches = list(getattr(snap, "git_branches", None) or [])
+                    if branches:
+                        session.latest_git = [
+                            g.to_dict() if hasattr(g, "to_dict") else dict(g)
+                            for g in branches
+                        ]
                 await sessions.upsert(session)
             finally:
                 _STATE["trackers"].pop(session.agent_id, None)
@@ -2947,6 +2965,36 @@ async def cursor_stop(
             await _ephemeral(interaction, exc.user_message)
 
 
+def _format_session_details(session) -> str:
+    """Ephemeral session card: run id + git (kept out of thread chat chrome)."""
+    lines = [
+        "### Session",
+        f"Agent: `{session.agent_id}`",
+        f"Name: {redact_untrusted(session.name)[:80] or '(unnamed)'}",
+        f"State: `{session.latest_run_status.value}`",
+    ]
+    if session.latest_run_id:
+        lines.append(f"Run: `{session.latest_run_id}`")
+    if session.model:
+        lines.append(f"Model: `{session.model}`")
+    if session.thread_bound:
+        lines.append("Mode: thread-bound")
+        if session.parent_channel_id:
+            lines.append(f"Parent: `{session.parent_channel_id}`")
+    git_items = list(session.latest_git or [])
+    if git_items:
+        lines.append("")
+        lines.append("### Git")
+        for item in git_items[:5]:
+            branch = item.get("branch") or "(branch)"
+            pr = item.get("pr_url") or item.get("prUrl")
+            if pr:
+                lines.append(f"- `{branch}` — {pr}")
+            else:
+                lines.append(f"- `{branch}`")
+    return "\n".join(lines)[:2000]
+
+
 @cursor_group.command(name="sessions", description="List your recent Cursor sessions here")
 async def cursor_sessions(ctx: discord.ApplicationContext):
     interaction = ctx.interaction
@@ -2960,17 +3008,30 @@ async def cursor_sessions(ctx: discord.ApplicationContext):
     lines = ["### Sessions"]
     for s in items:
         mark = " (active)" if s.active else ""
+        run = f" run `{s.latest_run_id}`" if s.latest_run_id else ""
+        git_bits = []
+        for item in list(s.latest_git or [])[:2]:
+            if item.get("branch"):
+                git_bits.append(str(item["branch"]))
+        git = f" git `{', '.join(git_bits)}`" if git_bits else ""
         lines.append(
             f"- `{s.agent_id}` {redact_untrusted(s.name)[:40]} "
-            f"[{s.latest_run_status.value}]{mark}"
+            f"[{s.latest_run_status.value}]{run}{git}{mark}"
         )
     await _ephemeral(interaction, "\n".join(lines)[:2000])
 
 
-@cursor_group.command(name="session", description="Switch your active owned Cursor session")
+@cursor_group.command(
+    name="session",
+    description="Show active session details, or switch to an owned agent id",
+)
 async def cursor_session(
     ctx: discord.ApplicationContext,
-    agent_id: str = Option(str, "Owned agent id"),
+    agent_id: str = Option(
+        str,
+        "Owned agent id (omit to show the active session)",
+        required=False,
+    ),
 ):
     interaction = ctx.interaction
     if await _gate(interaction, "session") is None:
@@ -2978,19 +3039,27 @@ async def cursor_session(
     await _defer(interaction, ephemeral=True)
     scope = _scope_from_interaction(interaction)
     try:
-        # Validate ownership locally first — never expose org-wide agents.
         sessions = _sessions()
         active = await sessions.get_active(scope)
-        if active is not None and active.thread_bound and active.agent_id != agent_id:
+        target = (agent_id or "").strip()
+        if not target:
+            if active is None:
+                await _ephemeral(interaction, "No active owned session here.")
+                return
+            await _ephemeral(interaction, _format_session_details(active))
+            return
+
+        # Validate ownership locally first — never expose org-wide agents.
+        if active is not None and active.thread_bound and active.agent_id != target:
             await _ephemeral(
                 interaction,
                 "This thread is bound to a single Cursor session; agent switching is disabled.",
             )
             return
-        session = await sessions.get_session(scope, agent_id)
+        session = await sessions.get_session(scope, target)
         if session is None:
             raise OwnershipError()
-        if session.thread_bound and active is not None and active.agent_id != agent_id:
+        if session.thread_bound and active is not None and active.agent_id != target:
             await _ephemeral(
                 interaction,
                 "This thread is bound to a single Cursor session; agent switching is disabled.",
@@ -2998,12 +3067,16 @@ async def cursor_session(
             return
         # Optional API check that it still exists.
         try:
-            await _client().get_agent(agent_id)
+            await _client().get_agent(target)
         except CursorCloudError:
             pass
-        await sessions.set_active(scope, agent_id)
-        await sessions.touch_activity(scope, agent_id)
-        await _ephemeral(interaction, f"Active session set to `{agent_id}`.")
+        await sessions.set_active(scope, target)
+        await sessions.touch_activity(scope, target)
+        refreshed = await sessions.get_session(scope, target) or session
+        await _ephemeral(
+            interaction,
+            f"Active session set to `{target}`.\n\n{_format_session_details(refreshed)}",
+        )
     except CursorCloudError as exc:
         await _ephemeral(interaction, exc.user_message)
 
@@ -3178,6 +3251,22 @@ async def cursor_status(
     try:
         run = await _client().get_run(active.agent_id, active.latest_run_id)
         active.latest_run_status = run.status
+        git_payload = run.git if isinstance(run.git, dict) else None
+        if git_payload:
+            branches = []
+            for item in git_payload.get("branches") or []:
+                if isinstance(item, dict):
+                    branches.append(
+                        {
+                            "repo_url": str(
+                                item.get("repoUrl") or item.get("repo_url") or ""
+                            ),
+                            "branch": item.get("branch"),
+                            "pr_url": item.get("prUrl") or item.get("pr_url"),
+                        }
+                    )
+            if branches:
+                active.latest_git = branches
         await _sessions().upsert(active)
         await _sessions().touch_activity(scope, active.agent_id)
         text = (
@@ -3187,6 +3276,12 @@ async def cursor_status(
             f"Run: `{run.id}`\n"
             f"State: `{run.status.value}`\n"
         )
+        if active.latest_git:
+            text += "\n### Git\n"
+            for item in active.latest_git[:5]:
+                branch = item.get("branch") or "(branch)"
+                pr = item.get("pr_url")
+                text += f"- `{branch}`" + (f" — {pr}" if pr else "") + "\n"
         if run.result:
             text += f"\n{redact_untrusted(run.result)[:1500]}"
         # Try edit existing status message
@@ -3527,6 +3622,13 @@ async def _reconcile_runs() -> None:
                         initial_status=sess.latest_run_status,
                     )
                     sess.latest_run_status = snap.status
+                    if snap.status.is_terminal:
+                        branches = list(getattr(snap, "git_branches", None) or [])
+                        if branches:
+                            sess.latest_git = [
+                                g.to_dict() if hasattr(g, "to_dict") else dict(g)
+                                for g in branches
+                            ]
                     await sessions.upsert(sess)
 
                 _STATE["trackers"][session.agent_id] = asyncio.create_task(_resume())

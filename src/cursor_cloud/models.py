@@ -329,6 +329,8 @@ class AgentSession:
     thread_bound: bool = False
     parent_channel_id: str | None = None
     summary: str = ""
+    # Latest git branches from the most recent terminal run (for /cursor session).
+    latest_git: list[dict[str, Any]] = field(default_factory=list)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
     last_meaningful_activity_at: datetime = field(default_factory=utcnow)
@@ -352,6 +354,7 @@ class AgentSession:
             "thread_bound": self.thread_bound,
             "parent_channel_id": self.parent_channel_id,
             "summary": self.summary,
+            "latest_git": list(self.latest_git or []),
             "created_at": dt_to_iso(self.created_at),
             "updated_at": dt_to_iso(self.updated_at),
             "last_meaningful_activity_at": dt_to_iso(self.last_meaningful_activity_at),
@@ -362,6 +365,8 @@ class AgentSession:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentSession":
         scope_data = data.get("scope") or {}
+        raw_git = data.get("latest_git") or []
+        latest_git = [dict(g) for g in raw_git if isinstance(g, dict)]
         return cls(
             scope=ScopeKey.from_dict(scope_data),
             agent_id=str(data.get("agent_id") or ""),
@@ -390,6 +395,7 @@ class AgentSession:
                 else None
             ),
             summary=str(data.get("summary") or "")[:500],
+            latest_git=latest_git,
             created_at=dt_from_iso(data.get("created_at")) or utcnow(),
             updated_at=dt_from_iso(data.get("updated_at")) or utcnow(),
             last_meaningful_activity_at=dt_from_iso(

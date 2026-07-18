@@ -7,11 +7,7 @@ from collections import defaultdict
 from typing import Iterable
 
 from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus, ToolActivity
-from .status_renderer import (
-    _status_title,
-    redact_untrusted,
-    truncate_message,
-)
+from .status_renderer import redact_untrusted, truncate_message
 
 # Map tool names to rolling summary families (coalesce repeated calls).
 _TOOL_FAMILY_ALIASES: dict[str, str] = {
@@ -30,6 +26,9 @@ _TOOL_FAMILY_ALIASES: dict[str, str] = {
     "StrReplace": "edit",
     "search_replace": "edit",
 }
+
+# Immediate ack while a thread follow-up is preparing / waiting on the API.
+THREAD_THINKING_INDICATOR = "### Thinking\n…"
 
 
 def tool_family(name: str) -> str:
@@ -65,6 +64,12 @@ def _coalesce_tools(tools: Iterable[ToolActivity]) -> list[str]:
     return lines
 
 
+def _normalize_headings(text: str) -> str:
+    text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
+    text = re.sub(r"^#(?!#)\s*", "### ", text, flags=re.MULTILINE)
+    return text
+
+
 def render_thread_activity(
     snapshot: RunSnapshot,
     *,
@@ -72,26 +77,22 @@ def render_thread_activity(
     skipped_images: list[str] | None = None,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
-    """Single editable in-flight Activity message body."""
-    lines: list[str] = [f"### {_status_title(snapshot.status)}"]
-    if agent_name:
-        lines.append(f"Agent: `{redact_untrusted(agent_name)[:80]}`")
-    lines.append(f"Run: `{snapshot.run_id}`")
+    """Editable in-flight Activity: thinking + grouped tools only (no run/git chrome)."""
+    del agent_name  # unused — kept for call-site compatibility with classic sink
+    lines: list[str] = []
 
     if snapshot.error_message and snapshot.status == RunStatus.ERROR:
-        lines.append("")
         lines.append("### Error")
         lines.append(redact_untrusted(snapshot.error_message)[:500])
 
     if snapshot.status.is_active and snapshot.thinking_text:
-        peek = redact_untrusted(snapshot.thinking_text.strip())[-160:]
+        peek = redact_untrusted(snapshot.thinking_text.strip())[-220:]
         if peek:
-            lines.append("")
-            lines.append(f"_Thinking…_ {peek}")
+            lines.append("### Thinking")
+            lines.append(peek)
 
     tools = list(snapshot.tools[-12:])
     if tools:
-        lines.append("")
         lines.append("### Activity")
         lines.extend(_coalesce_tools(tools))
 
@@ -100,10 +101,6 @@ def render_thread_activity(
         if peek:
             lines.append("")
             lines.append(f"_Draft…_ {peek}")
-
-    if snapshot.status.is_terminal and not snapshot.error_message:
-        lines.append("")
-        lines.append("_Run complete — see result message below._")
 
     if skipped_images:
         lines.append("")
@@ -114,11 +111,15 @@ def render_thread_activity(
     if snapshot.degraded:
         lines.append("_Activity updates degraded; some edits may have failed._")
 
+    if not lines:
+        if snapshot.status.is_terminal:
+            lines.append("_done_")
+        else:
+            lines.append(THREAD_THINKING_INDICATOR)
+
     text = "\n".join(lines).strip()
     text, _ = truncate_message(text, limit=limit)
-    text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    text = re.sub(r"^#(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    return text[:limit]
+    return _normalize_headings(text)[:limit]
 
 
 def render_thread_final(
@@ -128,48 +129,27 @@ def render_thread_final(
     skipped_images: list[str] | None = None,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
-    """Frozen final assistant result/error/git message."""
-    title = _status_title(snapshot.status)
-    lines: list[str] = [f"### {title}"]
-    if agent_name:
-        lines.append(f"Agent: `{redact_untrusted(agent_name)[:80]}`")
-    lines.append(f"Run: `{snapshot.run_id}`")
+    """Frozen final answer/error only — no Finished/Agent/Run/Git/Duration chrome."""
+    del agent_name  # unused — kept for call-site compatibility
 
     if snapshot.error_message and snapshot.status == RunStatus.ERROR:
-        lines.append("")
-        lines.append(redact_untrusted(snapshot.error_message)[:1500])
+        text = "### Error\n" + redact_untrusted(snapshot.error_message)[:1500]
+        text, _ = truncate_message(text, limit=limit)
+        return _normalize_headings(text)[:limit]
 
     body = snapshot.result_text or snapshot.assistant_text
-    if body:
-        lines.append("")
-        lines.append("### Result")
-        lines.append(redact_untrusted(body))
+    if not body:
+        return "_No output._"
 
-    if snapshot.git_branches:
-        lines.append("")
-        lines.append("### Git")
-        for branch in snapshot.git_branches[:3]:
-            bit = branch.branch or "(branch)"
-            if branch.pr_url:
-                lines.append(f"- `{bit}` — {branch.pr_url}")
-            else:
-                lines.append(f"- `{bit}`")
-
-    if snapshot.duration_ms is not None:
-        seconds = snapshot.duration_ms / 1000.0
-        lines.append(f"Duration: {seconds:.1f}s")
-
+    text = redact_untrusted(body)
     if skipped_images:
-        lines.append("")
-        lines.append("### Images")
-        for note in skipped_images[:5]:
-            lines.append(f"- {redact_untrusted(note)[:160]}")
+        notes = "\n".join(
+            f"- {redact_untrusted(note)[:160]}" for note in skipped_images[:5]
+        )
+        text = f"{text}\n\n_Images skipped:_\n{notes}"
 
-    text = "\n".join(lines).strip()
     text, truncated = truncate_message(text, limit=limit)
     if truncated and "…(truncated)" not in text:
         text = text.rstrip() + "\n…(truncated)"
         text, _ = truncate_message(text, limit=limit)
-    text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    text = re.sub(r"^#(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    return text[:limit]
+    return _normalize_headings(text)[:limit]

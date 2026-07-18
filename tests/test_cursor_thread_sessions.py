@@ -25,7 +25,11 @@ from cursor_cloud.models import (
     utcnow,
 )
 from cursor_cloud.session_store import MemorySessionStore
-from cursor_cloud.thread_renderer import render_thread_activity, render_thread_final
+from cursor_cloud.thread_renderer import (
+    THREAD_THINKING_INDICATOR,
+    render_thread_activity,
+    render_thread_final,
+)
 from cursor_cloud.thread_session import (
     owner_reply_to_human,
     policy_channel_id,
@@ -142,18 +146,41 @@ class TestThreadRenderer(unittest.TestCase):
         text = render_thread_activity(snap)
         self.assertIn("search", text)
         self.assertIn("×2", text)
+        self.assertNotIn("Run:", text)
+        self.assertNotIn("Agent:", text)
         self.assertLessEqual(len(text), 2000)
 
-    def test_final_is_separate_body(self):
+    def test_activity_idle_shows_thinking_indicator(self):
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.QUEUED,
+        )
+        text = render_thread_activity(snap)
+        self.assertEqual(text, THREAD_THINKING_INDICATOR)
+
+    def test_final_is_body_only_no_chrome(self):
         snap = RunSnapshot(
             run_id="r1",
             agent_id="a1",
             status=RunStatus.FINISHED,
             result_text="hello @everyone",
+            duration_ms=11000,
+            git_branches=[],
         )
+        from cursor_cloud.models import GitBranchInfo
+
+        snap.git_branches = [
+            GitBranchInfo(branch="cursor/demo", pr_url="https://example.com/pr/1")
+        ]
         final = render_thread_final(snap)
-        self.assertIn("### Result", final)
+        self.assertIn("hello", final)
         self.assertNotIn("@everyone", final)
+        self.assertNotIn("### Finished", final)
+        self.assertNotIn("### Result", final)
+        self.assertNotIn("Run:", final)
+        self.assertNotIn("### Git", final)
+        self.assertNotIn("Duration:", final)
 
 
 class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
@@ -527,10 +554,13 @@ class TestSessionThreadFieldsCompat(unittest.TestCase):
             owner_id=OWNER,
             thread_bound=True,
             parent_channel_id="100",
+            latest_run_id="run-1",
+            latest_git=[{"branch": "cursor/demo", "pr_url": None}],
         )
         restored = AgentSession.from_dict(session.to_dict())
         self.assertTrue(restored.thread_bound)
         self.assertEqual(restored.parent_channel_id, "100")
+        self.assertEqual(restored.latest_git[0]["branch"], "cursor/demo")
         legacy = AgentSession.from_dict(
             {
                 "scope": {"guild_id": "1", "channel_id": "200", "user_id": OWNER},
@@ -540,6 +570,7 @@ class TestSessionThreadFieldsCompat(unittest.TestCase):
         )
         self.assertFalse(legacy.thread_bound)
         self.assertIsNone(legacy.parent_channel_id)
+        self.assertEqual(legacy.latest_git, [])
 
 
 class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
@@ -615,6 +646,81 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
         notify.assert_awaited_once()
         self.assertIn("Started Cursor session", notify.await_args.args[0])
         self.assertNotIn("auto-archive", notify.await_args.args[0])
+
+
+class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
+    async def test_followup_edits_activity_to_thinking_immediately(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        sessions = MemorySessionStore()
+        scope = ScopeKey("1", "200", OWNER)
+        session = AgentSession(
+            scope=scope,
+            agent_id="bc-1",
+            owner_id=OWNER,
+            thread_bound=True,
+            parent_channel_id="100",
+            status_channel_id="200",
+            status_message_id="55",
+            active=True,
+        )
+        await sessions.upsert(session)
+        await sessions.set_active(scope, "bc-1")
+        mod._STATE.update(
+            {
+                "config": cfg,
+                "sessions": sessions,
+                "access": AccessController(
+                    cfg,
+                    MemoryAccessStore(),
+                    image_retention=ImageRetentionStore(max_total_bytes=1),
+                ),
+                "policy_manager": ParentAllowsChildDeniesPolicy(),
+                "require_policy": True,
+                "bot": MagicMock(),
+                "handled_thread_messages": set(),
+            }
+        )
+        activity = MagicMock()
+        activity.id = 55
+        activity.edit = AsyncMock()
+        channel = MagicMock()
+        channel.id = 200
+        channel.parent_id = 100
+        channel.fetch_message = AsyncMock(return_value=activity)
+        message = MagicMock()
+        message.id = 901
+        message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
+        message.content = "follow up please"
+        message.attachments = []
+        message.reference = None
+        message.channel = channel
+        message.guild = SimpleNamespace(id=1)
+        with patch.object(mod, "_channel_is_thread", return_value=True):
+            with patch.object(mod, "_revalidate_run_auth", new=AsyncMock()):
+                with patch.object(
+                    mod,
+                    "_build_context_from_message",
+                    new=AsyncMock(return_value=("follow up please", [], [])),
+                ):
+                    with patch.object(
+                        mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
+                    ):
+                        ok = await mod.handle_thread_message(message)
+        self.assertTrue(ok)
+        activity.edit.assert_awaited()
+        self.assertEqual(
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0],
+            THREAD_THINKING_INDICATOR,
+        )
 
 
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
