@@ -263,13 +263,39 @@ class CursorCloudClient:
         data = response.json()
         agent = AgentRecord.from_api(data.get("agent") or data)
         run_data = data.get("run") or {}
-        if not run_data and agent.latest_run_id:
+        if not isinstance(run_data, dict):
+            run_data = {}
+        if not (run_data.get("id") or run_data.get("runId")) and agent.latest_run_id:
             run_data = {
                 "id": agent.latest_run_id,
                 "agentId": agent.id,
-                "status": "CREATING",
+                "status": run_data.get("status") or "CREATING",
             }
+        # Some create responses omit `run` entirely; resolve via GET agent.
+        if not (run_data.get("id") or run_data.get("runId")) and agent.id:
+            try:
+                refreshed = await self.get_agent(agent.id)
+                if refreshed.latest_run_id:
+                    agent = refreshed
+                    run_data = {
+                        "id": refreshed.latest_run_id,
+                        "agentId": agent.id,
+                        "status": "CREATING",
+                    }
+            except CursorCloudError:
+                pass
         run = RunRecord.from_api(run_data)
+        if not run.id:
+            raise ValidationError(
+                "create_agent response missing run id",
+                user_message=(
+                    "Cursor created an agent but no run id was returned. "
+                    "Try again in a moment."
+                ),
+                code="missing_run_id",
+            )
+        if not run.agent_id:
+            run.agent_id = agent.id
         return agent, run
 
     async def create_run(

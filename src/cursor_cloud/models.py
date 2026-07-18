@@ -757,7 +757,7 @@ class RunRecord:
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> "RunRecord":
         return cls(
-            id=str(data.get("id") or ""),
+            id=str(data.get("id") or data.get("runId") or data.get("run_id") or ""),
             agent_id=str(data.get("agentId") or data.get("agent_id") or ""),
             status=RunStatus.from_api(data.get("status")),
             result=data.get("result"),

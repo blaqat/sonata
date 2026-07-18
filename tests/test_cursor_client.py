@@ -3,6 +3,7 @@ import json
 import pathlib
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -238,6 +239,61 @@ class TestCursorClient(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen["timeout"].read, 456.0)
         http.send.assert_awaited()
         self.assertTrue(http.send.await_args.kwargs.get("stream"))
+
+    async def test_create_agent_resolves_run_via_get_agent(self):
+        create = self._resp(
+            200,
+            {"agent": {"id": "bc-1", "name": "n", "status": "ACTIVE"}},
+        )
+        refresh = self._resp(
+            200,
+            {
+                "id": "bc-1",
+                "name": "n",
+                "status": "ACTIVE",
+                "latestRunId": "run-resolved",
+            },
+        )
+        self.http.request = AsyncMock(side_effect=[create, refresh])
+        agent, run = await self.client.create_agent("do thing")
+        self.assertEqual(agent.id, "bc-1")
+        self.assertEqual(run.id, "run-resolved")
+        self.assertEqual(self.http.request.await_count, 2)
+
+    async def test_create_agent_missing_run_id_raises(self):
+        self.http.request = AsyncMock(
+            side_effect=[
+                self._resp(200, {"agent": {"id": "bc-1", "status": "ACTIVE"}}),
+                self._resp(200, {"id": "bc-1", "status": "ACTIVE"}),
+            ]
+        )
+        with self.assertRaises(ValidationError) as ctx:
+            await self.client.create_agent("do thing")
+        self.assertEqual(ctx.exception.code, "missing_run_id")
+
+
+class TestReferenceFetchResilience(unittest.IsolatedAsyncioTestCase):
+    async def test_get_next_reference_deleted_message_returns_none(self):
+        import discord
+
+        from modules.utils import get_next_reference, get_reference_message, references
+
+        references.clear()
+        channel = MagicMock()
+        channel.fetch_message = AsyncMock(
+            side_effect=discord.NotFound(MagicMock(), {"code": 10008})
+        )
+        message = MagicMock()
+        message.id = 101
+        message.author = SimpleNamespace(name="user")
+        message.content = "$agent hello"
+        message.reference = SimpleNamespace(message_id=999)
+        message.channel = channel
+
+        self.assertIsNone(await get_next_reference(message))
+        # Failed fetch is remembered so we do not keep hitting Discord.
+        self.assertIsNone(await get_reference_message(message))
+        channel.fetch_message.assert_awaited_once_with(999)
 
 
 if __name__ == "__main__":

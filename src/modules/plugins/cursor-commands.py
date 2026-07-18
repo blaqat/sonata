@@ -88,7 +88,10 @@ from cursor_cloud.thread_session import (
 )
 from cursor_cloud.thread_renderer import THREAD_THINKING_INDICATOR
 from cursor_cloud.thread_sink import ThreadActivitySink
-from cursor_cloud.thread_translate import atranslate_thread_final_for_sona
+from cursor_cloud.thread_translate import (
+    DEFAULT_SONA_INSTRUCTIONS,
+    atranslate_thread_final_for_sona,
+)
 from modules.AI_manager import AI_Manager
 from modules.utils import get_reference_chain, get_reference_message_chain
 
@@ -1101,6 +1104,8 @@ async def _launch_run(
     parent_channel_id: str | None = None,
     policy_channel_id: str | None = None,
     agent_display_name: str | None = None,
+    user_prompt: str | None = None,
+    user_name: str | None = None,
 ) -> AgentSession:
     cfg = _cfg()
     scope = scope or _scope_from_interaction(interaction)
@@ -1245,6 +1250,15 @@ async def _launch_run(
                         auto_create_pr=cfg.auto_create_pr,
                         name=suggested_name,
                     )
+                    if not agent.id or not run.id:
+                        raise ValidationError(
+                            "create_agent missing agent/run id",
+                            user_message=(
+                                "Cursor did not return a usable agent/run id. "
+                                "Try again in a moment."
+                            ),
+                            code="missing_run_id",
+                        )
                     session_name = (agent.name or suggested_name or "").strip()
                     session = AgentSession(
                         scope=scope,
@@ -1355,12 +1369,27 @@ async def _launch_run(
         sink: DiscordStatusSink | ThreadActivitySink
         if thread_bound or session.thread_bound:
             channel = status_msg.channel if status_msg else interaction.channel
+            latest_user_prompt = (user_prompt or "").strip()
+            latest_user_name = (user_name or "").strip() or "User"
+
+            async def _thread_final_translator(
+                final: str,
+                *,
+                _prompt=latest_user_prompt,
+                _name=latest_user_name,
+            ) -> str:
+                return await _translate_thread_final_for_sona(
+                    final,
+                    user_prompt=_prompt,
+                    user_name=_name,
+                )
+
             sink = ThreadActivitySink(
                 channel,
                 status_msg,
                 edit_interval_ms=cfg.status_edit_interval_ms,
                 allowed_mentions=CONTENT_MENTIONS,
-                final_translator=_translate_thread_final_for_sona,
+                final_translator=_thread_final_translator,
             )
         else:
             sink = DiscordStatusSink(status_msg)
@@ -1890,6 +1919,10 @@ async def _prepare_and_maybe_launch(
             user_message="Image set no longer matches the approved request; please resubmit.",
         )
 
+    launch_user = getattr(getattr(interaction, "user", None), "display_name", None) or getattr(
+        getattr(interaction, "user", None), "name", None
+    ) or "User"
+
     # One-run grant consume happens under the scope lock inside _launch_run.
     await _launch_run(
         interaction,
@@ -1909,6 +1942,8 @@ async def _prepare_and_maybe_launch(
         parent_channel_id=parent_channel_id,
         policy_channel_id=pol_ch,
         agent_display_name=agent_display_name,
+        user_prompt=prompt,
+        user_name=str(launch_user),
     )
     return "launched"
 
@@ -2224,6 +2259,8 @@ async def _launch_approved_request(interaction: discord.Interaction, request) ->
             skip_status_post=thread_bound and status_msg is not None,
             status_msg=status_msg,
             agent_display_name=approved_title,
+            user_prompt=request.prompt_preview or envelope.prompt_text,
+            user_name="User",
         )
         await access.images.discard(request.request_id)
         if interaction.message:
@@ -2589,23 +2626,6 @@ def _live_prompt_manager():
     return PROMPT_MANAGER
 
 
-def _sona_thread_instructions() -> str | None:
-    """Live PromptManager.get_instructions() (same source chat.request uses)."""
-    pm = _live_prompt_manager()
-    try:
-        if hasattr(pm, "get_instructions"):
-            text = pm.get_instructions()
-            if text:
-                return str(text)
-        if hasattr(pm, "get"):
-            text = pm.get("DefaultInstructions")
-            if text:
-                return str(text)
-    except Exception:
-        logger.debug("Could not read Sonata instructions for thread translate", exc_info=True)
-    return None
-
-
 def _runtime_chat_ai() -> str | None:
     """AI provider currently selected for normal Sona chat (`$c`/`$o`/`$g`, etc.)."""
     for source in (_live_sonata(), MANAGER):
@@ -2623,20 +2643,28 @@ def _runtime_chat_ai() -> str | None:
     return None
 
 
-async def _translate_thread_final_for_sona(text: str) -> str:
+async def _translate_thread_final_for_sona(
+    text: str,
+    *,
+    user_prompt: str = "",
+    user_name: str = "User",
+) -> str:
     """Route thread-bound finals through live Sonata PromptManager (fail-open).
 
-    SelfCommand-style: live get_instructions() + agent output presented as
-    source material; runtime chat AI + that provider's configured model.
+    Dedicated no-tools system instruction (self-commands persona + translate
+    rules) and only the latest user prompt as chat history — not live
+    get_instructions(), which includes the $command tool list.
     """
     pm = _live_prompt_manager()
     send = getattr(pm, "send", None) or PROMPT_MANAGER.send
     return await atranslate_thread_final_for_sona(
         text,
         send=send,
-        instructions=_sona_thread_instructions(),
+        instructions=DEFAULT_SONA_INSTRUCTIONS,
         ai=_runtime_chat_ai(),
         model=None,
+        user_prompt=user_prompt,
+        user_name=user_name,
     )
 
 

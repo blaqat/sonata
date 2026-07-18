@@ -947,7 +947,14 @@ async def get_next_reference(message):
         return None
 
     if next_id not in references:
-        return store_reference(await message.channel.fetch_message(next_id))
+        try:
+            fetched = await message.channel.fetch_message(next_id)
+        except Exception:
+            # Deleted / unknown reply targets must not abort on_message
+            # (chat_hook → process_commands → $agent, etc.).
+            references[message.id].next_id = None
+            return None
+        return store_reference(fetched)
 
     return references[next_id]
 
@@ -957,6 +964,8 @@ async def get_reference_message(message, return_message=True):
         return None
 
     ref_message = await get_next_reference(message)
+    if ref_message is None:
+        return None
 
     return ref_message.message if return_message else ref_message
 
