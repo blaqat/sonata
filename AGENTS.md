@@ -144,3 +144,21 @@ When implementation is complete:
 [Ready]       -> (agent picks up & implements)     -> [In progress]
 [In progress] -> (agent opens PR)                  -> [In Review]
 ```
+
+## Cursor Cloud specific instructions
+
+Sonata is a single Python 3.12 process: an AI-powered Discord bot (`py-cord`). Dependencies are managed with `uv` (see `pyproject.toml`/`uv.lock`); the startup update script runs `uv sync`. There is no database or other service — persistence is local pickle files under `beacon-mainland/` (gitignored). `ffmpeg` (for voice) is preinstalled.
+
+Run/test/lint (standard commands live in `ReadME.md`; `ReadME.md` is stale on install — use `uv`, not `pip install -r requirements.txt`, which does not exist):
+
+- Run bot: `uv run python src/index.py` (from repo root; `src` is auto-added to `sys.path` because the entry uses `from __init__` / `from modules`).
+- Tests: `PYTHONPATH=src uv run python -m unittest discover -s tests -v`.
+- Type check: `uvx pyright` (`typeCheckingMode` is `off`; only reports missing imports).
+
+Non-obvious gotchas:
+
+- Tests MUST be run with `PYTHONPATH=src`; otherwise `test_channel_policies` fails at import with `No module named 'modules'`.
+- 10 tests in `tests/test_policy_api.py` fail pre-existing (`'FakeSonata' object has no attribute 'has'`) — the test's fake omits a method `channel_policies.py` calls. This is unrelated to environment setup; 51/61 tests pass otherwise.
+- The bot needs `OPENAI_API_KEY` present in the environment (even a placeholder) just to import: `openai.chat.completions` is a lazy proxy resolved when the `@register_ai` decorators run at import time.
+- Do NOT leave empty-string values for provider keys in `.env` (e.g. `X_AI=`). An empty string counts as "set", so `settings.X_AI` returns `""` and `XAIClient("")` raises `ValueError` during registration. To disable a provider, omit the line entirely (unset -> `None` -> registration skipped); to enable it, give a real key.
+- Full Discord end-to-end requires a real `BOT_TOKEN` plus at least one AI provider key (default chat model is Claude, so `ANTHROPIC_AI`). Without a token the bot boots through full initialization and then can only fail at Discord login. The core chat pipeline can be exercised offline by registering a local AI provider via `MANAGER.register_ai(...)` and calling `Sonata.chat.request(...)`.
