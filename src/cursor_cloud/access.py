@@ -307,7 +307,7 @@ class AccessController:
             return False
         if tier in {AccessTier.GOD, AccessTier.ADMIN}:
             return True
-        # Tier 2
+        # Tier 2 — approve/deny are Tier 0/1 only (require_approver).
         allowed = {
             "run",
             "new",
@@ -317,13 +317,9 @@ class AccessController:
             "model",
             "status",
             "history",
-            "approve",
-            "deny",
         }
-        # Tier 2 cannot use access management; approve/deny still gated by require_approver.
+        # Tier 2 cannot use access management.
         if command.startswith("access"):
-            return False
-        if command in {"approve", "deny"}:
             return False
         return command in allowed
 
@@ -361,7 +357,7 @@ class AccessController:
         assignments = dict(overlay.get("assignments") or {})
         assignments[target] = new_value
         await self.store.set_overlay({"assignments": assignments})
-        await self._audit(
+        await self.audit(
             actor_id,
             "set_tier",
             target_id=target,
@@ -438,7 +434,7 @@ class AccessController:
         await self.store.save_request(request)
         if images:
             await self.images.put(request.request_id, images, expires_at=expires)
-        await self._audit(
+        await self.audit(
             envelope.requester_id,
             "approval_created",
             target_id=request.request_id,
@@ -494,7 +490,7 @@ class AccessController:
             request.decided_by = str(actor_id)
             await self.store.save_request(request)
             await self.images.discard(request.request_id)
-            await self._audit(
+            await self.audit(
                 actor_id,
                 "approval_denied_unauthorized",
                 target_id=request_id,
@@ -610,7 +606,7 @@ class AccessController:
                 request.grant_minutes = None
                 await self.store.save_request(request)
                 await self.images.discard(request.request_id)
-                await self._audit(
+                await self.audit(
                     actor_id,
                     "approval_denied",
                     target_id=request_id,
@@ -638,7 +634,7 @@ class AccessController:
                 request.decided_at = now
                 request.decided_by = str(actor_id)
                 await self.store.save_request(request)
-                await self._audit(
+                await self.audit(
                     actor_id,
                     "approval_once",
                     target_id=request_id,
@@ -665,7 +661,7 @@ class AccessController:
                 request.decided_at = now
                 request.decided_by = str(actor_id)
                 await self.store.save_request(request)
-                await self._audit(
+                await self.audit(
                     actor_id,
                     "approval_timed",
                     target_id=request_id,
@@ -729,7 +725,7 @@ class AccessController:
                 if request and request.decision == ApprovalDecision.APPROVED_ONCE:
                     request.decision = ApprovalDecision.CONSUMED
                     await self.store.save_request(request)
-            await self._audit(
+            await self.audit(
                 current.user_id,
                 "grant_consumed",
                 target_id=current.grant_id,
@@ -741,7 +737,7 @@ class AccessController:
         """Fail-closed: leave grant consumed; discard retained images."""
         if grant.request_id:
             await self.images.discard(grant.request_id)
-        await self._audit(
+        await self.audit(
             grant.user_id,
             "submit_failed_after_consume",
             target_id=grant.grant_id,
@@ -758,7 +754,7 @@ class AccessController:
             raise StaleStateError(user_message="Grant not found.")
         grant.revoked = True
         await self.store.save_grant(grant)
-        await self._audit(
+        await self.audit(
             actor_id, "grant_revoked", target_id=grant_id, detail={}
         )
         return grant
@@ -779,7 +775,7 @@ class AccessController:
         grant = await self.find_valid_grant(scope, str(user_id), envelope)
         return tier, grant, None
 
-    async def _audit(
+    async def audit(
         self,
         actor_id: str | int,
         action: str,
@@ -795,6 +791,17 @@ class AccessController:
             detail=detail or {},
         )
         await self.store.append_audit(event)
+
+    # Backward-compatible alias for callers/tests still using the private name.
+    async def _audit(
+        self,
+        actor_id: str | int,
+        action: str,
+        *,
+        target_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        await self.audit(actor_id, action, target_id=target_id, detail=detail)
 
 
 def redact_preview(text: str, *, limit: int = 240) -> str:

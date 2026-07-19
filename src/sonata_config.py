@@ -100,6 +100,8 @@ def _plugin_defaults_from_modules() -> dict[str, Any]:
 
 
 def _project_plugin_defaults() -> dict[str, Any]:
+    from cursor_cloud.config import DEFAULT_PLUGIN_CONFIG
+
     return {
         "chat": {
             "summarize": True,
@@ -142,33 +144,7 @@ def _project_plugin_defaults() -> dict[str, Any]:
         "term_commands": {
             "inject_emojis": False,
         },
-        "cursor": {
-            "enabled": False,
-            "api_base_url": "https://api.cursor.com",
-            "default_repository_url": "",
-            "default_ref": "main",
-            "default_model": "",
-            "auto_create_pr": False,
-            "chain_depth": 20,
-            "max_images": 5,
-            "max_image_bytes": 15728640,
-            "status_edit_interval_ms": 1200,
-            "connect_timeout_seconds": 10.0,
-            "read_timeout_seconds": 60.0,
-            "stream_timeout_seconds": 900.0,
-            "max_recent_sessions": 20,
-            "session_idle_prompt_minutes": 10,
-            "max_retained_image_bytes": 41943040,
-            "access": {
-                "tier1_user_ids": [],
-                "tier2_user_ids": [],
-                "default_grant_minutes": 10,
-                "approval_timeout_hours": 12,
-                "min_grant_minutes": 1,
-                "max_grant_minutes": 180,
-                "audit_history_limit": 200,
-            },
-        },
+        "cursor": deepcopy(DEFAULT_PLUGIN_CONFIG),
     }
 
 

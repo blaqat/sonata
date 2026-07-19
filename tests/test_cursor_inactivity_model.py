@@ -11,9 +11,8 @@ from cursor_cloud.config import load_cursor_config
 from cursor_cloud.models import (
     AgentSession,
     IdleChoice,
-    IdleDecision,
     ModelChoice,
-    ModelDecision,
+    PendingDecision,
     RunRequestEnvelope,
     ScopeKey,
     utcnow,
@@ -49,20 +48,21 @@ class TestInactivityAndModelOrder(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(session_is_idle(s, idle_minutes=10))
 
     async def test_idle_decision_consume_and_cancel(self):
-        decision = IdleDecision(
+        decision = PendingDecision(
             decision_id="idle_1",
             scope=self.scope,
             agent_id="a1",
+            kind="idle",
             expires_at=utcnow() + timedelta(minutes=5),
         )
-        await self.sessions.save_idle_decision(decision)
-        loaded = await self.sessions.get_idle_decision("idle_1")
-        loaded.choice = IdleChoice.CANCEL
+        await self.sessions.save_decision(decision)
+        loaded = await self.sessions.get_decision("idle_1")
+        loaded.choice = IdleChoice.CANCEL.value
         loaded.consumed = True
-        await self.sessions.save_idle_decision(loaded)
-        again = await self.sessions.get_idle_decision("idle_1")
+        await self.sessions.save_decision(loaded)
+        again = await self.sessions.get_decision("idle_1")
         self.assertTrue(again.consumed)
-        self.assertEqual(again.choice, IdleChoice.CANCEL)
+        self.assertEqual(again.choice, IdleChoice.CANCEL.value)
 
     async def test_model_mismatch_forces_choice_before_approval_hash(self):
         session = AgentSession(
@@ -75,14 +75,17 @@ class TestInactivityAndModelOrder(unittest.IsolatedAsyncioTestCase):
         )
         await self.sessions.upsert(session)
         # Model decision must happen before hashing approval envelope that includes agent_id.
-        decision = ModelDecision(
+        decision = PendingDecision(
             decision_id="mdl_1",
             scope=self.scope,
             agent_id="a1",
-            preferred_model="new-model",
-            agent_model="old-model",
+            kind="model",
+            extras={
+                "preferred_model": "new-model",
+                "agent_model": "old-model",
+            },
         )
-        await self.sessions.save_model_decision(decision)
+        await self.sessions.save_decision(decision)
 
         # Continue => follow-up keeps original model / agent in envelope
         cont_env = RunRequestEnvelope(
@@ -108,9 +111,9 @@ class TestInactivityAndModelOrder(unittest.IsolatedAsyncioTestCase):
         )
         self.assertNotEqual(envelope_hash(cont_env), envelope_hash(new_env))
         # Choosing new vs continue changes approval binding
-        decision.choice = ModelChoice.NEW_SESSION
+        decision.choice = ModelChoice.NEW_SESSION.value
         decision.consumed = True
-        await self.sessions.save_model_decision(decision)
+        await self.sessions.save_decision(decision)
 
     async def test_active_pointer_only_after_create_success_semantics(self):
         # Simulate: do not change active until upsert after successful create.

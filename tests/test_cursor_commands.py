@@ -2,6 +2,7 @@ import importlib.util
 import pathlib
 import sys
 import unittest
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -14,19 +15,58 @@ from cursor_cloud.models import AccessTier
 
 def load_cursor_plugin():
     """Load plugin module without permanently hijacking AI_Manager.M.MANAGER."""
+    import importlib
+
     from modules.AI_manager import AI_Manager
 
-    path = ROOT / "src" / "modules" / "plugins" / "cursor-commands.py"
-    spec = importlib.util.spec_from_file_location("cursor_commands_plugin", path)
-    module = importlib.util.module_from_spec(spec)
+    pkg = "modules.plugins.cursor-commands"
     previous_manager = AI_Manager.M.MANAGER
     try:
-        spec.loader.exec_module(module)
+        # Fresh package graph each call (matches prior file-location isolation).
+        for key in list(sys.modules):
+            if key == pkg or key.startswith(pkg + "."):
+                del sys.modules[key]
+        mod = importlib.import_module(pkg + ".module")
+        mod.discord_ui = sys.modules[pkg + ".discord_ui"]
+        mod.workflows = sys.modules[pkg + ".workflows"]
+        mod.runtime = sys.modules[pkg + ".runtime"]
+        return mod
     finally:
         # cursor-commands uses AI_Manager.init(lazy=True), which rebinds the
         # shared facade; restore so later suite modules keep their managers.
         AI_Manager.M.MANAGER = previous_manager
-    return module
+
+
+@contextmanager
+def patch_cursor(mod, name, *args, **kwargs):
+    """Patch ``name`` on the plugin module and owning package submodules.
+
+    Yields the mock/object from the primary (plugin module) patch when present,
+    matching ``patch.object`` ``as`` semantics.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    targets = []
+    for m in (
+        mod,
+        getattr(mod, "discord_ui", None),
+        getattr(mod, "workflows", None),
+        getattr(mod, "runtime", None),
+    ):
+        if m is not None and hasattr(m, name):
+            targets.append(m)
+    with ExitStack() as stack:
+        primary = None
+        for i, m in enumerate(targets):
+            cm = patch.object(m, name, *args, **kwargs)
+            val = stack.enter_context(cm)
+            if i == 0:
+                primary = val
+        yield primary
+
+
+
 
 
 class TestConfigDefaults(unittest.TestCase):

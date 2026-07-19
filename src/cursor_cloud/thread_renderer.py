@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 from typing import Iterable
 
 from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus, ToolActivity
-from .status_renderer import redact_untrusted, truncate_message
+from .status_renderer import normalize_headings, redact_untrusted, truncate_message
 
 # Map tool names to rolling summary families (coalesce repeated calls).
 _TOOL_FAMILY_ALIASES: dict[str, str] = {
@@ -62,12 +61,6 @@ def _coalesce_tools(tools: Iterable[ToolActivity]) -> list[str]:
                 f"- `{latest.name}` ({latest.status}) {summary}".rstrip()
             )
     return lines
-
-
-def _normalize_headings(text: str) -> str:
-    text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    text = re.sub(r"^#(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    return text
 
 
 def github_hint_from_snapshot(
@@ -163,7 +156,7 @@ def render_thread_activity(
 
     text = "\n".join(lines).strip()
     text, _ = truncate_message(text, limit=limit)
-    return _normalize_headings(text)[:limit]
+    return normalize_headings(text)[:limit]
 
 
 def render_thread_final(
@@ -180,7 +173,7 @@ def render_thread_final(
     if snapshot.error_message and snapshot.status == RunStatus.ERROR:
         text = "### Error\n" + redact_untrusted(snapshot.error_message)[:1500]
         text, _ = truncate_message(text, limit=limit)
-        return _normalize_headings(text)[:limit]
+        return normalize_headings(text)[:limit]
 
     body = snapshot.result_text or snapshot.assistant_text
     if not body:
@@ -199,4 +192,4 @@ def render_thread_final(
     if truncated and "…(truncated)" not in text:
         text = text.rstrip() + "\n…(truncated)"
         text, _ = truncate_message(text, limit=limit)
-    return _normalize_headings(text)[:limit]
+    return normalize_headings(text)[:limit]

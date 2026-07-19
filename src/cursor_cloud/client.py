@@ -22,6 +22,7 @@ from .errors import (
     ValidationError,
 )
 from .models import AgentRecord, ModelInfo, RunRecord, StreamEvent
+from .stream_gone import looks_like_stream_unavailable
 
 logger = logging.getLogger("sonata.cursor.client")
 
@@ -417,25 +418,6 @@ class CursorCloudClient:
         data = response.json()
         return [ModelInfo.from_api(i) for i in data.get("items") or []]
 
-    @staticmethod
-    def _looks_like_stream_unavailable(exc: BaseException) -> bool:
-        code = str(getattr(exc, "code", "") or "").lower()
-        message = " ".join(
-            str(part)
-            for part in (exc, getattr(exc, "user_message", ""), getattr(exc, "message", ""))
-            if part
-        ).lower()
-        if code in {"stream_expired", "stream_unavailable", "gone"}:
-            return True
-        needles = (
-            "no longer available",
-            "stream expired",
-            "stream is no longer",
-            "stream unavailable",
-            "run stream is no longer",
-        )
-        return any(n in message for n in needles)
-
     async def stream_run(
         self,
         agent_id: str,
@@ -447,7 +429,7 @@ class CursorCloudClient:
         if last_event_id:
             headers["Last-Event-ID"] = last_event_id
 
-        logger.warning(
+        logger.info(
             "cursor.stream_open agent=%s run=%s last_event_id=%s",
             agent_id,
             run_id,
@@ -499,7 +481,7 @@ class CursorCloudClient:
                 for event in events:
                     event_count += 1
                     if event.event in {"error", "result", "done"}:
-                        logger.warning(
+                        logger.debug(
                             "cursor.sse_event agent=%s run=%s event=%s data=%r",
                             agent_id,
                             run_id,
@@ -512,7 +494,7 @@ class CursorCloudClient:
                 for event in events:
                     event_count += 1
                     if event.event in {"error", "result", "done"}:
-                        logger.warning(
+                        logger.debug(
                             "cursor.sse_event agent=%s run=%s event=%s data=%r",
                             agent_id,
                             run_id,
@@ -520,7 +502,7 @@ class CursorCloudClient:
                             event.data,
                         )
                     yield event
-            logger.warning(
+            logger.info(
                 "cursor.stream_closed agent=%s run=%s events=%s",
                 agent_id,
                 run_id,
@@ -617,7 +599,7 @@ class CursorCloudClient:
                 return
             raise
         except CursorCloudError as exc:
-            if self._looks_like_stream_unavailable(exc):
+            if looks_like_stream_unavailable(exc):
                 logger.warning(
                     "cursor.stream_open_as_unavailable agent=%s run=%s "
                     "http=%s code=%s msg=%r — yielding stream_unavailable",

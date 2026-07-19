@@ -1,6 +1,7 @@
 """Concurrency, lifecycle, component routing, and emergency path tests."""
 
 from __future__ import annotations
+from contextlib import contextmanager
 
 import asyncio
 import importlib.util
@@ -22,10 +23,9 @@ from cursor_cloud.models import (
     AgentSession,
     ApprovalDecision,
     IdleChoice,
-    IdleDecision,
     ImageInput,
     ModelChoice,
-    ModelDecision,
+    PendingDecision,
     RunRequestEnvelope,
     RunStatus,
     ScopeKey,
@@ -40,17 +40,55 @@ T2 = "100000000000000003"
 
 
 def load_cursor_plugin():
+    import importlib
+
     from modules.AI_manager import AI_Manager
 
-    path = ROOT / "src" / "modules" / "plugins" / "cursor-commands.py"
-    spec = importlib.util.spec_from_file_location("cursor_commands_conc", path)
-    module = importlib.util.module_from_spec(spec)
+    pkg = "modules.plugins.cursor-commands"
     previous = AI_Manager.M.MANAGER
     try:
-        spec.loader.exec_module(module)
+        for key in list(sys.modules):
+            if key == pkg or key.startswith(pkg + "."):
+                del sys.modules[key]
+        mod = importlib.import_module(pkg + ".module")
+        mod.discord_ui = sys.modules[pkg + ".discord_ui"]
+        mod.workflows = sys.modules[pkg + ".workflows"]
+        mod.runtime = sys.modules[pkg + ".runtime"]
+        return mod
     finally:
         AI_Manager.M.MANAGER = previous
-    return module
+
+
+@contextmanager
+def patch_cursor(mod, name, *args, **kwargs):
+    """Patch ``name`` on the plugin module and owning package submodules.
+
+    Yields the mock/object from the primary (plugin module) patch when present,
+    matching ``patch.object`` ``as`` semantics.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    targets = []
+    for m in (
+        mod,
+        getattr(mod, "discord_ui", None),
+        getattr(mod, "workflows", None),
+        getattr(mod, "runtime", None),
+    ):
+        if m is not None and hasattr(m, name):
+            targets.append(m)
+    with ExitStack() as stack:
+        primary = None
+        for i, m in enumerate(targets):
+            cm = patch.object(m, name, *args, **kwargs)
+            val = stack.enter_context(cm)
+            if i == 0:
+                primary = val
+        yield primary
+
+
+
 
 
 class PermissivePolicy:
@@ -93,20 +131,17 @@ def _bootstrap(mod):
         )
     )
     client.aclose = AsyncMock()
-    mod._STATE.update(
-        {
-            "config": cfg,
-            "sessions": sessions,
-            "access_store": store,
-            "access": access,
-            "client": client,
-            "cdn": MagicMock(aclose=AsyncMock()),
-            "bot": None,
-            "trackers": {},
-            "policy_manager": PermissivePolicy(),
-            "require_policy": False,
-            "_cleanup_done": False,
-        }
+    mod.reset_runtime(
+        config=cfg,
+        sessions=sessions,
+        access_store=store,
+        access=access,
+        client=client,
+        cdn=MagicMock(aclose=AsyncMock()),
+        bot=None,
+        trackers={},
+        policy_manager=PermissivePolicy(),
+        require_policy=False,
     )
     return sessions, access, cfg, client
 
@@ -183,9 +218,9 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
 
         client.create_run = AsyncMock(side_effect=slow_create_run)
 
-        async def slow_public(interaction, content, **kwargs):
+        async def slow_post_status(self, content, **kwargs):
             public_entered["n"] += 1
-            # Block until both callers have entered _public (deterministic TOCTOU).
+            # Block until both callers have entered post_status (deterministic TOCTOU).
             if public_entered["n"] >= 2:
                 public_gate.set()
             await public_gate.wait()
@@ -200,7 +235,7 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
             public_msgs.append(msg)
             return msg
 
-        mod._public = slow_public
+        mod.InteractionUI.post_status = slow_post_status
 
         class FakeTracker:
             def __init__(self, *a, **k):
@@ -209,7 +244,7 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
             async def track(self, *a, **k):
                 return SimpleNamespace(status=RunStatus.FINISHED, degraded=False)
 
-        with patch.object(mod, "RunTracker", FakeTracker):
+        with patch_cursor(mod, "RunTracker", FakeTracker):
             async def launch():
                 interaction = _interaction(T1)
                 return await mod._launch_run(
@@ -382,8 +417,7 @@ class TestIdleDecisionDedupe(unittest.IsolatedAsyncioTestCase):
             # Call real offer path via prepare
             return await mod._prepare_and_maybe_launch(interaction, *args, **kwargs)
 
-        with patch.object(
-            mod,
+        with patch_cursor(mod,
             "_build_context_for_run",
             AsyncMock(return_value=("built", [], [])),
         ):
@@ -396,8 +430,8 @@ class TestIdleDecisionDedupe(unittest.IsolatedAsyncioTestCase):
         state = sessions.export_state()
         open_idle = [
             d
-            for d in state["idle"].values()
-            if not d.get("consumed")
+            for d in state["decisions"].values()
+            if d.get("kind") == "idle" and not d.get("consumed")
         ]
         self.assertEqual(len(open_idle), 1)
         # Only one channel decision message (second gets ephemeral dedupe).
@@ -412,11 +446,12 @@ class TestRetentionDiscard(unittest.IsolatedAsyncioTestCase):
         scope = ScopeKey("1", "2", T2)
         img = ImageInput(mime_type="image/png", data_b64="AAAA", size_bytes=3)
         await access.images.put("ret_x", [img], expires_at=utcnow() + timedelta(hours=1))
-        await sessions.save_idle_decision(
-            IdleDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="idle_r",
                 scope=scope,
                 agent_id="a1",
+                kind="idle",
                 expires_at=utcnow() + timedelta(minutes=5),
             )
         )
@@ -430,7 +465,12 @@ class TestRetentionDiscard(unittest.IsolatedAsyncioTestCase):
             },
         )
         interaction = _interaction(T2)
-        await mod._complete_idle(interaction, "idle_r", IdleChoice.CANCEL)
+        await mod.complete_decision(
+            mod.get_runtime(),
+            mod.InteractionUI(interaction),
+            "idle_r",
+            IdleChoice.CANCEL.value,
+        )
         self.assertIsNone(await access.images.get("ret_x"))
 
 
@@ -508,11 +548,12 @@ class TestHandleComponentAndViews(unittest.IsolatedAsyncioTestCase):
         mod = load_cursor_plugin()
         sessions, access, cfg, client = _bootstrap(mod)
         scope = ScopeKey("1", "2", T2)
-        await sessions.save_idle_decision(
-            IdleDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="idle_c",
                 scope=scope,
                 agent_id="a1",
+                kind="idle",
                 expires_at=utcnow() + timedelta(minutes=5),
             )
         )
@@ -525,7 +566,7 @@ class TestHandleComponentAndViews(unittest.IsolatedAsyncioTestCase):
         interaction.data = {"custom_id": "c105:idle_cont:idle_c"}
         ok = await mod.handle_component(interaction)
         self.assertTrue(ok)
-        decision = await sessions.get_idle_decision("idle_c")
+        decision = await sessions.get_decision("idle_c")
         self.assertTrue(decision.consumed)
 
     async def test_register_views_skips_expired_consumed_missing_payload(self):
@@ -545,33 +586,35 @@ class TestHandleComponentAndViews(unittest.IsolatedAsyncioTestCase):
         )
         req = await access.create_approval_request(env, prompt_preview="p", images=[])
         # Consumed idle
-        await sessions.save_idle_decision(
-            IdleDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="idle_dead",
                 scope=scope,
                 agent_id="a1",
+                kind="idle",
                 consumed=True,
-                choice=IdleChoice.CANCEL,
+                choice=IdleChoice.CANCEL.value,
             )
         )
         # Expired model
-        await sessions.save_model_decision(
-            ModelDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="mdl_exp",
                 scope=scope,
                 agent_id="a1",
-                preferred_model="n",
-                agent_model="o",
+                kind="model",
                 expires_at=utcnow() - timedelta(minutes=1),
+                extras={"preferred_model": "n", "agent_model": "o"},
             )
         )
         await sessions.save_pending_payload("mdl_exp", {"prompt_text": "x"})
         # Valid idle with payload
-        await sessions.save_idle_decision(
-            IdleDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="idle_ok",
                 scope=scope,
                 agent_id="a1",
+                kind="idle",
                 expires_at=utcnow() + timedelta(minutes=5),
             )
         )
@@ -579,11 +622,12 @@ class TestHandleComponentAndViews(unittest.IsolatedAsyncioTestCase):
             "idle_ok", {"prompt_text": "built", "image_metas": []}
         )
         # Multimodal missing retention after "restart"
-        await sessions.save_idle_decision(
-            IdleDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="idle_img",
                 scope=scope,
                 agent_id="a1",
+                kind="idle",
                 expires_at=utcnow() + timedelta(minutes=5),
             )
         )
@@ -627,15 +671,16 @@ class TestExpiryAndReconcile(unittest.IsolatedAsyncioTestCase):
         mod = load_cursor_plugin()
         sessions, access, cfg, client = _bootstrap(mod)
         scope = ScopeKey("1", "2", T2)
-        decision = IdleDecision(
+        decision = PendingDecision(
             decision_id="idle_exp",
             scope=scope,
             agent_id="a1",
+            kind="idle",
             expires_at=utcnow() - timedelta(seconds=1),
             message_channel_id="2",
             message_id="55",
         )
-        await sessions.save_idle_decision(decision)
+        await sessions.save_decision(decision)
         await sessions.save_pending_payload(
             "idle_exp",
             {"prompt_text": "built", "retention_key": None, "image_metas": []},
@@ -646,10 +691,10 @@ class TestExpiryAndReconcile(unittest.IsolatedAsyncioTestCase):
         channel.fetch_message = AsyncMock(return_value=msg)
         bot = MagicMock()
         bot.get_channel.return_value = channel
-        mod._STATE["bot"] = bot
+        mod.get_runtime().bot = bot
 
         await mod._expire_stale_decisions()
-        again = await sessions.get_idle_decision("idle_exp")
+        again = await sessions.get_decision("idle_exp")
         self.assertTrue(again.consumed)
         self.assertIsNone(await sessions.get_pending_payload("idle_exp"))
         msg.edit.assert_awaited()
@@ -682,7 +727,7 @@ class TestExpiryAndReconcile(unittest.IsolatedAsyncioTestCase):
         channel.fetch_message = AsyncMock(return_value=msg)
         bot = MagicMock()
         bot.get_channel.return_value = channel
-        mod._STATE["bot"] = bot
+        mod.get_runtime().bot = bot
 
         expired = await access.expire_stale_requests()
         self.assertEqual(len(expired), 1)

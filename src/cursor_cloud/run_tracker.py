@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from .client import CursorCloudClient
 from .errors import CursorCloudError, StreamExpiredError
@@ -23,6 +23,7 @@ from .models import (
 from .run_log import RunLogStore, sanitize_log_summary
 from .session_store import is_meaningful_stream_event
 from .status_renderer import render_status, safe_tool_summary
+from .stream_gone import is_stream_unavailable_error, is_stream_unavailable_exc
 
 logger = logging.getLogger("sonata.cursor.tracker")
 
@@ -37,61 +38,26 @@ class StatusSink(Protocol):
     async def update(self, content: str, *, terminal: bool = False) -> None: ...
 
 
+@runtime_checkable
+class SnapshotSink(Protocol):
+    async def update_from_snapshot(
+        self,
+        snapshot: RunSnapshot,
+        *,
+        terminal: bool = False,
+        agent_name: str | None = None,
+        skipped_images: list[str] | None = None,
+    ) -> None: ...
+
+
 OnActivity = Callable[[str], Awaitable[None] | None]
-
-
-def _stream_unavailable_text(value: Any) -> str:
-    """Flatten nested SSE/API error payloads into searchable text."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        parts = [
-            _stream_unavailable_text(value.get("message")),
-            _stream_unavailable_text(value.get("error")),
-            _stream_unavailable_text(value.get("text")),
-            _stream_unavailable_text(value.get("code")),
-        ]
-        return " ".join(p for p in parts if p)
-    return str(value)
-
-
-def is_stream_unavailable_error(data: dict[str, Any] | None) -> bool:
-    """True when an SSE error means the stream ended, not that the agent failed."""
-    payload = data or {}
-    code = str(payload.get("code") or "").lower()
-    message = _stream_unavailable_text(payload).lower()
-    if code in {"stream_expired", "stream_unavailable", "gone"}:
-        return True
-    needles = (
-        "no longer available",
-        "stream expired",
-        "stream is no longer",
-        "stream unavailable",
-        "run stream is no longer",
-    )
-    return any(n in message for n in needles)
-
-
-def is_stream_unavailable_exc(exc: BaseException) -> bool:
-    """True when a client exception is a dropped/unreadable stream, not agent failure."""
-    code = str(getattr(exc, "code", "") or "").lower()
-    message = " ".join(
-        str(part)
-        for part in (exc, getattr(exc, "user_message", ""), getattr(exc, "message", ""))
-        if part
-    ).lower()
-    if code in {"stream_expired", "stream_unavailable", "gone", "transport_error"}:
-        return True
-    return is_stream_unavailable_error({"code": code, "message": message})
 
 
 class RunTracker:
     def __init__(
         self,
         client: CursorCloudClient,
-        sink: StatusSink,
+        sink: StatusSink | SnapshotSink,
         *,
         edit_interval_ms: int = 1200,
         agent_name: str | None = None,
@@ -175,15 +141,9 @@ class RunTracker:
             if data.get("durationMs") is not None:
                 snapshot.duration_ms = int(data["durationMs"])
             git = data.get("git") or {}
-            branches = []
-            for item in git.get("branches") or []:
-                branches.append(
-                    GitBranchInfo(
-                        repo_url=str(item.get("repoUrl") or ""),
-                        branch=item.get("branch"),
-                        pr_url=item.get("prUrl"),
-                    )
-                )
+            branches = GitBranchInfo.from_api_list(
+                git.get("branches") if isinstance(git, dict) else git
+            )
             if branches:
                 snapshot.git_branches = branches
             # Successful result clears a prior non-fatal stream glitch message.
@@ -216,17 +176,9 @@ class RunTracker:
         if run.id:
             snapshot.run_id = run.id
         git = run.git or {}
-        branches = []
-        for item in git.get("branches") or []:
-            if not isinstance(item, dict):
-                continue
-            branches.append(
-                GitBranchInfo(
-                    repo_url=str(item.get("repoUrl") or item.get("repo_url") or ""),
-                    branch=item.get("branch"),
-                    pr_url=item.get("prUrl") or item.get("pr_url"),
-                )
-            )
+        branches = GitBranchInfo.from_api_list(
+            git.get("branches") if isinstance(git, dict) else git
+        )
         if branches:
             snapshot.git_branches = branches
         if snapshot.status == RunStatus.FINISHED:
@@ -250,7 +202,7 @@ class RunTracker:
                 api_err = str(
                     run.raw.get("error") or run.raw.get("message") or ""
                 )[:200]
-            logger.warning(
+            logger.info(
                 "cursor.reconcile agent=%s run=%s api_status=%s snap=%s→%s "
                 "has_result=%s err=%r",
                 agent_id,
@@ -351,7 +303,7 @@ class RunTracker:
             return
         deadline = time.monotonic() + self.poll_max_s
         consecutive_failures = 0
-        logger.warning(
+        logger.info(
             "cursor.poll_start agent=%s run=%s status=%s poll_max_s=%s",
             agent_id,
             run_id,
@@ -429,10 +381,9 @@ class RunTracker:
         if terminal or self._pending_log_kinds:
             await self._flush_pending_text_logs()
         # Snapshot-aware sinks (thread chat-room UX) bypass classic single-message render.
-        update_snap = getattr(self.sink, "update_from_snapshot", None)
         try:
-            if callable(update_snap):
-                await update_snap(
+            if isinstance(self.sink, SnapshotSink):
+                await self.sink.update_from_snapshot(
                     self.snapshot,
                     terminal=terminal,
                     agent_name=self.agent_name,
@@ -478,7 +429,7 @@ class RunTracker:
             status=initial_status,
             last_event_id=last_event_id,
         )
-        logger.warning(
+        logger.info(
             "cursor.track_start agent=%s run=%s initial=%s last_event_id=%s",
             agent_id,
             run_id,
@@ -609,7 +560,7 @@ class RunTracker:
                 await coalesce_task
             except asyncio.CancelledError:
                 pass
-            logger.warning(
+            logger.info(
                 "cursor.track_end agent=%s run=%s status=%s degraded=%s err=%r",
                 agent_id,
                 run_id,

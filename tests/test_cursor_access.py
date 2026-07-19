@@ -187,7 +187,7 @@ class TestApprovals(unittest.IsolatedAsyncioTestCase):
         ctrl, store = make_controller()
         store.audit_limit = 5
         for i in range(10):
-            await ctrl._audit(GOD, "ping", detail={"i": i})
+            await ctrl.audit(GOD, "ping", detail={"i": i})
         events = await store.list_audit(limit=50)
         self.assertEqual(len(events), 5)
 

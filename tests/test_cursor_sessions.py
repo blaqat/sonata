@@ -7,7 +7,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from cursor_cloud.errors import OwnershipError
-from cursor_cloud.models import AgentSession, RunStatus, ScopeKey, utcnow
+from cursor_cloud.models import AgentSession, IdleChoice, RunStatus, ScopeKey, utcnow
 from cursor_cloud.session_store import (
     MemorySessionStore,
     is_meaningful_stream_event,
@@ -73,6 +73,77 @@ class TestSessions(unittest.IsolatedAsyncioTestCase):
         active = await other.get_active(self.scope)
         self.assertEqual(active.agent_id, "a1")
         self.assertEqual(active.summary, "hi")
+
+    async def test_import_state_migrates_legacy_idle_model_buckets(self):
+        """Legacy Beacon export_state with idle/model buckets loads into decisions."""
+        scope = self.scope.to_dict()
+        legacy = {
+            "sessions": {},
+            "active": {},
+            "idle": {
+                "idle_legacy": {
+                    "decision_id": "idle_legacy",
+                    "scope": scope,
+                    "agent_id": "a1",
+                    "choice": IdleChoice.PENDING.value,
+                    "created_at": utcnow().isoformat().replace("+00:00", "Z"),
+                    "expires_at": None,
+                    "consumed": False,
+                    "message_channel_id": "c1",
+                    "message_id": "m1",
+                }
+            },
+            "model": {
+                "mdl_legacy": {
+                    "decision_id": "mdl_legacy",
+                    "scope": scope,
+                    "agent_id": "a1",
+                    "preferred_model": "new-model",
+                    "agent_model": "old-model",
+                    "choice": IdleChoice.PENDING.value,
+                    "created_at": utcnow().isoformat().replace("+00:00", "Z"),
+                    "expires_at": None,
+                    "consumed": False,
+                    "message_channel_id": None,
+                    "message_id": None,
+                }
+            },
+            "pending": {
+                "idle_legacy": {"prompt_text": "keep me"},
+            },
+            "model_prefs": {},
+        }
+        other = MemorySessionStore()
+        other.import_state(legacy)
+
+        idle = await other.get_decision("idle_legacy")
+        self.assertIsNotNone(idle)
+        self.assertEqual(idle.kind, "idle")
+        self.assertEqual(idle.agent_id, "a1")
+        self.assertEqual(idle.message_channel_id, "c1")
+        self.assertFalse(idle.consumed)
+
+        model = await other.get_decision("mdl_legacy")
+        self.assertIsNotNone(model)
+        self.assertEqual(model.kind, "model")
+        self.assertEqual(model.extras.get("preferred_model"), "new-model")
+        self.assertEqual(model.extras.get("agent_model"), "old-model")
+
+        open_idle = await other.find_open_decision(self.scope, "idle")
+        self.assertEqual(open_idle.decision_id, "idle_legacy")
+        open_model = await other.find_open_decision(self.scope, "model")
+        self.assertEqual(open_model.decision_id, "mdl_legacy")
+
+        pending = await other.get_pending_payload("idle_legacy")
+        self.assertEqual(pending["prompt_text"], "keep me")
+
+        # Re-export uses unified decisions bucket (no legacy idle/model keys).
+        exported = other.export_state()
+        self.assertIn("decisions", exported)
+        self.assertNotIn("idle", exported)
+        self.assertNotIn("model", exported)
+        self.assertEqual(exported["decisions"]["idle_legacy"]["kind"], "idle")
+        self.assertEqual(exported["decisions"]["mdl_legacy"]["kind"], "model")
 
     async def test_bounded_history(self):
         for i in range(5):

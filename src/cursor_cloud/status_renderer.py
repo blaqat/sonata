@@ -21,6 +21,13 @@ def redact_untrusted(text: str) -> str:
     return text
 
 
+def normalize_headings(text: str) -> str:
+    """Upgrade lone `#` / `##` lines to `###` so Discord never gets H1/H2."""
+    text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
+    text = re.sub(r"^#(?!#)\s*", "### ", text, flags=re.MULTILINE)
+    return text
+
+
 def _status_title(status: RunStatus) -> str:
     mapping = {
         RunStatus.QUEUED: "Queued",
@@ -113,9 +120,7 @@ def render_status(
             text = text.rstrip() + "\n…(truncated)"
             text, _ = truncate_message(text, limit=limit)
     # Final safety: never emit # or ## headings
-    text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    text = re.sub(r"^#(?!#)\s*", "### ", text, flags=re.MULTILINE)
-    return text[:limit]
+    return normalize_headings(text)[:limit]
 
 
 def truncate_message(text: str, *, limit: int = DISCORD_MESSAGE_LIMIT) -> tuple[str, bool]:
@@ -132,14 +137,19 @@ def truncate_message(text: str, *, limit: int = DISCORD_MESSAGE_LIMIT) -> tuple[
     rebuilt = [sections[0]]
     for part in sections[1:]:
         rebuilt.append("### " + part)
-    # Drop tool history first
+    # Drop tool history first (index-based; avoid list.index O(n²)/duplicate bugs).
     filtered: list[str] = []
-    for block in rebuilt:
-        if block.startswith("### Tools") and len("\n".join(filtered + rebuilt[rebuilt.index(block) + 1 :])) > budget:
+    for i, block in enumerate(rebuilt):
+        rest = rebuilt[i + 1 :]
+        if block.startswith("### Tools") and len("\n".join(filtered + rest)) > budget:
             continue
         filtered.append(block)
-        if len("\n".join(filtered)) > budget:
-            filtered[-1] = filtered[-1][: max(0, budget - len("\n".join(filtered[:-1])) - 1)]
+        joined = "\n".join(filtered)
+        if len(joined) > budget:
+            prefix = "\n".join(filtered[:-1])
+            # Reserve one char for the joining newline when a prefix exists.
+            overhead = 1 if prefix else 0
+            filtered[-1] = filtered[-1][: max(0, budget - len(prefix) - overhead)]
             break
     out = "\n".join(filtered)
     if len(out) > budget:

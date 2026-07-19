@@ -1,6 +1,7 @@
 """Thread-session UX tests for SONA-105 (/cursor new + bound threads)."""
 
 from __future__ import annotations
+from contextlib import contextmanager
 
 import importlib.util
 import pathlib
@@ -18,6 +19,7 @@ from cursor_cloud.access import AccessController, ImageRetentionStore, MemoryAcc
 from cursor_cloud.config import load_cursor_config
 from cursor_cloud.models import (
     AgentSession,
+    GitBranchInfo,
     RunSnapshot,
     RunStatus,
     ScopeKey,
@@ -39,9 +41,13 @@ from cursor_cloud.thread_session import (
 )
 from cursor_cloud.thread_sink import ThreadActivitySink
 from cursor_cloud.thread_translate import (
-    DEFAULT_SONA_INSTRUCTIONS,
-    atranslate_thread_final_for_sona,
-    translate_thread_final_for_sona,
+    atranslate_final,
+    translate_final,
+)
+
+# Injected dummy instructions for package-level translate machinery tests.
+DUMMY_TRANSLATE_INSTRUCTIONS = (
+    "DUMMY instructions: rewrite helpfully. Do NOT invent facts. Do NOT run commands."
 )
 
 
@@ -52,17 +58,55 @@ OTHER = "100000000000000011"
 
 
 def load_cursor_plugin():
+    import importlib
+
     from modules.AI_manager import AI_Manager
 
-    path = ROOT / "src" / "modules" / "plugins" / "cursor-commands.py"
-    spec = importlib.util.spec_from_file_location("cursor_commands_thread", path)
-    module = importlib.util.module_from_spec(spec)
+    pkg = "modules.plugins.cursor-commands"
     previous = AI_Manager.M.MANAGER
     try:
-        spec.loader.exec_module(module)
+        for key in list(sys.modules):
+            if key == pkg or key.startswith(pkg + "."):
+                del sys.modules[key]
+        mod = importlib.import_module(pkg + ".module")
+        mod.discord_ui = sys.modules[pkg + ".discord_ui"]
+        mod.workflows = sys.modules[pkg + ".workflows"]
+        mod.runtime = sys.modules[pkg + ".runtime"]
+        return mod
     finally:
         AI_Manager.M.MANAGER = previous
-    return module
+
+
+@contextmanager
+def patch_cursor(mod, name, *args, **kwargs):
+    """Patch ``name`` on the plugin module and owning package submodules.
+
+    Yields the mock/object from the primary (plugin module) patch when present,
+    matching ``patch.object`` ``as`` semantics.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    targets = []
+    for m in (
+        mod,
+        getattr(mod, "discord_ui", None),
+        getattr(mod, "workflows", None),
+        getattr(mod, "runtime", None),
+    ):
+        if m is not None and hasattr(m, name):
+            targets.append(m)
+    with ExitStack() as stack:
+        primary = None
+        for i, m in enumerate(targets):
+            cm = patch.object(m, name, *args, **kwargs)
+            val = stack.enter_context(cm)
+            if i == 0:
+                primary = val
+        yield primary
+
+
+
 
 
 class ParentAllowsChildDeniesPolicy:
@@ -300,39 +344,36 @@ class TestThreadRenderer(unittest.TestCase):
 
 
 class TestThreadTranslate(unittest.TestCase):
-    def test_translate_selfcommand_shape_and_runtime_ai(self):
+    def test_translate_injects_instructions_and_prompt(self):
         def fake_send(prompt, *args, **kwargs):
-            # Dedicated system instr (no $command list) + latest user prompt as history.
-            self.assertIn("coding agent finished", prompt.lower())
-            self.assertIn("The bug was fixed in auth.py.", prompt)
-            self.assertIn("BEG OF CHAT LOG", prompt)
-            self.assertIn("please fix auth", prompt)
-            self.assertIn("blaqat:", prompt)
-            self.assertNotIn("Command Guidelines", prompt)
-            self.assertNotIn("Rewrite the following", prompt)
+            self.assertEqual(prompt, "built prompt body")
             self.assertEqual(kwargs.get("AI"), "Claude")
             self.assertNotIn("model", kwargs)
             cfg = kwargs.get("config") or {}
-            self.assertEqual(cfg.get("instructions"), DEFAULT_SONA_INSTRUCTIONS)
+            self.assertEqual(cfg.get("instructions"), DUMMY_TRANSLATE_INSTRUCTIONS)
             self.assertFalse(cfg.get("agent"))
-            instr = cfg.get("instructions") or ""
-            self.assertIn("Do NOT run commands", instr)
-            self.assertIn("smart aleck", instr.lower())
-            # Thread finals must not inherit ultra-short chat brevity caps.
-            self.assertNotIn("7 words max", instr)
-            self.assertNotIn("No punctuation AT ALL", instr)
-            self.assertNotIn("Command Guidelines", instr)
-            self.assertNotIn("Command List:", instr)
-            return "hey — fixed the bug with a grin"
+            return "rewritten final"
 
-        out = translate_thread_final_for_sona(
+        out = translate_final(
             "The bug was fixed in auth.py.",
             send=fake_send,
+            instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
+            prompt="built prompt body",
             ai="Claude",
-            user_prompt="please fix auth",
-            user_name="blaqat",
         )
-        self.assertEqual(out, "hey — fixed the bug with a grin")
+        self.assertEqual(out, "rewritten final")
+
+    def test_translate_defaults_prompt_to_text(self):
+        def fake_send(prompt, *args, **kwargs):
+            self.assertEqual(prompt, "original agent text")
+            return "ok"
+
+        out = translate_final(
+            "original agent text",
+            send=fake_send,
+            instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
+        )
+        self.assertEqual(out, "ok")
 
     def test_translate_passes_explicit_model_when_set(self):
         def fake_send(prompt, *args, **kwargs):
@@ -340,9 +381,10 @@ class TestThreadTranslate(unittest.TestCase):
             self.assertEqual(kwargs.get("model"), "gpt-test")
             return "rewritten"
 
-        out = translate_thread_final_for_sona(
+        out = translate_final(
             "original",
             send=fake_send,
+            instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
             ai="OpenAI",
             model="gpt-test",
         )
@@ -353,7 +395,11 @@ class TestThreadTranslate(unittest.TestCase):
             raise RuntimeError("ai down")
 
         original = "The bug was fixed in auth.py."
-        out = translate_thread_final_for_sona(original, send=boom)
+        out = translate_final(
+            original,
+            send=boom,
+            instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
+        )
         self.assertEqual(out, original)
 
     def test_translate_skips_errors_and_empty(self):
@@ -364,18 +410,38 @@ class TestThreadTranslate(unittest.TestCase):
             return "should not run"
 
         self.assertEqual(
-            translate_thread_final_for_sona("### Error\nbad", send=fake_send),
+            translate_final(
+                "### Error\nbad",
+                send=fake_send,
+                instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
+            ),
             "### Error\nbad",
         )
         self.assertEqual(
-            translate_thread_final_for_sona("_No output._", send=fake_send),
+            translate_final(
+                "_No output._",
+                send=fake_send,
+                instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
+            ),
             "_No output._",
         )
         self.assertEqual(calls["n"], 0)
 
-    def test_translate_fallback_when_send_missing(self):
+    def test_translate_fallback_when_send_or_instructions_missing(self):
         original = "plain cursor final"
-        self.assertEqual(translate_thread_final_for_sona(original), original)
+        self.assertEqual(translate_final(original), original)
+        self.assertEqual(
+            translate_final(original, send=lambda *_a, **_k: "x"),
+            original,
+        )
+        self.assertEqual(
+            translate_final(
+                original,
+                send=lambda *_a, **_k: "x",
+                instructions="   ",
+            ),
+            original,
+        )
 
 
 class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
@@ -387,9 +453,10 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
             return "too late"
 
         original = "cursor final text"
-        out = await atranslate_thread_final_for_sona(
+        out = await atranslate_final(
             original,
             send=slow_send,
+            instructions=DUMMY_TRANSLATE_INSTRUCTIONS,
             timeout=0.01,
         )
         self.assertEqual(out, original)
@@ -415,7 +482,7 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
         )
         cfg = SimpleNamespace(get=lambda key, *a: "Claude" if key == "AI" else None)
         sona = SimpleNamespace(config=cfg, prompt_manager=live_pm)
-        mod._STATE["bot"] = SimpleNamespace(sonata=sona)
+        mod.reset_runtime(bot=SimpleNamespace(sonata=sona))
 
         # Stale module-level PROMPT_MANAGER must not be used when live PM exists.
         stale_calls = {"n": 0}
@@ -424,7 +491,7 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
             stale_calls["n"] += 1
             return "stale"
 
-        with patch.object(mod, "PROMPT_MANAGER", SimpleNamespace(send=stale_send)):
+        with patch_cursor(mod, "PROMPT_MANAGER", SimpleNamespace(send=stale_send)):
             out = await mod._translate_thread_final_for_sona(
                 "cursor facts here",
                 user_prompt="what did the agent find",
@@ -436,7 +503,7 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen.get("AI"), "Claude")
         self.assertNotIn("model", seen)
         instr = (seen.get("config") or {}).get("instructions") or ""
-        self.assertEqual(instr, DEFAULT_SONA_INSTRUCTIONS)
+        self.assertEqual(instr, mod.DEFAULT_SONA_INSTRUCTIONS)
         self.assertNotIn("Command List:", instr)
         self.assertFalse((seen.get("config") or {}).get("agent"))
         self.assertIn("coding agent finished", seen["prompt"].lower())
@@ -444,6 +511,37 @@ class TestThreadTranslateAsync(unittest.IsolatedAsyncioTestCase):
         self.assertIn("what did the agent find", seen["prompt"])
         self.assertIn("BEG OF CHAT LOG", seen["prompt"])
         self.assertIs(mod._live_prompt_manager(), live_pm)
+
+
+class TestThreadTranslatePersona(unittest.TestCase):
+    """Persona constants and prompt shape live in the plugin, not cursor_cloud."""
+
+    def test_plugin_persona_instructions_shape(self):
+        mod = load_cursor_plugin()
+        instr = mod.DEFAULT_SONA_INSTRUCTIONS
+        self.assertEqual(instr, mod.build_sona_thread_system_instructions())
+        self.assertIn("Do NOT run commands", instr)
+        self.assertIn("smart aleck", instr.lower())
+        # Thread finals must not inherit ultra-short chat brevity caps.
+        self.assertNotIn("7 words max", instr)
+        self.assertNotIn("No punctuation AT ALL", instr)
+        self.assertNotIn("Command Guidelines", instr)
+        self.assertNotIn("Command List:", instr)
+
+    def test_plugin_user_prompt_selfcommand_shape(self):
+        mod = load_cursor_plugin()
+        prompt = mod._build_user_prompt(
+            "The bug was fixed in auth.py.",
+            user="blaqat",
+            message="please fix auth",
+        )
+        self.assertIn("coding agent finished", prompt.lower())
+        self.assertIn("The bug was fixed in auth.py.", prompt)
+        self.assertIn("BEG OF CHAT LOG", prompt)
+        self.assertIn("please fix auth", prompt)
+        self.assertIn("blaqat:", prompt)
+        self.assertNotIn("Command Guidelines", prompt)
+        self.assertNotIn("Rewrite the following", prompt)
 
 
 class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
@@ -623,16 +721,13 @@ class TestThreadMessageRouting(unittest.IsolatedAsyncioTestCase):
         access = AccessController(
             cfg, MemoryAccessStore(), image_retention=ImageRetentionStore(max_total_bytes=1)
         )
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": sessions,
-                "access": access,
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-                "handled_thread_messages": set(),
-                "bot": MagicMock(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=access,
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(),
         )
         session = AgentSession(
             scope=ScopeKey("1", "200", OWNER),
@@ -668,10 +763,12 @@ class TestThreadMessageRouting(unittest.IsolatedAsyncioTestCase):
             guild=SimpleNamespace(id=1),
         )
 
-        with patch.object(mod, "_prepare_and_maybe_launch", new=AsyncMock()) as launch:
-            handled = await mod.handle_thread_message(message)
+        with patch_cursor(mod, "prepare", new=AsyncMock(return_value=mod.ApprovalPending())) as prep:
+            with patch_cursor(mod, "launch", new=AsyncMock()) as launch:
+                handled = await mod.handle_thread_message(message)
         self.assertTrue(handled)
-        launch.assert_awaited_once()
+        prep.assert_awaited_once()
+        launch.assert_not_awaited()
 
     async def test_non_owner_and_human_reply_ignored(self):
         mod = load_cursor_plugin()
@@ -680,14 +777,11 @@ class TestThreadMessageRouting(unittest.IsolatedAsyncioTestCase):
             env={"CURSOR_API_KEY": "k", "GOD": GOD},
         )
         sessions = MemorySessionStore()
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": sessions,
-                "access": AccessController(cfg, MemoryAccessStore()),
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "handled_thread_messages": set(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=AccessController(cfg, MemoryAccessStore()),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
         )
         session = AgentSession(
             scope=ScopeKey("1", "200", OWNER),
@@ -726,15 +820,15 @@ class TestThreadMessageRouting(unittest.IsolatedAsyncioTestCase):
             channel=thread,
             guild=SimpleNamespace(id=1),
         )
-        with patch.object(mod, "_prepare_and_maybe_launch", new=AsyncMock()) as launch:
+        with patch_cursor(mod, "prepare", new=AsyncMock()) as prep:
             self.assertTrue(await mod.handle_thread_message(msg_other))
             self.assertTrue(await mod.handle_thread_message(msg_owner_reply))
-        launch.assert_not_awaited()
+        prep.assert_not_awaited()
 
     async def test_bot_messages_ignored(self):
         mod = load_cursor_plugin()
         sessions = MemorySessionStore()
-        mod._STATE.update({"sessions": sessions, "handled_thread_messages": set()})
+        mod.reset_runtime(sessions=sessions)
         thread = MagicMock()
         thread.id = 200
         thread.parent_id = 100
@@ -762,15 +856,14 @@ class TestParentPolicyInheritance(unittest.IsolatedAsyncioTestCase):
             },
             env={"CURSOR_API_KEY": "k", "GOD": GOD},
         )
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "access": AccessController(cfg, MemoryAccessStore()),
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-            }
+        mod.reset_runtime(
+            config=cfg,
+            access=AccessController(cfg, MemoryAccessStore()),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
         )
         tier = await mod._revalidate_run_auth(
+            mod.get_runtime(),
             user_id=T2,
             guild_id=1,
             channel_id=200,
@@ -781,6 +874,7 @@ class TestParentPolicyInheritance(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(tier)
         with self.assertRaises(Exception):
             await mod._revalidate_run_auth(
+                mod.get_runtime(),
                 user_id=T2,
                 guild_id=1,
                 channel_id=200,
@@ -848,17 +942,15 @@ class TestApprovalThreadBinding(unittest.IsolatedAsyncioTestCase):
         access = AccessController(
             cfg, store, image_retention=ImageRetentionStore(max_total_bytes=1)
         )
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": sessions,
-                "access": access,
-                "access_store": store,
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-                "client": MagicMock(),
-                "bot": MagicMock(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=access,
+            access_store=store,
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            client=MagicMock(),
+            bot=MagicMock(),
         )
         from cursor_cloud.models import (
             ApprovalDecision,
@@ -914,19 +1006,18 @@ class TestApprovalThreadBinding(unittest.IsolatedAsyncioTestCase):
 
         access.images.get = AsyncMock(return_value=[])
         access.images.discard = AsyncMock()
-        with patch.object(mod, "_launch_run", new=AsyncMock()) as launch:
-            with patch.object(mod, "_ephemeral", new=AsyncMock()):
+        with patch_cursor(mod, "launch", new=AsyncMock()) as launch_fn:
+            with patch_cursor(mod, "_ephemeral", new=AsyncMock()):
                 await mod._launch_approved_request(interaction, req)
 
-        launch.assert_awaited_once()
-        kwargs = launch.await_args.kwargs
-        self.assertTrue(kwargs["thread_bound"])
-        self.assertEqual(kwargs["parent_channel_id"], "100")
-        self.assertTrue(kwargs["skip_status_post"])
-        self.assertIs(kwargs["status_msg"], activity)
+        launch_fn.assert_awaited_once()
+        _rt, ui, prepared = launch_fn.await_args.args
+        self.assertTrue(prepared.ctx.thread_bound)
+        self.assertEqual(prepared.ctx.parent_channel_id, "100")
+        self.assertTrue(prepared.ctx.skip_status_post)
+        self.assertIs(prepared.ctx.status_msg, activity)
         # Regression: approved launch must not monkey-patch channel.send.
-        fake = launch.await_args.args[0]
-        self.assertIsNot(fake.followup, channel)
+        self.assertIsNot(ui.followup, channel)
         self.assertIs(channel.send, original_send)
 
     async def test_approved_launch_shim_does_not_patch_channel_send(self):
@@ -959,12 +1050,22 @@ class TestSessionThreadFieldsCompat(unittest.TestCase):
             thread_bound=True,
             parent_channel_id="100",
             latest_run_id="run-1",
-            latest_git=[{"branch": "cursor/demo", "pr_url": None}],
+            latest_git=[GitBranchInfo(branch="cursor/demo", pr_url=None)],
         )
         restored = AgentSession.from_dict(session.to_dict())
         self.assertTrue(restored.thread_bound)
         self.assertEqual(restored.parent_channel_id, "100")
-        self.assertEqual(restored.latest_git[0]["branch"], "cursor/demo")
+        self.assertEqual(restored.latest_git[0].branch, "cursor/demo")
+        # Legacy raw dicts in latest_git still deserialize.
+        from_raw = AgentSession.from_dict(
+            {
+                "scope": {"guild_id": "1", "channel_id": "200", "user_id": OWNER},
+                "agent_id": "bc-raw-git",
+                "owner_id": OWNER,
+                "latest_git": [{"branch": "cursor/demo", "pr_url": None}],
+            }
+        )
+        self.assertEqual(from_raw.latest_git[0].branch, "cursor/demo")
         legacy = AgentSession.from_dict(
             {
                 "scope": {"guild_id": "1", "channel_id": "200", "user_id": OWNER},
@@ -990,6 +1091,56 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(mod._sanitize_thread_title('  "Hello\nWorld"  '), "Hello World")
 
+    def _fake_interaction(self):
+        channel = MagicMock()
+        channel.id = 100
+        return SimpleNamespace(
+            response=SimpleNamespace(
+                is_done=lambda: True,
+                defer=AsyncMock(),
+                send_message=AsyncMock(),
+            ),
+            followup=SimpleNamespace(send=AsyncMock()),
+            channel=channel,
+            channel_id=100,
+            guild_id=1,
+            user=SimpleNamespace(id=1, roles=[], name="u", display_name="U"),
+            client=None,
+        )
+
+    def _fake_prepared(self, mod):
+        scope = ScopeKey("1", "999", "1")
+        ctx = mod.RunContext(
+            scope=scope,
+            role_ids=[],
+            thread_bound=True,
+            parent_channel_id="100",
+            policy_channel_id="100",
+            status_msg=None,
+            subcommand="new",
+        )
+        from cursor_cloud.models import RunRequestEnvelope
+
+        env = RunRequestEnvelope(
+            requester_id="1",
+            scope=scope,
+            prompt_text="x",
+            model=None,
+            repository_url="https://github.com/o/r",
+            starting_ref="main",
+            agent_id=None,
+            is_follow_up=False,
+        )
+        return mod.PreparedRun(
+            ctx=ctx,
+            prompt_text="x",
+            images=[],
+            skipped=[],
+            envelope=env,
+            force_new=True,
+            agent_id=None,
+        )
+
     async def test_start_skips_success_notify_for_starter_message(self):
         mod = load_cursor_plugin()
         notify = AsyncMock()
@@ -998,25 +1149,25 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
         )
         thread.send.return_value.channel = thread
         starter = MagicMock()
-        with patch.object(mod, "_generate_session_title", new=AsyncMock(return_value="ispy overview")):
-            with patch.object(
-                mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
+        prepared = self._fake_prepared(mod)
+        with patch_cursor(mod, "_generate_session_title", new=AsyncMock(return_value="ispy overview")):
+            with patch_cursor(mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
             ):
-                with patch.object(
-                    mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
+                with patch_cursor(mod, "prepare", new=AsyncMock(return_value=prepared)
                 ) as prep:
-                    await mod._start_thread_bound_session(
-                        interaction=SimpleNamespace(),
-                        prompt="explain ispy",
-                        message_ref=None,
-                        images=[],
-                        parent_channel=MagicMock(),
-                        parent_channel_id="100",
-                        user=SimpleNamespace(id=1, name="u", display_name="U"),
-                        guild_id=1,
-                        starter_message=starter,
-                        notify=notify,
-                    )
+                    with patch_cursor(mod, "launch", new=AsyncMock()):
+                        await mod._start_thread_bound_session(
+                            interaction=self._fake_interaction(),
+                            prompt="explain ispy",
+                            message_ref=None,
+                            images=[],
+                            parent_channel=MagicMock(),
+                            parent_channel_id="100",
+                            user=SimpleNamespace(id=1, name="u", display_name="U"),
+                            guild_id=1,
+                            starter_message=starter,
+                            notify=notify,
+                        )
         prep.assert_awaited_once()
         self.assertEqual(prep.await_args.kwargs["agent_display_name"], "ispy overview")
         notify.assert_not_awaited()
@@ -1028,25 +1179,24 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
             id=999, mention="<#999>", send=AsyncMock(return_value=SimpleNamespace(id=1))
         )
         thread.send.return_value.channel = thread
-        with patch.object(mod, "_generate_session_title", new=AsyncMock(return_value="slash title")):
-            with patch.object(
-                mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
+        prepared = self._fake_prepared(mod)
+        with patch_cursor(mod, "_generate_session_title", new=AsyncMock(return_value="slash title")):
+            with patch_cursor(mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
             ):
-                with patch.object(
-                    mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
-                ):
-                    await mod._start_thread_bound_session(
-                        interaction=SimpleNamespace(),
-                        prompt="hello",
-                        message_ref=None,
-                        images=[],
-                        parent_channel=MagicMock(),
-                        parent_channel_id="100",
-                        user=SimpleNamespace(id=1, name="u", display_name="U"),
-                        guild_id=1,
-                        starter_message=None,
-                        notify=notify,
-                    )
+                with patch_cursor(mod, "prepare", new=AsyncMock(return_value=prepared)):
+                    with patch_cursor(mod, "launch", new=AsyncMock()):
+                        await mod._start_thread_bound_session(
+                            interaction=self._fake_interaction(),
+                            prompt="hello",
+                            message_ref=None,
+                            images=[],
+                            parent_channel=MagicMock(),
+                            parent_channel_id="100",
+                            user=SimpleNamespace(id=1, name="u", display_name="U"),
+                            guild_id=1,
+                            starter_message=None,
+                            notify=notify,
+                        )
         notify.assert_awaited_once()
         self.assertIn("Started Cursor session", notify.await_args.args[0])
         self.assertNotIn("auto-archive", notify.await_args.args[0])
@@ -1058,17 +1208,15 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
             id=999, mention="<#999>", send=AsyncMock(return_value=SimpleNamespace(id=1))
         )
         thread.send.return_value.channel = thread
-        with patch.object(mod, "_generate_session_title", new=AsyncMock(return_value="t")):
-            with patch.object(
-                mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
+        with patch_cursor(mod, "_generate_session_title", new=AsyncMock(return_value="t")):
+            with patch_cursor(mod, "_create_public_agent_thread", new=AsyncMock(return_value=thread)
             ):
-                with patch.object(
-                    mod,
-                    "_prepare_and_maybe_launch",
-                    new=AsyncMock(return_value="approval_pending"),
+                with patch_cursor(mod,
+                    "prepare",
+                    new=AsyncMock(return_value=mod.ApprovalPending(request_id="r1")),
                 ):
                     await mod._start_thread_bound_session(
-                        interaction=SimpleNamespace(),
+                        interaction=self._fake_interaction(),
                         prompt="hello",
                         message_ref=None,
                         images=[],
@@ -1080,7 +1228,7 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
                         notify=notify,
                     )
                     await mod._start_thread_bound_session(
-                        interaction=SimpleNamespace(),
+                        interaction=self._fake_interaction(),
                         prompt="hello",
                         message_ref=None,
                         images=[],
@@ -1119,20 +1267,17 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         )
         await sessions.upsert(session)
         await sessions.set_active(scope, "bc-1")
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": sessions,
-                "access": AccessController(
-                    cfg,
-                    MemoryAccessStore(),
-                    image_retention=ImageRetentionStore(max_total_bytes=1),
-                ),
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-                "bot": MagicMock(),
-                "handled_thread_messages": set(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=AccessController(
+                cfg,
+                MemoryAccessStore(),
+                image_retention=ImageRetentionStore(max_total_bytes=1),
+            ),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(),
         )
         activity = MagicMock()
         activity.id = 55
@@ -1151,17 +1296,16 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         message.reference = None
         message.channel = channel
         message.guild = SimpleNamespace(id=1)
-        with patch.object(mod, "_channel_is_thread", return_value=True):
-            with patch.object(mod, "_revalidate_run_auth", new=AsyncMock()):
-                with patch.object(
-                    mod,
+        with patch_cursor(mod, "_channel_is_thread", return_value=True):
+            with patch_cursor(mod, "_revalidate_run_auth", new=AsyncMock()):
+                with patch_cursor(mod,
                     "_build_context_from_message",
                     new=AsyncMock(return_value=("follow up please", [], [])),
                 ):
-                    with patch.object(
-                        mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
-                    ) as launch:
-                        ok = await mod.handle_thread_message(message)
+                    with patch_cursor(mod, "prepare", new=AsyncMock(return_value=mod.ApprovalPending())
+                    ) as prep:
+                        with patch_cursor(mod, "launch", new=AsyncMock()):
+                            ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
         activity.edit.assert_awaited()
         self.assertEqual(
@@ -1170,7 +1314,7 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
             THREAD_THINKING_INDICATOR,
         )
         channel.send.assert_not_awaited()
-        self.assertIs(launch.await_args.kwargs.get("status_msg"), activity)
+        self.assertIs(prep.await_args.kwargs.get("status_msg"), activity)
 
     async def test_followup_posts_fresh_activity_after_cleared_stub(self):
         mod = load_cursor_plugin()
@@ -1196,20 +1340,17 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         )
         await sessions.upsert(session)
         await sessions.set_active(scope, "bc-1")
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": sessions,
-                "access": AccessController(
-                    cfg,
-                    MemoryAccessStore(),
-                    image_retention=ImageRetentionStore(max_total_bytes=1),
-                ),
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-                "bot": MagicMock(),
-                "handled_thread_messages": set(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=AccessController(
+                cfg,
+                MemoryAccessStore(),
+                image_retention=ImageRetentionStore(max_total_bytes=1),
+            ),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(),
         )
         cleared = MagicMock()
         cleared.id = 55
@@ -1229,17 +1370,16 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         message.reference = None
         message.channel = channel
         message.guild = SimpleNamespace(id=1)
-        with patch.object(mod, "_channel_is_thread", return_value=True):
-            with patch.object(mod, "_revalidate_run_auth", new=AsyncMock()):
-                with patch.object(
-                    mod,
+        with patch_cursor(mod, "_channel_is_thread", return_value=True):
+            with patch_cursor(mod, "_revalidate_run_auth", new=AsyncMock()):
+                with patch_cursor(mod,
                     "_build_context_from_message",
                     new=AsyncMock(return_value=("another follow up", [], [])),
                 ):
-                    with patch.object(
-                        mod, "_prepare_and_maybe_launch", new=AsyncMock(return_value="launched")
-                    ) as launch:
-                        ok = await mod.handle_thread_message(message)
+                    with patch_cursor(mod, "prepare", new=AsyncMock(return_value=mod.ApprovalPending())
+                    ) as prep:
+                        with patch_cursor(mod, "launch", new=AsyncMock()):
+                            ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
         channel.send.assert_awaited()
         self.assertEqual(
@@ -1250,7 +1390,7 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         )
         loaded = await sessions.get_session(scope, "bc-1")
         self.assertEqual(loaded.status_message_id, "99")
-        self.assertIs(launch.await_args.kwargs.get("status_msg"), new_activity)
+        self.assertIs(prep.await_args.kwargs.get("status_msg"), new_activity)
 
 
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
@@ -1317,19 +1457,17 @@ class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
             },
             env={"CURSOR_API_KEY": "k", "GOD": GOD},
         )
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": MemorySessionStore(),
-                "access": AccessController(
-                    cfg,
-                    MemoryAccessStore(),
-                    image_retention=ImageRetentionStore(max_total_bytes=1),
-                ),
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-                "bot": MagicMock(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=MemorySessionStore(),
+            access=AccessController(
+                cfg,
+                MemoryAccessStore(),
+                image_retention=ImageRetentionStore(max_total_bytes=1),
+            ),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(),
         )
         message = MagicMock()
         message.id = 42
@@ -1345,14 +1483,12 @@ class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
             guild=message.guild,
             channel=message.channel,
         )
-        with patch.object(mod, "_revalidate_run_auth", new=AsyncMock(return_value=None)):
-            with patch.object(
-                mod,
+        with patch_cursor(mod, "_revalidate_run_auth", new=AsyncMock(return_value=None)):
+            with patch_cursor(mod,
                 "_build_context_from_message",
                 new=AsyncMock(return_value=("fix the flaky test", [], [])),
             ):
-                with patch.object(
-                    mod, "_start_thread_bound_session", new=AsyncMock()
+                with patch_cursor(mod, "_start_thread_bound_session", new=AsyncMock()
                 ) as start:
                     await mod.handle_agent_prefix(ctx, "fix the flaky test")
         start.assert_awaited_once()
@@ -1375,7 +1511,7 @@ class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):
             author=SimpleNamespace(id=int(T2)),
             guild=SimpleNamespace(id=1),
         )
-        with patch.object(mod, "_start_thread_bound_session", new=AsyncMock()) as start:
+        with patch_cursor(mod, "_start_thread_bound_session", new=AsyncMock()) as start:
             await mod.handle_agent_prefix(ctx, "hello")
         start.assert_not_awaited()
         message.reply.assert_awaited()
@@ -1415,19 +1551,17 @@ class TestCursorSessionsParentFilter(unittest.IsolatedAsyncioTestCase):
                 active=True,
             )
         )
-        mod._STATE.update(
-            {
-                "config": cfg,
-                "sessions": sessions,
-                "access": AccessController(
-                    cfg,
-                    MemoryAccessStore(),
-                    image_retention=ImageRetentionStore(max_total_bytes=1),
-                ),
-                "policy_manager": ParentAllowsChildDeniesPolicy(),
-                "require_policy": True,
-                "bot": MagicMock(),
-            }
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=AccessController(
+                cfg,
+                MemoryAccessStore(),
+                image_retention=ImageRetentionStore(max_total_bytes=1),
+            ),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(),
         )
         parent = MagicMock()
         parent.id = 100
@@ -1443,9 +1577,9 @@ class TestCursorSessionsParentFilter(unittest.IsolatedAsyncioTestCase):
         async def capture_ephemeral(_interaction, content):
             seen["content"] = content
 
-        with patch.object(mod, "_gate", new=AsyncMock(return_value=True)):
-            with patch.object(mod, "_channel_is_thread", return_value=False):
-                with patch.object(mod, "_ephemeral", new=capture_ephemeral):
+        with patch_cursor(mod, "_gate", new=AsyncMock(return_value=True)):
+            with patch_cursor(mod, "_channel_is_thread", return_value=False):
+                with patch_cursor(mod, "_ephemeral", new=capture_ephemeral):
                     await mod.cursor_sessions(ctx)
 
         body = seen.get("content") or ""

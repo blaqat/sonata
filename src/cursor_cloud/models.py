@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 
 def utcnow() -> datetime:
@@ -243,6 +243,36 @@ class GitBranchInfo:
             pr_url=data.get("pr_url") or data.get("prUrl"),
         )
 
+    @classmethod
+    def from_api_list(cls, payload: Any) -> list["GitBranchInfo"]:
+        """Parse a list (or git object) of branch dicts; camelCase + snake_case tolerant."""
+        if payload is None:
+            return []
+        if isinstance(payload, cls):
+            return [payload]
+        if isinstance(payload, dict):
+            items = payload.get("branches")
+            if items is None:
+                # Single branch-shaped dict.
+                if any(
+                    k in payload
+                    for k in ("branch", "repoUrl", "repo_url", "prUrl", "pr_url")
+                ):
+                    items = [payload]
+                else:
+                    items = []
+        elif isinstance(payload, (list, tuple)):
+            items = payload
+        else:
+            return []
+        out: list[GitBranchInfo] = []
+        for item in items:
+            if isinstance(item, cls):
+                out.append(item)
+            elif isinstance(item, dict):
+                out.append(cls.from_dict(item))
+        return out
+
 
 @dataclass
 class StreamEvent:
@@ -330,7 +360,7 @@ class AgentSession:
     parent_channel_id: str | None = None
     summary: str = ""
     # Latest git branches from the most recent terminal run (for /cursor session).
-    latest_git: list[dict[str, Any]] = field(default_factory=list)
+    latest_git: list[GitBranchInfo] = field(default_factory=list)
     created_at: datetime = field(default_factory=utcnow)
     updated_at: datetime = field(default_factory=utcnow)
     last_meaningful_activity_at: datetime = field(default_factory=utcnow)
@@ -354,7 +384,10 @@ class AgentSession:
             "thread_bound": self.thread_bound,
             "parent_channel_id": self.parent_channel_id,
             "summary": self.summary,
-            "latest_git": list(self.latest_git or []),
+            "latest_git": [
+                g.to_dict() if isinstance(g, GitBranchInfo) else dict(g)
+                for g in (self.latest_git or [])
+            ],
             "created_at": dt_to_iso(self.created_at),
             "updated_at": dt_to_iso(self.updated_at),
             "last_meaningful_activity_at": dt_to_iso(self.last_meaningful_activity_at),
@@ -365,8 +398,8 @@ class AgentSession:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AgentSession":
         scope_data = data.get("scope") or {}
-        raw_git = data.get("latest_git") or []
-        latest_git = [dict(g) for g in raw_git if isinstance(g, dict)]
+        # Accept legacy raw dicts and GitBranchInfo-shaped payloads.
+        latest_git = GitBranchInfo.from_api_list(data.get("latest_git") or [])
         return cls(
             scope=ScopeKey.from_dict(scope_data),
             agent_id=str(data.get("agent_id") or ""),
@@ -610,38 +643,83 @@ class AccessAuditEvent:
         )
 
 
+DecisionKind = Literal["idle", "model"]
+
+
 @dataclass
-class IdleDecision:
+class PendingDecision:
+    """Unified idle/model decision (SONA-105 Phase 5).
+
+    ``choice`` stores the per-kind vocabulary value (see ``IdleChoice`` /
+    ``ModelChoice``). Model-specific fields live in ``extras``
+    (``preferred_model``, ``agent_model``).
+    """
+
     decision_id: str
     scope: ScopeKey
     agent_id: str
-    choice: IdleChoice = IdleChoice.PENDING
+    kind: DecisionKind
+    choice: str = IdleChoice.PENDING.value
     created_at: datetime = field(default_factory=utcnow)
     expires_at: datetime | None = None
     consumed: bool = False
     message_channel_id: str | None = None
     message_id: str | None = None
+    extras: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        raw_choice = self.choice
+        if hasattr(raw_choice, "value"):
+            self.choice = str(raw_choice.value)
+        else:
+            self.choice = str(raw_choice or IdleChoice.PENDING.value)
+        kind = str(self.kind or "idle")
+        if kind not in ("idle", "model"):
+            kind = "idle"
+        object.__setattr__(self, "kind", kind)
+        self.extras = dict(self.extras or {})
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "decision_id": self.decision_id,
             "scope": self.scope.to_dict(),
             "agent_id": self.agent_id,
-            "choice": self.choice.value,
+            "kind": self.kind,
+            "choice": self.choice,
             "created_at": dt_to_iso(self.created_at),
             "expires_at": dt_to_iso(self.expires_at),
             "consumed": self.consumed,
             "message_channel_id": self.message_channel_id,
             "message_id": self.message_id,
+            "extras": dict(self.extras),
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "IdleDecision":
+    def from_dict(cls, data: dict[str, Any]) -> "PendingDecision":
+        """Parse unified or legacy idle/model decision blobs."""
+        kind = data.get("kind")
+        extras = dict(data.get("extras") or {})
+        if kind is None:
+            # Legacy IdleDecision / ModelDecision export shapes.
+            if "preferred_model" in data or "agent_model" in data:
+                kind = "model"
+            else:
+                kind = "idle"
+        kind_s = str(kind)
+        if kind_s not in ("idle", "model"):
+            kind_s = "idle"
+        if kind_s == "model":
+            if "preferred_model" in data and "preferred_model" not in extras:
+                extras["preferred_model"] = str(data.get("preferred_model") or "")
+            if "agent_model" in data and "agent_model" not in extras:
+                am = data.get("agent_model")
+                extras["agent_model"] = None if am is None else str(am)
         return cls(
             decision_id=str(data.get("decision_id") or ""),
             scope=ScopeKey.from_dict(data.get("scope") or {}),
             agent_id=str(data.get("agent_id") or ""),
-            choice=IdleChoice(str(data.get("choice") or "pending")),
+            kind=kind_s,  # type: ignore[arg-type]
+            choice=str(data.get("choice") or IdleChoice.PENDING.value),
             created_at=dt_from_iso(data.get("created_at")) or utcnow(),
             expires_at=dt_from_iso(data.get("expires_at")),
             consumed=bool(data.get("consumed")),
@@ -653,58 +731,7 @@ class IdleDecision:
             message_id=(
                 str(data["message_id"]) if data.get("message_id") is not None else None
             ),
-        )
-
-
-@dataclass
-class ModelDecision:
-    decision_id: str
-    scope: ScopeKey
-    agent_id: str
-    preferred_model: str
-    agent_model: str | None
-    choice: ModelChoice = ModelChoice.PENDING
-    created_at: datetime = field(default_factory=utcnow)
-    expires_at: datetime | None = None
-    consumed: bool = False
-    message_channel_id: str | None = None
-    message_id: str | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "decision_id": self.decision_id,
-            "scope": self.scope.to_dict(),
-            "agent_id": self.agent_id,
-            "preferred_model": self.preferred_model,
-            "agent_model": self.agent_model,
-            "choice": self.choice.value,
-            "created_at": dt_to_iso(self.created_at),
-            "expires_at": dt_to_iso(self.expires_at),
-            "consumed": self.consumed,
-            "message_channel_id": self.message_channel_id,
-            "message_id": self.message_id,
-        }
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "ModelDecision":
-        return cls(
-            decision_id=str(data.get("decision_id") or ""),
-            scope=ScopeKey.from_dict(data.get("scope") or {}),
-            agent_id=str(data.get("agent_id") or ""),
-            preferred_model=str(data.get("preferred_model") or ""),
-            agent_model=data.get("agent_model"),
-            choice=ModelChoice(str(data.get("choice") or "pending")),
-            created_at=dt_from_iso(data.get("created_at")) or utcnow(),
-            expires_at=dt_from_iso(data.get("expires_at")),
-            consumed=bool(data.get("consumed")),
-            message_channel_id=(
-                str(data["message_channel_id"])
-                if data.get("message_channel_id") is not None
-                else None
-            ),
-            message_id=(
-                str(data["message_id"]) if data.get("message_id") is not None else None
-            ),
+            extras=extras,
         )
 
 

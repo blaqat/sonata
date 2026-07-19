@@ -8,8 +8,7 @@ from typing import Any, Protocol
 from .errors import OwnershipError, ValidationError
 from .models import (
     AgentSession,
-    IdleDecision,
-    ModelDecision,
+    PendingDecision,
     RunStatus,
     ScopeKey,
     utcnow,
@@ -29,25 +28,17 @@ class SessionStore(Protocol):
 
     async def touch_activity(self, scope: ScopeKey, agent_id: str | None = None) -> None: ...
 
-    async def save_idle_decision(self, decision: IdleDecision) -> IdleDecision: ...
+    async def save_decision(self, decision: PendingDecision) -> PendingDecision: ...
 
-    async def get_idle_decision(self, decision_id: str) -> IdleDecision | None: ...
+    async def get_decision(self, decision_id: str) -> PendingDecision | None: ...
 
-    async def find_open_idle_decision(self, scope: ScopeKey) -> IdleDecision | None: ...
+    async def find_open_decision(
+        self, scope: ScopeKey, kind: str
+    ) -> PendingDecision | None: ...
 
-    async def reserve_idle_decision(
-        self, decision: IdleDecision
-    ) -> IdleDecision | None: ...
-
-    async def save_model_decision(self, decision: ModelDecision) -> ModelDecision: ...
-
-    async def get_model_decision(self, decision_id: str) -> ModelDecision | None: ...
-
-    async def find_open_model_decision(self, scope: ScopeKey) -> ModelDecision | None: ...
-
-    async def reserve_model_decision(
-        self, decision: ModelDecision
-    ) -> ModelDecision | None: ...
+    async def reserve_decision(
+        self, decision: PendingDecision
+    ) -> PendingDecision | None: ...
 
     async def save_pending_payload(self, decision_id: str, payload: dict[str, Any]) -> None: ...
 
@@ -73,8 +64,7 @@ class MemorySessionStore:
         self.max_recent = max_recent
         self._sessions: dict[str, dict[str, AgentSession]] = {}
         self._active: dict[str, str] = {}
-        self._idle: dict[str, IdleDecision] = {}
-        self._model: dict[str, ModelDecision] = {}
+        self._decisions: dict[str, PendingDecision] = {}
         self._pending: dict[str, dict[str, Any]] = {}
         self._model_prefs: dict[str, str] = {}
         self._locks: dict[str, asyncio.Lock] = {}
@@ -155,67 +145,45 @@ class MemorySessionStore:
         session.last_meaningful_activity_at = utcnow()
         session.updated_at = utcnow()
 
-    async def save_idle_decision(self, decision: IdleDecision) -> IdleDecision:
-        self._idle[decision.decision_id] = decision
+    async def save_decision(self, decision: PendingDecision) -> PendingDecision:
+        self._decisions[decision.decision_id] = decision
         return decision
 
-    async def get_idle_decision(self, decision_id: str) -> IdleDecision | None:
-        return self._idle.get(decision_id)
+    async def get_decision(self, decision_id: str) -> PendingDecision | None:
+        return self._decisions.get(decision_id)
 
-    def _is_open_decision(self, decision, *, now=None) -> bool:
+    def _is_open_decision(self, decision: PendingDecision, *, now=None) -> bool:
         now = now or utcnow()
-        if getattr(decision, "consumed", False):
+        if decision.consumed:
             return False
-        expires = getattr(decision, "expires_at", None)
+        expires = decision.expires_at
         if expires is not None and now >= expires:
             return False
         return True
 
-    async def find_open_idle_decision(self, scope: ScopeKey) -> IdleDecision | None:
+    async def find_open_decision(
+        self, scope: ScopeKey, kind: str
+    ) -> PendingDecision | None:
         key = scope.as_str()
+        kind_s = str(kind)
         now = utcnow()
-        for decision in self._idle.values():
+        for decision in self._decisions.values():
             if decision.scope.as_str() != key:
+                continue
+            if decision.kind != kind_s:
                 continue
             if self._is_open_decision(decision, now=now):
                 return decision
         return None
 
-    async def reserve_idle_decision(
-        self, decision: IdleDecision
-    ) -> IdleDecision | None:
-        """CAS: at most one outstanding idle decision per scope."""
-        existing = await self.find_open_idle_decision(decision.scope)
+    async def reserve_decision(
+        self, decision: PendingDecision
+    ) -> PendingDecision | None:
+        """CAS: at most one outstanding decision per (scope, kind)."""
+        existing = await self.find_open_decision(decision.scope, decision.kind)
         if existing is not None:
             return None
-        self._idle[decision.decision_id] = decision
-        return decision
-
-    async def save_model_decision(self, decision: ModelDecision) -> ModelDecision:
-        self._model[decision.decision_id] = decision
-        return decision
-
-    async def get_model_decision(self, decision_id: str) -> ModelDecision | None:
-        return self._model.get(decision_id)
-
-    async def find_open_model_decision(self, scope: ScopeKey) -> ModelDecision | None:
-        key = scope.as_str()
-        now = utcnow()
-        for decision in self._model.values():
-            if decision.scope.as_str() != key:
-                continue
-            if self._is_open_decision(decision, now=now):
-                return decision
-        return None
-
-    async def reserve_model_decision(
-        self, decision: ModelDecision
-    ) -> ModelDecision | None:
-        """CAS: at most one outstanding model decision per scope."""
-        existing = await self.find_open_model_decision(decision.scope)
-        if existing is not None:
-            return None
-        self._model[decision.decision_id] = decision
+        self._decisions[decision.decision_id] = decision
         return decision
 
     async def save_pending_payload(
@@ -233,9 +201,17 @@ class MemorySessionStore:
         return dict(raw) if raw is not None else None
 
     async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None:
-        self._model_prefs[scope.as_str()] = str(model_id)
+        active = await self.get_active(scope)
+        if active is not None:
+            active.preferred_model = str(model_id)
+            await self.upsert(active)
+        else:
+            self._model_prefs[scope.as_str()] = str(model_id)
 
     async def get_model_pref(self, scope: ScopeKey) -> str | None:
+        active = await self.get_active(scope)
+        if active is not None and active.preferred_model:
+            return active.preferred_model
         return self._model_prefs.get(scope.as_str())
 
     async def all_sessions(self) -> list[AgentSession]:
@@ -268,8 +244,7 @@ class MemorySessionStore:
                 for scope, bucket in self._sessions.items()
             },
             "active": dict(self._active),
-            "idle": {k: v.to_dict() for k, v in self._idle.items()},
-            "model": {k: v.to_dict() for k, v in self._model.items()},
+            "decisions": {k: v.to_dict() for k, v in self._decisions.items()},
             "pending": {k: dict(v) for k, v in self._pending.items()},
             "model_prefs": dict(self._model_prefs),
         }
@@ -285,12 +260,22 @@ class MemorySessionStore:
                 session = AgentSession.from_dict(raw)
                 parsed[str(agent_id)] = session
             self._sessions[str(scope_key)] = parsed
-        self._idle = {
-            k: IdleDecision.from_dict(v) for k, v in (data.get("idle") or {}).items()
-        }
-        self._model = {
-            k: ModelDecision.from_dict(v) for k, v in (data.get("model") or {}).items()
-        }
+
+        decisions: dict[str, PendingDecision] = {}
+        # Unified bucket (Phase 5+).
+        for k, v in (data.get("decisions") or {}).items():
+            decisions[str(k)] = PendingDecision.from_dict(v)
+        # Legacy idle/model buckets — keep old Beacon blobs loadable.
+        for k, v in (data.get("idle") or {}).items():
+            raw = dict(v or {})
+            raw.setdefault("kind", "idle")
+            decisions[str(k)] = PendingDecision.from_dict(raw)
+        for k, v in (data.get("model") or {}).items():
+            raw = dict(v or {})
+            raw.setdefault("kind", "model")
+            decisions[str(k)] = PendingDecision.from_dict(raw)
+        self._decisions = decisions
+
         self._pending = {
             str(k): dict(v) for k, v in (data.get("pending") or {}).items()
         }

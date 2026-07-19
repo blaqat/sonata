@@ -583,7 +583,6 @@ class SonataClient(commands.Bot):
 
     def __init__(self, command_prefix, intents):
         super().__init__(command_prefix=command_prefix, intents=intents)
-        self._sonata_cursor_cleanup_done = False
 
     async def on_ready(self) -> None:
         cprint("Logged on as {0}!".format(self.user), "purple")

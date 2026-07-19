@@ -1,6 +1,7 @@
 """Adapter-level security/completeness tests for cursor-commands (SONA-105)."""
 
 from __future__ import annotations
+from contextlib import contextmanager
 
 import importlib.util
 import pathlib
@@ -27,10 +28,9 @@ from cursor_cloud.models import (
     AgentSession,
     ApprovalDecision,
     IdleChoice,
-    IdleDecision,
     ImageInput,
     ModelChoice,
-    ModelDecision,
+    PendingDecision,
     PromptImageMeta,
     RunRequestEnvelope,
     ScopeKey,
@@ -46,17 +46,55 @@ T3 = "100000000000000004"
 
 
 def load_cursor_plugin():
+    import importlib
+
     from modules.AI_manager import AI_Manager
 
-    path = ROOT / "src" / "modules" / "plugins" / "cursor-commands.py"
-    spec = importlib.util.spec_from_file_location("cursor_commands_sec", path)
-    module = importlib.util.module_from_spec(spec)
+    pkg = "modules.plugins.cursor-commands"
     previous = AI_Manager.M.MANAGER
     try:
-        spec.loader.exec_module(module)
+        for key in list(sys.modules):
+            if key == pkg or key.startswith(pkg + "."):
+                del sys.modules[key]
+        mod = importlib.import_module(pkg + ".module")
+        mod.discord_ui = sys.modules[pkg + ".discord_ui"]
+        mod.workflows = sys.modules[pkg + ".workflows"]
+        mod.runtime = sys.modules[pkg + ".runtime"]
+        return mod
     finally:
         AI_Manager.M.MANAGER = previous
-    return module
+
+
+@contextmanager
+def patch_cursor(mod, name, *args, **kwargs):
+    """Patch ``name`` on the plugin module and owning package submodules.
+
+    Yields the mock/object from the primary (plugin module) patch when present,
+    matching ``patch.object`` ``as`` semantics.
+    """
+    from contextlib import ExitStack
+    from unittest.mock import patch
+
+    targets = []
+    for m in (
+        mod,
+        getattr(mod, "discord_ui", None),
+        getattr(mod, "workflows", None),
+        getattr(mod, "runtime", None),
+    ):
+        if m is not None and hasattr(m, name):
+            targets.append(m)
+    with ExitStack() as stack:
+        primary = None
+        for i, m in enumerate(targets):
+            cm = patch.object(m, name, *args, **kwargs)
+            val = stack.enter_context(cm)
+            if i == 0:
+                primary = val
+        yield primary
+
+
+
 
 
 class PermissivePolicy:
@@ -94,19 +132,17 @@ def _bootstrap(mod, *, policy=None, require_policy=False):
     access = AccessController(
         cfg, store, image_retention=ImageRetentionStore(max_total_bytes=5_000_000)
     )
-    mod._STATE.update(
-        {
-            "config": cfg,
-            "sessions": sessions,
-            "access_store": store,
-            "access": access,
-            "client": MagicMock(),
-            "cdn": MagicMock(),
-            "bot": None,
-            "trackers": {},
-            "policy_manager": policy if policy is not None else PermissivePolicy(),
-            "require_policy": require_policy,
-        }
+    mod.reset_runtime(
+        config=cfg,
+        sessions=sessions,
+        access_store=store,
+        access=access,
+        client=MagicMock(),
+        cdn=MagicMock(),
+        bot=None,
+        trackers={},
+        policy_manager=policy if policy is not None else PermissivePolicy(),
+        require_policy=require_policy,
     )
     return sessions, access, cfg
 
@@ -149,16 +185,18 @@ class TestGateAndPolicy(unittest.IsolatedAsyncioTestCase):
         _bootstrap(mod)
         with self.assertRaises(AuthorizationError):
             await mod._revalidate_run_auth(
+                mod.get_runtime(),
                 user_id=T3, guild_id=1, channel_id=2, role_ids=[], subcommand="run"
             )
 
     async def test_missing_policy_fail_closed_when_required(self):
         mod = load_cursor_plugin()
         _bootstrap(mod, policy=None, require_policy=True)
-        mod._STATE["policy_manager"] = None
-        with patch.object(mod, "_resolve_policy_manager", return_value=None):
+        mod.get_runtime().policy_manager = None
+        with patch_cursor(mod, "_resolve_policy_manager", return_value=None):
             with self.assertRaises(ConfigurationError):
                 await mod._revalidate_run_auth(
+                    mod.get_runtime(),
                     user_id=T2, guild_id=1, channel_id=2, role_ids=[], subcommand="run"
                 )
 
@@ -170,15 +208,16 @@ class TestGateAndPolicy(unittest.IsolatedAsyncioTestCase):
             chat=SimpleNamespace(policy_manager=pm),
             get=lambda *args, **kwargs: {},
         )
-        mod._STATE["policy_manager"] = None
-        mod._STATE["bot"] = SimpleNamespace(sonata=sona)
-        self.assertIs(mod._resolve_policy_manager(), pm)
+        mod.get_runtime().policy_manager = None
+        mod.get_runtime().bot = SimpleNamespace(sonata=sona)
+        self.assertIs(mod._resolve_policy_manager(mod.get_runtime()), pm)
 
     async def test_channel_policy_deny(self):
         mod = load_cursor_plugin()
         _bootstrap(mod, policy=DenyingPolicy())
         with self.assertRaises(AuthorizationError):
             await mod._revalidate_run_auth(
+                mod.get_runtime(),
                 user_id=T2, guild_id=1, channel_id=2, role_ids=[], subcommand="run"
             )
 
@@ -199,12 +238,12 @@ class TestGateAndPolicy(unittest.IsolatedAsyncioTestCase):
         client.list_models = AsyncMock(
             return_value=[SimpleNamespace(id="m1", display_name="M1", aliases=[])]
         )
-        mod._STATE["client"] = client
+        mod.get_runtime().client = client
 
         # Simulate ApplicationContext.interaction path used by cursor_model.
         await mod._defer(interaction, ephemeral=True)
         interaction.response.defer.assert_awaited_once_with(ephemeral=True)
-        models = await mod._client().list_models()
+        models = await mod.get_runtime().client.list_models()
         self.assertEqual(models[0].id, "m1")
         # After defer, followup path is used for ephemeral replies.
         interaction.response.is_done.return_value = True
@@ -233,8 +272,7 @@ class TestIdleBeforeTouch(unittest.IsolatedAsyncioTestCase):
         touch = AsyncMock(wraps=sessions.touch_activity)
         sessions.touch_activity = touch
 
-        with patch.object(
-            mod,
+        with patch_cursor(mod,
             "_build_context_for_run",
             AsyncMock(return_value=("built prompt", [], [])),
         ):
@@ -247,9 +285,14 @@ class TestIdleBeforeTouch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(active.last_meaningful_activity_at, before)
         # Idle decision + durable pending payload persisted
         state = sessions.export_state()
-        self.assertTrue(state["idle"])
+        idle = {
+            k: v
+            for k, v in (state.get("decisions") or {}).items()
+            if v.get("kind") == "idle"
+        }
+        self.assertTrue(idle)
         self.assertTrue(state["pending"])
-        decision_id = next(iter(state["idle"]))
+        decision_id = next(iter(idle))
         pending = await sessions.get_pending_payload(decision_id)
         self.assertEqual(pending["prompt_text"], "built prompt")
 
@@ -259,13 +302,14 @@ class TestDemotionDeferredPaths(unittest.IsolatedAsyncioTestCase):
         mod = load_cursor_plugin()
         sessions, access, cfg = _bootstrap(mod)
         scope = ScopeKey("1", "2", T2)
-        decision = IdleDecision(
+        decision = PendingDecision(
             decision_id="idle_x",
             scope=scope,
             agent_id="a1",
+            kind="idle",
             expires_at=utcnow() + timedelta(minutes=5),
         )
-        await sessions.save_idle_decision(decision)
+        await sessions.save_decision(decision)
         await sessions.save_pending_payload(
             "idle_x",
             mod._serializable_pending(
@@ -282,8 +326,13 @@ class TestDemotionDeferredPaths(unittest.IsolatedAsyncioTestCase):
         await access.set_user_tier(GOD, T2, "3")
         interaction = _interaction(T2)
         with self.assertRaises(AuthorizationError):
-            await mod._complete_idle(interaction, "idle_x", IdleChoice.CONTINUE)
-        again = await sessions.get_idle_decision("idle_x")
+            await mod.complete_decision(
+                mod.get_runtime(),
+                mod.InteractionUI(interaction),
+                "idle_x",
+                IdleChoice.CONTINUE.value,
+            )
+        again = await sessions.get_decision("idle_x")
         self.assertTrue(again.consumed)
         self.assertIsNone(await sessions.get_pending_payload("idle_x"))
 
@@ -291,15 +340,15 @@ class TestDemotionDeferredPaths(unittest.IsolatedAsyncioTestCase):
         mod = load_cursor_plugin()
         sessions, access, cfg = _bootstrap(mod)
         scope = ScopeKey("1", "2", T2)
-        decision = ModelDecision(
+        decision = PendingDecision(
             decision_id="mdl_x",
             scope=scope,
             agent_id="a1",
-            preferred_model="new",
-            agent_model="old",
+            kind="model",
             expires_at=utcnow() + timedelta(minutes=5),
+            extras={"preferred_model": "new", "agent_model": "old"},
         )
-        await sessions.save_model_decision(decision)
+        await sessions.save_decision(decision)
         await sessions.save_pending_payload(
             "mdl_x",
             mod._serializable_pending(
@@ -315,8 +364,13 @@ class TestDemotionDeferredPaths(unittest.IsolatedAsyncioTestCase):
         await access.set_user_tier(GOD, T2, "3")
         interaction = _interaction(T2)
         with self.assertRaises(AuthorizationError):
-            await mod._complete_model(interaction, "mdl_x", ModelChoice.NEW_SESSION)
-        again = await sessions.get_model_decision("mdl_x")
+            await mod.complete_decision(
+                mod.get_runtime(),
+                mod.InteractionUI(interaction),
+                "mdl_x",
+                ModelChoice.NEW_SESSION.value,
+            )
+        again = await sessions.get_decision("mdl_x")
         self.assertTrue(again.consumed)
 
     async def test_approved_launch_demotion_denies_without_launch(self):
@@ -337,7 +391,8 @@ class TestDemotionDeferredPaths(unittest.IsolatedAsyncioTestCase):
         await access.set_user_tier(GOD, T2, "3")
 
         launched = AsyncMock()
-        mod._launch_run = launched
+        mod.launch = launched
+        mod.workflows.launch = launched
         interaction = _interaction(GOD)
         interaction.response.is_done.return_value = True
         await mod._launch_approved_request(interaction, req)
@@ -509,17 +564,23 @@ class TestPendingPersistence(unittest.IsolatedAsyncioTestCase):
         mod = load_cursor_plugin()
         sessions, _, _ = _bootstrap(mod)
         scope = ScopeKey("1", "2", T2)
-        await sessions.save_idle_decision(
-            IdleDecision(
+        await sessions.save_decision(
+            PendingDecision(
                 decision_id="idle_missing",
                 scope=scope,
                 agent_id="a1",
+                kind="idle",
                 expires_at=utcnow() + timedelta(minutes=5),
             )
         )
         interaction = _interaction(T2)
         with self.assertRaises(Exception) as ctx:
-            await mod._complete_idle(interaction, "idle_missing", IdleChoice.CONTINUE)
+            await mod.complete_decision(
+                mod.get_runtime(),
+                mod.InteractionUI(interaction),
+                "idle_missing",
+                IdleChoice.CONTINUE.value,
+            )
         self.assertIn("resubmit", str(ctx.exception.user_message).lower())
 
 
@@ -557,7 +618,7 @@ class TestEmergencyStopStatus(unittest.IsolatedAsyncioTestCase):
     async def test_god_emergency_audited(self):
         mod = load_cursor_plugin()
         sessions, access, cfg = _bootstrap(mod)
-        await access._audit(GOD, "emergency_stop", target_id=T2, detail={"channel_id": "2"})
+        await access.audit(GOD, "emergency_stop", target_id=T2, detail={"channel_id": "2"})
         events = await access.store.list_audit(limit=5)
         self.assertEqual(events[-1].action, "emergency_stop")
         self.assertEqual(events[-1].target_id, T2)
@@ -586,14 +647,12 @@ class TestCleanup(unittest.IsolatedAsyncioTestCase):
         client.aclose = AsyncMock()
         cdn = MagicMock()
         cdn.aclose = AsyncMock()
-        mod._STATE.update(
-            {
-                "client": client,
-                "cdn": cdn,
-                "trackers": {},
-                "expiry_task": None,
-                "reconcile_task": None,
-            }
+        mod.reset_runtime(
+            client=client,
+            cdn=cdn,
+            trackers={},
+            expiry_task=None,
+            reconcile_task=None,
         )
         await mod.cleanup_cursor_runtime()
         client.aclose.assert_awaited()
