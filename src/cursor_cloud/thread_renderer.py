@@ -7,6 +7,7 @@ from typing import Iterable
 
 from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus, ToolActivity
 from .status_renderer import (
+    format_live_peek,
     normalize_headings,
     redact_untrusted,
     tool_family,
@@ -160,14 +161,22 @@ def render_thread_activity(
         has_live_progress = True
 
     if snapshot.status.is_active and snapshot.thinking_text:
-        peek = redact_untrusted(snapshot.thinking_text.strip())[-220:]
+        peek = format_live_peek(
+            redact_untrusted(snapshot.thinking_text),
+            head_chars=140,
+            tail_chars=280,
+        )
         if peek:
             lines.append("### Thinking")
             lines.append(peek)
             has_live_progress = True
 
     if snapshot.status.is_active and snapshot.assistant_text:
-        peek = redact_untrusted(snapshot.assistant_text.strip())[-200:]
+        peek = format_live_peek(
+            redact_untrusted(snapshot.assistant_text),
+            head_chars=120,
+            tail_chars=240,
+        )
         if peek:
             lines.append("")
             lines.append(f"_Draft…_ {peek}")

@@ -397,6 +397,33 @@ class TestThreadRenderer(unittest.TestCase):
         self.assertIn("considering the approach", text)
         self.assertNotEqual(text, THREAD_THINKING_INDICATOR)
 
+    def test_activity_thinking_and_draft_use_head_tail_peek(self):
+        thinking = (
+            "Opening: trace how Discord attachments become vision inputs. "
+            + ("Middle filler about unrelated queue bookkeeping details. " * 12)
+            + "Closing: gemini flash describes the image for chat history."
+        )
+        draft = (
+            "Here's the short version. "
+            + ("Padding sentence that should not dominate the draft peek. " * 10)
+            + "Queued URLs wait until the next interaction."
+        )
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.RUNNING,
+            thinking_text=thinking,
+            assistant_text=draft,
+        )
+        text = render_thread_activity(snap)
+        self.assertIn("### Thinking", text)
+        self.assertIn("Discord attachments become vision", text)
+        self.assertIn("gemini flash describes", text)
+        self.assertIn("_Draft…_", text)
+        self.assertIn("Here's the short version", text)
+        self.assertIn("Queued URLs wait", text)
+        self.assertIn("…", text)
+
     def test_final_is_body_only_no_chrome(self):
         snap = RunSnapshot(
             run_id="r1",
@@ -600,8 +627,8 @@ class TestThreadTranslatePersona(unittest.TestCase):
         self.assertEqual(instr, mod.build_sona_thread_system_instructions())
         self.assertIn("smart alec", instr.lower())
         self.assertIn("output guidelines", instr.lower())
-        self.assertIn("do not invent facts", instr.lower())
         self.assertIn("brevity is secondary to completeness", instr.lower())
+        self.assertIn("do not truncate for style", instr.lower())
         self.assertNotIn("Command Guidelines", instr)
         self.assertNotIn("Command List:", instr)
 

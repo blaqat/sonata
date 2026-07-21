@@ -19,6 +19,7 @@ from cursor_cloud.models import (
 from cursor_cloud.run_log import MemoryRunLogStore, format_history_message
 from cursor_cloud.run_tracker import MemoryStatusSink, RunTracker, is_stream_unavailable_error
 from cursor_cloud.status_renderer import (
+    format_live_peek,
     initial_queued_message,
     redact_untrusted,
     render_status,
@@ -62,6 +63,41 @@ class TestRenderer(unittest.TestCase):
         text = render_status(snap)
         self.assertIn("Thinking", text)
         self.assertIn("file layout", text)
+
+    def test_format_live_peek_head_and_tail_with_sentence_breaks(self):
+        short = "short thought"
+        self.assertEqual(format_live_peek(short, head_chars=20, tail_chars=20), short)
+
+        head = "First I will inspect the auth module carefully. "
+        middle = ("Then there is a long bridge of filler words that we do not need "
+                  "to show in the live Discord peek because it is just transitional "
+                  "reasoning without a useful thesis or conclusion. ") * 4
+        tail = "Finally I will propose a concrete patch for the idle session path."
+        text = head + middle + tail
+        peek = format_live_peek(text, head_chars=80, tail_chars=90)
+        self.assertIn("…", peek)
+        self.assertTrue(peek.startswith("First I will inspect"))
+        self.assertIn("concrete patch for the idle session path", peek)
+        # Prefer sentence boundaries over mid-word cuts near the join.
+        before, _, after = peek.partition("…")
+        self.assertTrue(before.rstrip().endswith(".") or before.rstrip().endswith("."))
+        self.assertTrue(after.lstrip()[0].isupper() or after.lstrip().startswith("Finally"))
+
+    def test_thinking_peek_preserves_opening_and_latest(self):
+        opening = "I am starting by mapping how image URLs enter chat history. "
+        filler = ("This is transitional analysis that goes on for a while and should "
+                  "be elided from the live peek so the opening and ending stay visible. ") * 8
+        ending = "So the ispy plugin batches four images into Gemini flash."
+        snap = RunSnapshot(
+            run_id="r",
+            agent_id="a",
+            status=RunStatus.RUNNING,
+            thinking_text=opening + filler + ending,
+        )
+        text = render_status(snap)
+        self.assertIn("mapping how image URLs", text)
+        self.assertIn("ispy plugin batches", text)
+        self.assertIn("…", text)
 
     def test_finished_does_not_show_stale_error(self):
         snap = RunSnapshot(

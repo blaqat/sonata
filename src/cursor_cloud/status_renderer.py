@@ -129,6 +129,93 @@ def redact_untrusted(text: str) -> str:
     return text
 
 
+# Sentence / paragraph breaks for live peeks (prefer not cutting mid-thought).
+_SENTENCE_BREAK_RE = re.compile(r'[.!?…]["\')\]]*(?:\s+|$)|\n+')
+
+
+def _boundary_at_or_before(text: str, index: int, *, min_keep: int) -> int:
+    """Snap ``index`` left to the end of a sentence/paragraph when possible."""
+    if index <= 0:
+        return 0
+    if index >= len(text):
+        return len(text)
+    window = text[:index]
+    best = -1
+    for match in _SENTENCE_BREAK_RE.finditer(window):
+        end = match.end()
+        if end >= min_keep:
+            best = end
+    if best >= min_keep:
+        return best
+    space = window.rfind(" ")
+    if space >= min_keep:
+        return space
+    return index
+
+
+def _boundary_at_or_after(text: str, index: int, *, min_keep: int) -> int:
+    """Snap ``index`` right to the start of the next sentence/paragraph when possible."""
+    if index <= 0:
+        return 0
+    if index >= len(text):
+        return len(text)
+    window = text[index:]
+    for match in _SENTENCE_BREAK_RE.finditer(window):
+        start = index + match.end()
+        if len(text) - start >= min_keep:
+            return start
+    space = window.find(" ")
+    if space != -1:
+        start = index + space + 1
+        if len(text) - start >= min_keep:
+            return start
+    return index
+
+
+def format_live_peek(
+    text: str,
+    *,
+    head_chars: int = 140,
+    tail_chars: int = 260,
+) -> str:
+    """Live thinking/draft peek: sentence-aware head + tail with an ellipsis.
+
+    Short buffers are returned in full. Longer ones keep the opening thesis and
+    the latest continuation, preferring sentence/paragraph boundaries over raw
+    character cuts so Discord peeks stay readable mid-stream.
+    """
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return ""
+    if len(cleaned) <= head_chars + tail_chars:
+        return cleaned
+
+    head_end = _boundary_at_or_before(
+        cleaned, head_chars, min_keep=max(24, head_chars // 3)
+    )
+    tail_start = _boundary_at_or_after(
+        cleaned,
+        len(cleaned) - tail_chars,
+        min_keep=max(24, tail_chars // 3),
+    )
+    if tail_start <= head_end:
+        # Overlap / no clean split — fall back to a sentence-aware tail window.
+        start = _boundary_at_or_after(
+            cleaned,
+            max(0, len(cleaned) - (head_chars + tail_chars)),
+            min_keep=max(24, (head_chars + tail_chars) // 3),
+        )
+        return cleaned[start:].lstrip()
+
+    head = cleaned[:head_end].rstrip()
+    tail = cleaned[tail_start:].lstrip()
+    if not head:
+        return tail
+    if not tail:
+        return head
+    return f"{head}\n…\n{tail}"
+
+
 def normalize_headings(text: str) -> str:
     """Upgrade lone `#` / `##` lines to `###` so Discord never gets H1/H2."""
     text = re.sub(r"^##(?!#)\s*", "### ", text, flags=re.MULTILINE)
@@ -170,7 +257,11 @@ def render_status(
 
     # Short thinking peek while active (full trail lives in /cursor history).
     if snapshot.status.is_active and snapshot.thinking_text:
-        peek = redact_untrusted(snapshot.thinking_text.strip())[-160:]
+        peek = format_live_peek(
+            redact_untrusted(snapshot.thinking_text),
+            head_chars=100,
+            tail_chars=180,
+        )
         if peek:
             lines.append("")
             lines.append(f"_Thinking…_ {peek}")
