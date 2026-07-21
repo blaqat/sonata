@@ -34,16 +34,24 @@ _FAMILY_EMOJI: dict[str, str] = {
     "shell": "🐚",
 }
 _FAILED_STATUSES = frozenset({"failed", "error", "cancelled", "canceled"})
+_DONE_STATUSES = frozenset({"completed", "done", "success", "succeeded"})
 
 # Immediate ack while a thread follow-up is preparing / waiting on the API.
-THREAD_THINKING_INDICATOR = "<a:aithinking:1527850620273430548> *thinking...*"
+THREAD_SPINNER = "<a:aithinking:1527850620273430548>"
+THREAD_THINKING_INDICATOR = f"{THREAD_SPINNER} *thinking...*"
 
 
 def _coalesce_tools(tools: Iterable[ToolActivity]) -> list[str]:
-    """Render concise rolling tool summaries grouped by family."""
+    """Render concise rolling tool summaries grouped by family.
+
+    Task/subagent tools are omitted here — they render under ``### Subagents``.
+    """
     by_family: dict[str, list[ToolActivity]] = defaultdict(list)
     for tool in tools:
-        by_family[tool_family(tool.name)].append(tool)
+        family = tool_family(tool.name)
+        if family == "subagent":
+            continue
+        by_family[family].append(tool)
 
     lines: list[str] = []
     for family in sorted(by_family.keys()):
@@ -59,6 +67,35 @@ def _coalesce_tools(tools: Iterable[ToolActivity]) -> list[str]:
             lines.append(
                 f"- `{latest.name}` ({latest.status}) {summary}".rstrip()
             )
+    return lines
+
+
+def _format_subagent_line(index: int, agent: ToolActivity, *, marker: str) -> str:
+    label = redact_untrusted(agent.label or "").strip()[:80]
+    if label and not label.lower().startswith("subagent "):
+        return f"{marker} Subagent {index}: {label}"
+    return f"{marker} Subagent {index}"
+
+
+def _subagent_section_lines(
+    subagents: Iterable[ToolActivity],
+    *,
+    live: bool = False,
+) -> list[str]:
+    """Render ``### Subagents`` rows; live mode uses a spinner while in-flight."""
+    agents = list(subagents)
+    if not agents:
+        return []
+    lines = ["### Subagents"]
+    for index, agent in enumerate(agents, start=1):
+        status_l = str(agent.status or "").lower()
+        if status_l in _FAILED_STATUSES:
+            marker = "🔴"
+        elif live and status_l not in _DONE_STATUSES:
+            marker = THREAD_SPINNER
+        else:
+            marker = "🟢"
+        lines.append(_format_subagent_line(index, agent, marker=marker))
     return lines
 
 
@@ -114,15 +151,7 @@ def render_thread_summary(snapshot: RunSnapshot) -> str:
 
     subagents = list(snapshot.subagents or [])
     if subagents:
-        parts.append("### Subagents")
-        for index, agent in enumerate(subagents, start=1):
-            status_l = str(agent.status or "").lower()
-            emoji = "🔴" if status_l in _FAILED_STATUSES else "🟢"
-            label = redact_untrusted(agent.label or "").strip()[:80]
-            if label and not label.lower().startswith("subagent "):
-                parts.append(f"{emoji} Subagent {index}: {label}")
-            else:
-                parts.append(f"{emoji} Subagent {index}")
+        parts.extend(_subagent_section_lines(subagents, live=False))
 
     counts = {
         str(family): int(count)
@@ -146,7 +175,7 @@ def render_thread_activity(
     skipped_images: list[str] | None = None,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
-    """Editable in-flight Activity: thinking + grouped tools only (no run/git chrome)."""
+    """Editable in-flight Activity: subagents, tools, thinking (no run/git chrome)."""
     del agent_name  # unused — kept for call-site compatibility with classic sink
     lines: list[str] = []
     has_live_progress = False
@@ -155,10 +184,16 @@ def render_thread_activity(
         lines.append("### Error")
         lines.append(redact_untrusted(snapshot.error_message)[:500])
 
+    subagent_lines = _subagent_section_lines(snapshot.subagents or [], live=True)
+    if subagent_lines:
+        lines.extend(subagent_lines)
+        has_live_progress = True
+
     tools = list(snapshot.tools[-12:])
-    if tools:
+    tool_lines = _coalesce_tools(tools)
+    if tool_lines:
         lines.append("### Activity")
-        lines.extend(_coalesce_tools(tools))
+        lines.extend(tool_lines)
         has_live_progress = True
 
     if snapshot.status.is_active and snapshot.thinking_text:

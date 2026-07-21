@@ -34,6 +34,7 @@ from cursor_cloud.models import (
 from cursor_cloud.run_tracker import RunTracker
 from cursor_cloud.session_store import MemorySessionStore
 from cursor_cloud.thread_renderer import (
+    THREAD_SPINNER,
     THREAD_THINKING_INDICATOR,
     format_thread_chat_info,
     github_hint_from_snapshot,
@@ -206,13 +207,54 @@ class TestThreadRenderer(unittest.TestCase):
                 ToolActivity("2", "grep", "completed", "keys=pattern2"),
                 ToolActivity("3", "Task", "running", "subagent"),
             ],
+            subagents=[
+                ToolActivity(
+                    "3",
+                    "Task",
+                    "running",
+                    label="Analyze manager refactor overlap",
+                )
+            ],
         )
         text = render_thread_activity(snap)
         self.assertIn("search", text)
         self.assertIn("×2", text)
+        self.assertIn("### Subagents", text)
+        self.assertIn(THREAD_SPINNER, text)
+        self.assertIn("Subagent 1: Analyze manager refactor overlap", text)
+        # Task tools must not also appear under coalesced Activity.
+        activity_block = text.split("### Activity", 1)[-1].split("### ", 1)[0]
+        self.assertNotIn("subagent", activity_block.lower())
+        self.assertNotIn("`Task`", activity_block)
         self.assertNotIn("Run:", text)
         self.assertNotIn("Agent:", text)
         self.assertLessEqual(len(text), 2000)
+
+    def test_activity_live_subagents_spinner_then_done(self):
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.RUNNING,
+            subagents=[
+                ToolActivity(
+                    "1",
+                    "Task",
+                    "running",
+                    label="Analyze manager refactor overlap",
+                ),
+                ToolActivity("2", "Task", "completed", label="Trace integrations"),
+                ToolActivity("3", "Task", "failed", label="Broken path"),
+            ],
+        )
+        text = render_thread_activity(snap)
+        self.assertIn("### Subagents", text)
+        self.assertIn(
+            f"{THREAD_SPINNER} Subagent 1: Analyze manager refactor overlap",
+            text,
+        )
+        self.assertIn("🟢 Subagent 2: Trace integrations", text)
+        self.assertIn("🔴 Subagent 3: Broken path", text)
+        self.assertNotIn("### Activity", text)
 
     def test_activity_lists_tools_before_thinking(self):
         snap = RunSnapshot(
