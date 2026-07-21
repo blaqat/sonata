@@ -7,6 +7,7 @@ from typing import Iterable
 
 from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus, ToolActivity
 from .status_renderer import (
+    _boundary_at_or_before,
     format_live_peek,
     normalize_headings,
     redact_untrusted,
@@ -214,13 +215,20 @@ def render_thread_final(
     chat_info: str | None = None,
     limit: int = DISCORD_MESSAGE_LIMIT,
 ) -> str:
-    """Frozen final answer/error only — no Finished/Agent/Run/Git/Duration chrome."""
+    """Frozen final answer/error only — no Finished/Agent/Run/Git/Duration chrome.
+
+    May exceed a single Discord message; the thread sink splits into at most two
+    posts. Soft-capped at ``2 * limit`` so translators still see a bounded body.
+    """
     del agent_name  # unused — kept for call-site compatibility
+    max_len = max(limit, limit * 2)
 
     if snapshot.error_message and snapshot.status == RunStatus.ERROR:
         text = "### Error\n" + redact_untrusted(snapshot.error_message)[:1500]
-        text, _ = truncate_message(text, limit=limit)
-        return normalize_headings(text)[:limit]
+        text = normalize_headings(text)
+        if len(text) <= max_len:
+            return text
+        return text[:max_len]
 
     body = snapshot.result_text or snapshot.assistant_text
     if not body:
@@ -235,8 +243,11 @@ def render_thread_final(
         )
         text = f"{text}\n\n_Images skipped:_\n{notes}"
 
-    text, truncated = truncate_message(text, limit=limit)
-    if truncated and "…(truncated)" not in text:
-        text = text.rstrip() + "\n…(truncated)"
-        text, _ = truncate_message(text, limit=limit)
-    return normalize_headings(text)[:limit]
+    text = normalize_headings(text)
+    if len(text) <= max_len:
+        return text
+    # Prefer a clean break so the sink can split without mid-word cuts.
+    cut = _boundary_at_or_before(text, max_len, min_keep=max(24, max_len // 4))
+    if cut < max(24, max_len // 4):
+        cut = max_len
+    return text[:cut].rstrip()

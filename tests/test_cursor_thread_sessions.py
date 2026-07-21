@@ -666,6 +666,33 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(channel.send.await_count, 1)
         self.assertGreaterEqual(activity.edit.await_count, 1)
 
+    async def test_long_final_splits_into_two_messages(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        sink = ThreadActivitySink(channel, activity, edit_interval_ms=0)
+        # Two clear paragraphs that together exceed Discord's 2000 limit.
+        part_a = ("Opening paragraph with concrete findings. " * 40).strip()
+        part_b = ("Closing paragraph with the remaining details. " * 40).strip()
+        body = part_a + "\n\n" + part_b
+        self.assertGreater(len(body), 2000)
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text=body,
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        self.assertEqual(channel.send.await_count, 2)
+        first = channel.send.await_args_list[0].args[0]
+        second = channel.send.await_args_list[1].args[0]
+        self.assertLessEqual(len(first), 2000)
+        self.assertLessEqual(len(second), 2000)
+        self.assertIn("Opening paragraph", first)
+        self.assertIn("Closing paragraph", second)
+        self.assertNotIn("…(truncated)", first)
+
     async def test_final_still_posts_when_activity_edit_fails(self):
         channel = MagicMock()
         channel.send = AsyncMock(return_value=SimpleNamespace(id=2))

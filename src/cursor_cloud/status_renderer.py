@@ -356,6 +356,50 @@ def truncate_message(text: str, *, limit: int = DISCORD_MESSAGE_LIMIT) -> tuple[
     return out + marker, True
 
 
+def split_discord_messages(
+    text: str,
+    *,
+    limit: int = DISCORD_MESSAGE_LIMIT,
+    max_parts: int = 2,
+) -> list[str]:
+    """Split oversized Discord content into at most ``max_parts`` messages.
+
+    Breaks near ``limit`` on sentence/paragraph boundaries when possible so a
+    long final answer becomes two posts instead of a single truncated one.
+    Any remainder beyond ``max_parts * limit`` is dropped from the last part
+    with a truncation marker (hard Discord ceiling).
+    """
+    cleaned = text if text is not None else ""
+    if not cleaned:
+        return [cleaned]
+    parts: list[str] = []
+    remaining = cleaned
+    parts_left = max(1, int(max_parts))
+    while remaining and parts_left > 1:
+        if len(remaining) <= limit:
+            parts.append(remaining)
+            return parts
+        break_at = _boundary_at_or_before(
+            remaining, limit, min_keep=max(24, limit // 4)
+        )
+        if break_at < max(24, limit // 4):
+            break_at = limit
+        chunk = remaining[:break_at].rstrip()
+        if not chunk:
+            chunk = remaining[:limit]
+            break_at = len(chunk)
+        parts.append(chunk)
+        remaining = remaining[break_at:].lstrip()
+        parts_left -= 1
+    if remaining:
+        if len(remaining) <= limit:
+            parts.append(remaining)
+        else:
+            trimmed, _ = truncate_message(remaining, limit=limit)
+            parts.append(trimmed)
+    return parts or [""]
+
+
 def initial_queued_message(*, run_hint: str | None = None) -> str:
     lines = ["### Queued", "Submitting Cursor Cloud Agent run…"]
     if run_hint:

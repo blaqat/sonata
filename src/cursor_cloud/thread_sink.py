@@ -5,7 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any, Awaitable, Callable, Protocol
 
-from .models import RunSnapshot, RunStatus
+from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus
+from .status_renderer import split_discord_messages
 from .thread_renderer import (
     format_thread_chat_info,
     render_thread_activity,
@@ -147,7 +148,7 @@ class ThreadActivitySink:
                 # Translator must fail open; keep original final text.
                 pass
         try:
-            await self._send(final)
+            await self._send_final(final)
         except Exception:
             self.degraded = True
 
@@ -155,7 +156,13 @@ class ThreadActivitySink:
         kwargs: dict[str, Any] = {}
         if self.allowed_mentions is not None:
             kwargs["allowed_mentions"] = self.allowed_mentions
-        await self.channel.send(content[:2000], **kwargs)
+        await self.channel.send(content[:DISCORD_MESSAGE_LIMIT], **kwargs)
+
+    async def _send_final(self, content: str) -> None:
+        """Post the answer as one or two Discord messages (no silent truncation)."""
+        parts = split_discord_messages(content, limit=DISCORD_MESSAGE_LIMIT, max_parts=2)
+        for part in parts:
+            await self._send(part)
 
     async def _edit_activity(self, content: str, *, force: bool = False) -> None:
         now = time.monotonic()
@@ -165,7 +172,7 @@ class ThreadActivitySink:
         if self.allowed_mentions is not None:
             kwargs["allowed_mentions"] = self.allowed_mentions
         try:
-            await self.activity_message.edit(content[:2000], **kwargs)
+            await self.activity_message.edit(content[:DISCORD_MESSAGE_LIMIT], **kwargs)
             self._last_edit = now
         except Exception:
             self.degraded = True

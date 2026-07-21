@@ -12,7 +12,12 @@ import logging
 from typing import Any, Callable
 
 from .models import DISCORD_MESSAGE_LIMIT
-from .status_renderer import normalize_headings, redact_untrusted, truncate_message
+from .status_renderer import (
+    _boundary_at_or_before,
+    normalize_headings,
+    redact_untrusted,
+)
+
 
 logger = logging.getLogger("sonata.cursor")
 
@@ -31,12 +36,15 @@ def _should_skip_translation(text: str) -> bool:
 
 
 def _sanitize_translated(text: str, *, limit: int = DISCORD_MESSAGE_LIMIT) -> str:
-    cleaned = redact_untrusted(text)
-    cleaned, truncated = truncate_message(cleaned, limit=limit)
-    if truncated and "…(truncated)" not in cleaned:
-        cleaned = cleaned.rstrip() + "\n…(truncated)"
-        cleaned, _ = truncate_message(cleaned, limit=limit)
-    return normalize_headings(cleaned)[:limit]
+    """Sanitize translated finals; allow up to two Discord messages worth."""
+    cleaned = normalize_headings(redact_untrusted(text))
+    max_len = max(limit, limit * 2)
+    if len(cleaned) <= max_len:
+        return cleaned
+    cut = _boundary_at_or_before(cleaned, max_len, min_keep=max(24, max_len // 4))
+    if cut < max(24, max_len // 4):
+        cut = max_len
+    return cleaned[:cut].rstrip()
 
 
 def translate_final(

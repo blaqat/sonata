@@ -23,6 +23,7 @@ from cursor_cloud.status_renderer import (
     initial_queued_message,
     redact_untrusted,
     render_status,
+    split_discord_messages,
     tool_family,
 )
 from cursor_cloud.thread_renderer import render_thread_summary
@@ -82,6 +83,25 @@ class TestRenderer(unittest.TestCase):
         before, _, after = peek.partition("…")
         self.assertTrue(before.rstrip().endswith(".") or before.rstrip().endswith("."))
         self.assertTrue(after.lstrip()[0].isupper() or after.lstrip().startswith("Finally"))
+
+    def test_split_discord_messages_into_two_parts(self):
+        short = "hello"
+        self.assertEqual(split_discord_messages(short, limit=50), [short])
+
+        # Keep each half under the limit so neither part needs a truncation marker.
+        first = ("Opening findings about the idle session path. " * 5).strip()
+        second = ("Closing findings about the follow-up resume path. " * 5).strip()
+        text = first + "\n\n" + second
+        limit = max(len(first), len(second)) + 10
+        self.assertGreater(len(text), limit)
+        parts = split_discord_messages(text, limit=limit, max_parts=2)
+        self.assertEqual(len(parts), 2)
+        self.assertLessEqual(len(parts[0]), limit)
+        self.assertLessEqual(len(parts[1]), limit)
+        self.assertIn("Opening findings", parts[0])
+        self.assertIn("Closing findings", parts[1])
+        self.assertNotIn("…(truncated)", parts[0])
+        self.assertNotIn("…(truncated)", parts[1])
 
     def test_thinking_peek_preserves_opening_and_latest(self):
         opening = "I am starting by mapping how image URLs enter chat history. "
