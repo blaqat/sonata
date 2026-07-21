@@ -100,6 +100,8 @@ def _plugin_defaults_from_modules() -> dict[str, Any]:
 
 
 def _project_plugin_defaults() -> dict[str, Any]:
+    from cursor_cloud.config import DEFAULT_PLUGIN_CONFIG
+
     return {
         "chat": {
             "summarize": True,
@@ -142,6 +144,7 @@ def _project_plugin_defaults() -> dict[str, Any]:
         "term_commands": {
             "inject_emojis": False,
         },
+        "cursor": deepcopy(DEFAULT_PLUGIN_CONFIG),
     }
 
 

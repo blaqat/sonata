@@ -140,12 +140,15 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
             return await self.process_commands(message)
 
         # Check for message references (replies)
-        _ref = (
-            message.reference
-            and await message.channel.fetch_message(message.reference.message_id)
-            or None
-        )
-        _ref = _ref and (_ref.author.name, _ref.content) or None
+        _ref = None
+        if message.reference and getattr(message.reference, "message_id", None):
+            try:
+                fetched = await message.channel.fetch_message(
+                    message.reference.message_id
+                )
+                _ref = (fetched.author.name, fetched.content)
+            except Exception:
+                _ref = None
         if not USE_REPLY_REF:
             _ref = None
 

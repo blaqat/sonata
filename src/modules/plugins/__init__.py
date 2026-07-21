@@ -14,6 +14,9 @@ PLUGINS_LIST = []
 for plugin in os.listdir(os.path.dirname(__file__)):
     if plugin.endswith(".py") and not plugin.startswith("__"):
         module = importlib.import_module("modules.plugins." + plugin[:-3])
+        # Helper modules / package submodules omit __plugin_name__.
+        if not hasattr(module, "__plugin_name__"):
+            continue
         PLUGINS_DICT[module.__plugin_name__] = module
     elif os.path.isdir(os.path.join(os.path.dirname(__file__), plugin)):
         for file in os.listdir(os.path.join(os.path.dirname(__file__), plugin)):
@@ -21,6 +24,8 @@ for plugin in os.listdir(os.path.dirname(__file__)):
                 module = importlib.import_module(
                     "modules.plugins." + plugin + "." + file[:-3]
                 )
+                if not hasattr(module, "__plugin_name__"):
+                    continue
                 PLUGINS_DICT[module.__plugin_name__] = module
 
 
