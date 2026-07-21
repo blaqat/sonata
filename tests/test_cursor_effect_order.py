@@ -486,16 +486,16 @@ class TestCursorEffectOrder(unittest.IsolatedAsyncioTestCase):
             {
                 "enabled": True,
                 "default_repository_url": "https://github.com/o/r",
-                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [T2]},
+                "access": {"tier1_user_ids": [GOD, T1], "tier2_user_ids": [T2]},
             },
             env={"CURSOR_API_KEY": "k", "GOD": GOD},
         )
         sessions = MemorySessionStore()
-        scope = ScopeKey("1", "200", T2)
+        scope = ScopeKey("1", "200", T1)
         session = AgentSession(
             scope=scope,
             agent_id="bc-1",
-            owner_id=T2,
+            owner_id=T1,
             thread_bound=True,
             parent_channel_id="100",
             status_channel_id="200",
@@ -527,7 +527,7 @@ class TestCursorEffectOrder(unittest.IsolatedAsyncioTestCase):
         channel.send = AsyncMock(return_value=new_activity)
         message = SimpleNamespace(
             id=901,
-            author=SimpleNamespace(id=int(T2), bot=False, roles=[]),
+            author=SimpleNamespace(id=int(T1), bot=False, roles=[]),
             content="follow up please",
             attachments=[],
             reference=None,

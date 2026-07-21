@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import discord
+from datetime import timedelta
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -18,8 +19,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from cursor_cloud.access import AccessController, ImageRetentionStore, MemoryAccessStore
 from cursor_cloud.config import load_cursor_config
 from cursor_cloud.models import (
+    AccessTier,
     AgentSession,
     GitBranchInfo,
+    PendingDecision,
     RunRecord,
     RunSnapshot,
     RunStatus,
@@ -595,11 +598,10 @@ class TestThreadTranslatePersona(unittest.TestCase):
         mod = load_cursor_plugin()
         instr = mod.DEFAULT_SONA_INSTRUCTIONS
         self.assertEqual(instr, mod.build_sona_thread_system_instructions())
-        self.assertIn("Do NOT run commands", instr)
-        self.assertIn("smart aleck", instr.lower())
-        # Thread finals must not inherit ultra-short chat brevity caps.
-        self.assertNotIn("7 words max", instr)
-        self.assertNotIn("No punctuation AT ALL", instr)
+        self.assertIn("smart alec", instr.lower())
+        self.assertIn("output guidelines", instr.lower())
+        self.assertIn("do not invent facts", instr.lower())
+        self.assertIn("brevity is secondary to completeness", instr.lower())
         self.assertNotIn("Command Guidelines", instr)
         self.assertNotIn("Command List:", instr)
 
@@ -1632,7 +1634,8 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
 
 
 class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
-    async def test_followup_always_posts_fresh_activity(self):
+    async def test_followup_skips_activity_when_gated(self):
+        """Idle/approval gates must not leave a thinking message above the check."""
         mod = load_cursor_plugin()
         cfg = load_cursor_config(
             {
@@ -1672,13 +1675,11 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         prior.id = 55
         prior.content = "### Chat Info\n- id: `bc-1`\n- model: `auto`"
         prior.edit = AsyncMock()
-        new_activity = MagicMock()
-        new_activity.id = 99
         channel = MagicMock()
         channel.id = 200
         channel.parent_id = 100
         channel.fetch_message = AsyncMock(return_value=prior)
-        channel.send = AsyncMock(return_value=new_activity)
+        channel.send = AsyncMock()
         message = MagicMock()
         message.id = 901
         message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
@@ -1693,25 +1694,21 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                     "_build_context_from_message",
                     new=AsyncMock(return_value=("follow up please", [], [])),
                 ):
-                    with patch_cursor(mod, "prepare", new=AsyncMock(return_value=mod.ApprovalPending())
+                    with patch_cursor(mod, "prepare", new=AsyncMock(return_value=mod.DecisionPending(kind="idle"))
                     ) as prep:
-                        with patch_cursor(mod, "launch", new=AsyncMock()):
+                        with patch_cursor(mod, "launch", new=AsyncMock()) as launch_fn:
                             ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
         prior.edit.assert_not_awaited()
         channel.fetch_message.assert_not_awaited()
-        channel.send.assert_awaited()
-        self.assertEqual(
-            channel.send.await_args.args[0]
-            if channel.send.await_args.args
-            else channel.send.await_args.kwargs.get("content"),
-            THREAD_THINKING_INDICATOR,
-        )
+        channel.send.assert_not_awaited()
+        launch_fn.assert_not_awaited()
         loaded = await sessions.get_session(scope, "bc-1")
-        self.assertEqual(loaded.status_message_id, "99")
-        self.assertIs(prep.await_args.kwargs.get("status_msg"), new_activity)
+        self.assertEqual(loaded.status_message_id, "55")
+        self.assertIsNone(prep.await_args.kwargs.get("status_msg"))
+        self.assertTrue(prep.await_args.kwargs.get("skip_status_post"))
 
-    async def test_followup_posts_fresh_activity_after_cleared_stub(self):
+    async def test_followup_posts_fresh_activity_after_prepare(self):
         mod = load_cursor_plugin()
         cfg = load_cursor_config(
             {
@@ -1762,15 +1759,17 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         message.reference = None
         message.channel = channel
         message.guild = SimpleNamespace(id=1)
+        prepared = MagicMock(spec=mod.PreparedRun)
+        prepared.ctx = SimpleNamespace(status_msg=None, skip_status_post=True)
         with patch_cursor(mod, "_channel_is_thread", return_value=True):
             with patch_cursor(mod, "_revalidate_run_auth", new=AsyncMock()):
                 with patch_cursor(mod,
                     "_build_context_from_message",
                     new=AsyncMock(return_value=("another follow up", [], [])),
                 ):
-                    with patch_cursor(mod, "prepare", new=AsyncMock(return_value=mod.ApprovalPending())
+                    with patch_cursor(mod, "prepare", new=AsyncMock(return_value=prepared)
                     ) as prep:
-                        with patch_cursor(mod, "launch", new=AsyncMock()):
+                        with patch_cursor(mod, "launch", new=AsyncMock()) as launch_fn:
                             ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
         channel.fetch_message.assert_not_awaited()
@@ -1783,7 +1782,189 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
         )
         loaded = await sessions.get_session(scope, "bc-1")
         self.assertEqual(loaded.status_message_id, "99")
-        self.assertIs(prep.await_args.kwargs.get("status_msg"), new_activity)
+        self.assertIsNone(prep.await_args.kwargs.get("status_msg"))
+        launch_fn.assert_awaited_once()
+        self.assertIs(prepared.ctx.status_msg, new_activity)
+        self.assertTrue(prepared.ctx.skip_status_post)
+
+    async def test_idle_offer_is_single_combined_channel_message(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "session_idle_prompt_minutes": 10,
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [OWNER]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        sessions = MemorySessionStore()
+        scope = ScopeKey("1", "200", OWNER)
+        session = AgentSession(
+            scope=scope,
+            agent_id="bc-idle",
+            owner_id=OWNER,
+            thread_bound=True,
+            parent_channel_id="100",
+            status_channel_id="200",
+            status_message_id="55",
+            active=True,
+            latest_run_status=RunStatus.FINISHED,
+            last_meaningful_activity_at=utcnow() - timedelta(minutes=30),
+        )
+        await sessions.upsert(session)
+        await sessions.set_active(scope, "bc-idle")
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=AccessController(
+                cfg,
+                MemoryAccessStore(),
+                image_retention=ImageRetentionStore(max_total_bytes=1),
+            ),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(add_view=MagicMock()),
+        )
+        decision_msg = MagicMock()
+        decision_msg.id = 777
+        decision_msg.channel = MagicMock(id=200)
+        channel = MagicMock()
+        channel.id = 200
+        channel.parent_id = 100
+        channel.send = AsyncMock(return_value=decision_msg)
+        message = MagicMock()
+        message.id = 903
+        message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
+        message.content = "are you still there"
+        message.attachments = []
+        message.reference = None
+        message.channel = channel
+        message.guild = SimpleNamespace(id=1)
+        with patch_cursor(mod, "_channel_is_thread", return_value=True):
+            with patch_cursor(mod, "_revalidate_run_auth", new=AsyncMock(return_value=AccessTier.ADMIN)):
+                with patch_cursor(mod,
+                    "_build_context_from_message",
+                    new=AsyncMock(return_value=("are you still there", [], [])),
+                ):
+                    with patch_cursor(mod, "launch", new=AsyncMock()) as launch_fn:
+                        ok = await mod.handle_thread_message(message)
+        self.assertTrue(ok)
+        launch_fn.assert_not_awaited()
+        channel.send.assert_awaited_once()
+        content = (
+            channel.send.await_args.args[0]
+            if channel.send.await_args.args
+            else channel.send.await_args.kwargs.get("content")
+        )
+        self.assertIn("Session `bc-idle` is idle", content)
+        self.assertIn("choose how to proceed", content)
+        self.assertNotIn("Session idle — choose how to proceed in the channel message", content)
+        self.assertNotIn("### Idle session", content)
+        self.assertIsNotNone(channel.send.await_args.kwargs.get("view"))
+        loaded = await sessions.get_session(scope, "bc-idle")
+        self.assertEqual(loaded.status_message_id, "55")
+
+    async def test_idle_continue_edits_to_continuing_then_posts_thinking(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier1_user_ids": [GOD], "tier2_user_ids": [OWNER]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        sessions = MemorySessionStore()
+        scope = ScopeKey("1", "200", OWNER)
+        session = AgentSession(
+            scope=scope,
+            agent_id="bc-idle",
+            owner_id=OWNER,
+            thread_bound=True,
+            parent_channel_id="100",
+            status_channel_id="200",
+            status_message_id="55",
+            active=True,
+            latest_run_status=RunStatus.FINISHED,
+        )
+        await sessions.upsert(session)
+        await sessions.set_active(scope, "bc-idle")
+        mod.reset_runtime(
+            config=cfg,
+            sessions=sessions,
+            access=AccessController(
+                cfg,
+                MemoryAccessStore(),
+                image_retention=ImageRetentionStore(max_total_bytes=1),
+            ),
+            policy_manager=ParentAllowsChildDeniesPolicy(),
+            require_policy=True,
+            bot=MagicMock(),
+        )
+        decision_message = MagicMock()
+        decision_message.edit = AsyncMock()
+        activity = MagicMock()
+        activity.id = 88
+        channel = MagicMock()
+        channel.id = 200
+        channel.send = AsyncMock(return_value=activity)
+        interaction = MagicMock()
+        interaction.user = SimpleNamespace(id=int(OWNER), roles=[])
+        interaction.channel = channel
+        interaction.message = decision_message
+        interaction.response = SimpleNamespace(is_done=MagicMock(return_value=True))
+        interaction.followup = SimpleNamespace(send=AsyncMock())
+        await sessions.save_decision(
+            PendingDecision(
+                decision_id="idle_t",
+                scope=scope,
+                agent_id="bc-idle",
+                kind="idle",
+                expires_at=utcnow() + timedelta(minutes=5),
+                message_channel_id="200",
+                message_id="777",
+            )
+        )
+        await sessions.save_pending_payload(
+            "idle_t",
+            {
+                "prompt": "continue me",
+                "prompt_text": "continue me",
+                "skipped": [],
+                "image_metas": [],
+                "prepared_meta": {
+                    "thread_bound": True,
+                    "parent_channel_id": "100",
+                    "policy_channel_id": "100",
+                    "subcommand": "run",
+                },
+            },
+        )
+        ui = mod.InteractionUI(interaction)
+        prepared = MagicMock(spec=mod.PreparedRun)
+        prepared.ctx = SimpleNamespace(status_msg=None, skip_status_post=False)
+        with patch_cursor(mod, "_revalidate_run_auth", new=AsyncMock()):
+            with patch_cursor(mod, "prepare", new=AsyncMock(return_value=prepared)) as prep:
+                with patch_cursor(mod, "launch", new=AsyncMock()) as launch_fn:
+                    await mod.complete_decision(mod.get_runtime(), ui, "idle_t", "continue")
+        decision_message.edit.assert_awaited()
+        self.assertEqual(
+            decision_message.edit.await_args.kwargs.get("content"),
+            "Continuing session...",
+        )
+        channel.send.assert_awaited_once()
+        self.assertEqual(
+            channel.send.await_args.args[0]
+            if channel.send.await_args.args
+            else channel.send.await_args.kwargs.get("content"),
+            THREAD_THINKING_INDICATOR,
+        )
+        self.assertIs(prep.await_args.kwargs.get("status_msg"), activity)
+        self.assertTrue(prep.await_args.kwargs.get("skip_status_post"))
+        launch_fn.assert_awaited_once()
+        loaded = await sessions.get_session(scope, "bc-idle")
+        self.assertEqual(loaded.status_message_id, "88")
 
 
 class TestAgentPrefixCommand(unittest.IsolatedAsyncioTestCase):

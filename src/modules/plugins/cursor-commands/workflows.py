@@ -140,12 +140,9 @@ class RunContext:
         if active is not None and active.thread_bound:
             thread_bound = True
             parent_channel_id = parent_channel_id or active.parent_channel_id
-            if status_msg is None and active.status_message_id and channel is not None:
-                try:
-                    status_msg = await channel.fetch_message(int(active.status_message_id))
-                    skip_status_post = True
-                except Exception:
-                    status_msg = None
+            # Do not auto-reuse status_message_id: per-run activity messages are
+            # frozen into Chat Info / summaries and must be posted fresh by the
+            # entrypoint after idle/model gates.
 
         if policy_channel_id is None and parent_channel_id is None and channel is not None:
             parent_id = getattr(channel, "parent_id", None)
@@ -254,14 +251,14 @@ _DECISION_KINDS: dict[str, dict[str, Any]] = {
         "id_prefix": "idle",
         "new_session_choice": IdleChoice.NEW.value,
         "already_pending": "An idle session choice is already pending",
-        "notify": "Session idle — choose how to proceed in the channel message.",
+        # Channel message is self-contained; ChannelUI.notify would duplicate it.
+        "notify": "",
         "edit_label": "Idle",
         "expired_label": "Idle session",
         "ack_label": "Idle choice",
         "channel_content": lambda scope, active, preferred: (
-            f"### Idle session\n"
-            f"<@{scope.user_id}> — session `{active.agent_id}` has been idle. "
-            f"Continue previous, start new, or cancel?"
+            f"<@{scope.user_id}> — Session `{active.agent_id}` is idle — "
+            f"choose how to proceed."
         ),
         "extras": lambda active, preferred: {},
     },
@@ -614,20 +611,6 @@ async def handle_thread_message(message: discord.Message) -> bool:
     if not prompt and not message.attachments:
         return False
 
-    # Always post a fresh thinking/activity message. Prior activity messages now
-    # hold frozen Chat Info or a per-run summary and must not be reused.
-    try:
-        activity_msg = await message.channel.send(
-            THREAD_THINKING_INDICATOR,
-            allowed_mentions=CONTENT_MENTIONS,
-        )
-        session.status_channel_id = str(message.channel.id)
-        session.status_message_id = str(activity_msg.id)
-        await sessions.upsert(session)
-    except Exception:
-        logger.exception("Cursor thread activity message create failed")
-        return True
-
     scope = _scope_from_message(message, user_id=owner_id)
     pol_ch = resolve_policy_channel_id(
         channel_id=scope.channel_id,
@@ -660,6 +643,8 @@ async def handle_thread_message(message: discord.Message) -> bool:
         return True
 
     try:
+        # Idle/model gates run inside prepare before any activity message so the
+        # thinking slot stays after the session-check prompt (chronological).
         outcome = await prepare(
             rt,
             ui,
@@ -671,11 +656,24 @@ async def handle_thread_message(message: discord.Message) -> bool:
             policy_channel_id=pol_ch,
             thread_bound=True,
             parent_channel_id=session.parent_channel_id,
-            status_msg=activity_msg,
+            status_msg=None,
             skip_status_post=True,
             prebuilt=(prompt_text, image_inputs, skipped),
         )
         if isinstance(outcome, PreparedRun):
+            try:
+                activity_msg = await message.channel.send(
+                    THREAD_THINKING_INDICATOR,
+                    allowed_mentions=CONTENT_MENTIONS,
+                )
+                session.status_channel_id = str(message.channel.id)
+                session.status_message_id = str(activity_msg.id)
+                await sessions.upsert(session)
+                outcome.ctx.status_msg = activity_msg
+                outcome.ctx.skip_status_post = True
+            except Exception:
+                logger.exception("Cursor thread activity message create failed")
+                return True
             await launch(rt, ui, outcome)
     except BusyRunError:
         try:
@@ -1251,7 +1249,14 @@ async def offer_decision(
     bot = rt.bot
     if bot:
         bot.add_view(spec["view_factory"](decision.decision_id))
-    await ui.notify(spec["notify"])
+    # ChannelUI posts the decision publicly — a second channel notify is noise.
+    # InteractionUI still needs an ephemeral so the slash/component window closes.
+    if not isinstance(ui, ChannelUI):
+        notify_text = (spec.get("notify") or "").strip()
+        if not notify_text and kind == "idle":
+            notify_text = "Choose how to proceed in the channel message."
+        if notify_text:
+            await ui.notify(notify_text)
     return True
 
 async def prepare(
@@ -1995,17 +2000,39 @@ async def complete_decision(
     # Handoff complete — drop process-local retention promptly.
     await _discard_retention_key(pending.get("retention_key"))
 
+    if decision.kind == "idle" and choice_s == IdleChoice.CONTINUE.value:
+        edit_content = "Continuing session..."
+    else:
+        edit_content = f"### {spec['edit_label']} — `{choice_s}`"
     if getattr(interaction, "message", None):
         try:
-            await interaction.message.edit(
-                content=f"### {spec['edit_label']} — `{choice_s}`", view=None
-            )
+            await interaction.message.edit(content=edit_content, view=None)
         except discord.HTTPException:
             pass
 
     # Resume stored PreparedRun context with one per-kind override.
     meta = dict(pending.get("prepared_meta") or {})
     reentry = dict(spec["reentry_kwargs"](choice_s))
+    status_msg = None
+    skip_status_post = False
+    thread_bound = bool(meta.get("thread_bound", False))
+    if thread_bound:
+        # Post thinking after the idle/model acknowledgement so the activity
+        # slot (edited into summary/Chat Info) stays below the session check.
+        try:
+            activity_msg = await ui.channel.send(
+                THREAD_THINKING_INDICATOR,
+                allowed_mentions=CONTENT_MENTIONS,
+            )
+            status_msg = activity_msg
+            skip_status_post = True
+            active_now = await sessions.get_active(decision.scope)
+            if active_now is not None:
+                active_now.status_channel_id = str(ui.channel.id)
+                active_now.status_message_id = str(activity_msg.id)
+                await sessions.upsert(active_now)
+        except Exception:
+            logger.exception("Cursor thread activity message create failed after decision")
     outcome = await prepare(
         rt,
         ui,
@@ -2017,10 +2044,12 @@ async def complete_decision(
             images,
             list(pending.get("skipped") or []),
         ),
-        thread_bound=bool(meta.get("thread_bound", False)),
+        thread_bound=thread_bound,
         parent_channel_id=meta.get("parent_channel_id"),
         policy_channel_id=meta.get("policy_channel_id"),
         auth_subcommand=meta.get("subcommand"),
+        status_msg=status_msg,
+        skip_status_post=skip_status_post,
         **reentry,
     )
     if isinstance(outcome, PreparedRun):
