@@ -33,6 +33,7 @@ from cursor_cloud.thread_renderer import (
     github_hint_from_snapshot,
     render_thread_activity,
     render_thread_final,
+    render_thread_summary,
 )
 from cursor_cloud.thread_session import (
     owner_reply_to_human,
@@ -219,15 +220,24 @@ class TestThreadRenderer(unittest.TestCase):
         self.assertLess(text.index("### Activity"), text.index("### Thinking"))
 
     def test_format_thread_chat_info_compact(self):
-        line = format_thread_chat_info(
+        text = format_thread_chat_info(
             agent_id="bc-agent-1",
-            github="cursor/demo-branch",
+            branch="cursor/demo-branch",
             model="claude-sonnet-4-6",
         )
         self.assertEqual(
-            line,
-            "Chat Info: id - bc-agent-1 | github cursor/demo-branch | claude-sonnet-4-6",
+            text,
+            "### Chat Info\n"
+            "- id: `bc-agent-1`\n"
+            "- branch: `cursor/demo-branch`\n"
+            "- model: `claude-sonnet-4-6`",
         )
+        no_branch = format_thread_chat_info(agent_id="bc-agent-1", model=None)
+        self.assertEqual(
+            no_branch,
+            "### Chat Info\n- id: `bc-agent-1`\n- model: `auto`",
+        )
+        self.assertNotIn("branch:", no_branch)
 
     def test_github_hint_prefers_branch_then_repo(self):
         from cursor_cloud.models import GitBranchInfo
@@ -262,16 +272,78 @@ class TestThreadRenderer(unittest.TestCase):
         )
         header = format_thread_chat_info(
             agent_id="a1",
-            github="cursor/demo",
+            branch="cursor/demo",
             model="gpt-5",
         )
         with_header = render_thread_final(snap, chat_info=header)
         without = render_thread_final(snap)
-        self.assertTrue(with_header.startswith("Chat Info:"))
+        self.assertTrue(with_header.startswith("### Chat Info"))
         self.assertIn("hello world", with_header)
-        self.assertNotIn("Chat Info:", without)
+        self.assertNotIn("### Chat Info", without)
         self.assertNotIn("### Git", with_header)
         self.assertNotIn("Run:", with_header)
+
+    def test_render_thread_summary_sections_and_omissions(self):
+        empty = render_thread_summary(
+            RunSnapshot(run_id="r", agent_id="a", status=RunStatus.FINISHED)
+        )
+        self.assertEqual(empty, "")
+
+        snap = RunSnapshot(
+            run_id="r",
+            agent_id="a",
+            status=RunStatus.FINISHED,
+            thinking_seconds=12.2,
+            tool_family_counts={"search": 3, "read": 1, "shell": 2, "subagent": 2},
+            subagents=[
+                ToolActivity(
+                    "t1", "Task", "completed", label="Inventory API credentials"
+                ),
+                ToolActivity("t2", "Task", "failed", label="Trace integrations"),
+                ToolActivity("t3", "Task", "completed", label=""),
+            ],
+        )
+        text = render_thread_summary(snap)
+        self.assertIn("💭 Thought for 12s", text)
+        self.assertIn("### Subagents", text)
+        self.assertIn("🟢 Subagent 1: Inventory API credentials", text)
+        self.assertIn("🔴 Subagent 2: Trace integrations", text)
+        self.assertIn("🟢 Subagent 3", text)
+        self.assertIn("### Tool Calls", text)
+        self.assertIn("🔍 `search` ×3", text)
+        self.assertIn("🐚 `shell` ×2", text)
+        self.assertIn("📖 `read` ×1", text)
+        self.assertNotIn("subagent", text.lower().split("tool calls", 1)[-1])
+        # No thinking / empty counts omit those sections.
+        bare = render_thread_summary(
+            RunSnapshot(
+                run_id="r",
+                agent_id="a",
+                status=RunStatus.FINISHED,
+                subagents=[ToolActivity("t1", "Task", "completed", label="Only one")],
+            )
+        )
+        self.assertNotIn("Thought for", bare)
+        self.assertNotIn("### Tool Calls", bare)
+        self.assertIn("🟢 Subagent 1: Only one", bare)
+
+    def test_render_thread_summary_redacts_labels(self):
+        snap = RunSnapshot(
+            run_id="r",
+            agent_id="a",
+            status=RunStatus.FINISHED,
+            subagents=[
+                ToolActivity(
+                    "t1",
+                    "Task",
+                    "completed",
+                    label="ping @everyone please",
+                )
+            ],
+        )
+        text = render_thread_summary(snap)
+        self.assertNotIn("@everyone", text)
+        self.assertIn("Subagent 1:", text)
 
     def test_activity_idle_shows_thinking_indicator(self):
         snap = RunSnapshot(
@@ -621,15 +693,28 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
             agent_id="bc-agent-1",
             status=RunStatus.FINISHED,
             result_text="done",
+            git_branches=[GitBranchInfo(branch="cursor/feat")],
+            thinking_seconds=5.0,
+            tool_family_counts={"search": 2},
         )
         await sink.update_from_snapshot(snap, terminal=True)
         await sink.update_from_snapshot(snap, terminal=True)
-        sent = channel.send.await_args.args[0]
-        self.assertIn("Chat Info:", sent)
-        self.assertIn("bc-agent-1", sent)
-        self.assertIn("claude-sonnet-4-6", sent)
-        self.assertIn("done", sent)
-        self.assertEqual(channel.send.await_count, 1)
+        edited = (
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0]
+        )
+        self.assertTrue(edited.startswith("### Chat Info"))
+        self.assertIn("bc-agent-1", edited)
+        self.assertIn("claude-sonnet-4-6", edited)
+        self.assertIn("cursor/feat", edited)
+        # summary then answer
+        self.assertEqual(channel.send.await_count, 2)
+        summary_sent = channel.send.await_args_list[0].args[0]
+        answer_sent = channel.send.await_args_list[1].args[0]
+        self.assertIn("Thought for", summary_sent)
+        self.assertIn("🔍 `search` ×2", summary_sent)
+        self.assertEqual(answer_sent, "done")
+        self.assertNotIn("### Chat Info", answer_sent)
 
     async def test_chat_info_survives_sona_translator(self):
         channel = MagicMock()
@@ -659,10 +744,84 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         )
         await sink.update_from_snapshot(snap, terminal=True)
         self.assertEqual(seen, ["done"])
+        edited = (
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0]
+        )
+        self.assertTrue(edited.startswith("### Chat Info"))
+        self.assertIn("bc-agent-1", edited)
         sent = channel.send.await_args.args[0]
-        self.assertTrue(sent.startswith("Chat Info:"))
-        self.assertIn("bc-agent-1", sent)
-        self.assertIn("sona:done", sent)
+        self.assertEqual(sent, "sona:done")
+        self.assertNotIn("### Chat Info", sent)
+
+    async def test_later_run_edits_activity_into_summary(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        sink = ThreadActivitySink(channel, activity, edit_interval_ms=0)
+        snap = RunSnapshot(
+            run_id="r2",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text="second answer",
+            thinking_seconds=3.0,
+            tool_family_counts={"shell": 1},
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        edited = (
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0]
+        )
+        self.assertIn("Thought for 3s", edited)
+        self.assertIn("🐚 `shell` ×1", edited)
+        self.assertEqual(channel.send.await_count, 1)
+        self.assertEqual(channel.send.await_args.args[0], "second answer")
+
+    async def test_later_run_empty_summary_uses_zwsp(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        sink = ThreadActivitySink(channel, activity, edit_interval_ms=0)
+        snap = RunSnapshot(
+            run_id="r3",
+            agent_id="a1",
+            status=RunStatus.FINISHED,
+            result_text="ok",
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        edited = (
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0]
+        )
+        self.assertEqual(edited, "\u200b")
+        self.assertEqual(channel.send.await_args.args[0], "ok")
+
+    async def test_chat_info_failure_still_sends_answer(self):
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock(side_effect=RuntimeError("edit failed"))
+        sink = ThreadActivitySink(
+            channel,
+            activity,
+            edit_interval_ms=0,
+            include_chat_info=True,
+            chat_info_model="auto",
+        )
+        snap = RunSnapshot(
+            run_id="r1",
+            agent_id="bc-1",
+            status=RunStatus.FINISHED,
+            result_text="still here",
+            thinking_seconds=2.0,
+        )
+        await sink.update_from_snapshot(snap, terminal=True)
+        self.assertTrue(sink.degraded)
+        # summary + answer still attempted
+        self.assertGreaterEqual(channel.send.await_count, 1)
+        self.assertEqual(channel.send.await_args_list[-1].args[0], "still here")
 
     async def test_error_final_skips_translator(self):
         channel = MagicMock()
@@ -1243,7 +1402,7 @@ class TestSessionTitles(unittest.IsolatedAsyncioTestCase):
 
 
 class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
-    async def test_followup_edits_visible_activity_immediately(self):
+    async def test_followup_always_posts_fresh_activity(self):
         mod = load_cursor_plugin()
         cfg = load_cursor_config(
             {
@@ -1279,15 +1438,17 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
             require_policy=True,
             bot=MagicMock(),
         )
-        activity = MagicMock()
-        activity.id = 55
-        activity.content = "### Activity\n- `grep` (running) keys=pattern"
-        activity.edit = AsyncMock()
+        prior = MagicMock()
+        prior.id = 55
+        prior.content = "### Chat Info\n- id: `bc-1`\n- model: `auto`"
+        prior.edit = AsyncMock()
+        new_activity = MagicMock()
+        new_activity.id = 99
         channel = MagicMock()
         channel.id = 200
         channel.parent_id = 100
-        channel.fetch_message = AsyncMock(return_value=activity)
-        channel.send = AsyncMock()
+        channel.fetch_message = AsyncMock(return_value=prior)
+        channel.send = AsyncMock(return_value=new_activity)
         message = MagicMock()
         message.id = 901
         message.author = SimpleNamespace(id=int(OWNER), bot=False, roles=[])
@@ -1307,14 +1468,18 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                         with patch_cursor(mod, "launch", new=AsyncMock()):
                             ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
-        activity.edit.assert_awaited()
+        prior.edit.assert_not_awaited()
+        channel.fetch_message.assert_not_awaited()
+        channel.send.assert_awaited()
         self.assertEqual(
-            activity.edit.await_args.kwargs.get("content")
-            or activity.edit.await_args.args[0],
+            channel.send.await_args.args[0]
+            if channel.send.await_args.args
+            else channel.send.await_args.kwargs.get("content"),
             THREAD_THINKING_INDICATOR,
         )
-        channel.send.assert_not_awaited()
-        self.assertIs(prep.await_args.kwargs.get("status_msg"), activity)
+        loaded = await sessions.get_session(scope, "bc-1")
+        self.assertEqual(loaded.status_message_id, "99")
+        self.assertIs(prep.await_args.kwargs.get("status_msg"), new_activity)
 
     async def test_followup_posts_fresh_activity_after_cleared_stub(self):
         mod = load_cursor_plugin()
@@ -1352,15 +1517,12 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
             require_policy=True,
             bot=MagicMock(),
         )
-        cleared = MagicMock()
-        cleared.id = 55
-        cleared.content = "\u200b"
         new_activity = MagicMock()
         new_activity.id = 99
         channel = MagicMock()
         channel.id = 200
         channel.parent_id = 100
-        channel.fetch_message = AsyncMock(return_value=cleared)
+        channel.fetch_message = AsyncMock()
         channel.send = AsyncMock(return_value=new_activity)
         message = MagicMock()
         message.id = 902
@@ -1381,6 +1543,7 @@ class TestThreadFollowupIndicator(unittest.IsolatedAsyncioTestCase):
                         with patch_cursor(mod, "launch", new=AsyncMock()):
                             ok = await mod.handle_thread_message(message)
         self.assertTrue(ok)
+        channel.fetch_message.assert_not_awaited()
         channel.send.assert_awaited()
         self.assertEqual(
             channel.send.await_args.args[0]
@@ -1586,6 +1749,109 @@ class TestCursorSessionsParentFilter(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bc-here", body)
         self.assertNotIn("bc-other-parent", body)
         self.assertIn("thread", body.lower())
+
+
+
+class TestReplyChainSelfExclusion(unittest.IsolatedAsyncioTestCase):
+    async def test_excludes_triggering_message_without_discord_reply(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        mod.reset_runtime(config=cfg)
+        message = MagicMock()
+        message.id = 10
+        message.content = "please do the thing"
+        message.attachments = []
+        message.guild = SimpleNamespace(id=1)
+        message.channel = SimpleNamespace(id=200)
+        message.author = SimpleNamespace(name="owner")
+        message.reference = None
+        seen = []
+
+        async def fake_chain(target, max_length=-1, include_message=False):
+            seen.append(("text", target is message, include_message))
+            return [("ancestor", "older")] if include_message else None
+
+        async def fake_msg_chain(target, max_length=-1, include_message=False):
+            seen.append(("msg", target is message, include_message))
+            return [target] if include_message else []
+
+        with patch_cursor(mod, "get_reference_chain", new=fake_chain):
+            with patch_cursor(mod, "get_reference_message_chain", new=fake_msg_chain):
+                with patch_cursor(mod, "collect_chain_attachments", return_value=[]):
+                    text_out, images, skipped = await mod._build_context_from_message(
+                        message, "please do the thing"
+                    )
+        self.assertEqual(seen, [("text", True, False), ("msg", True, False)])
+        self.assertNotIn("Reply chain", text_out)
+        self.assertIn("please do the thing", text_out)
+
+    async def test_includes_fetched_ref_target(self):
+        mod = load_cursor_plugin()
+        cfg = load_cursor_config(
+            {
+                "enabled": True,
+                "default_repository_url": "https://github.com/o/r",
+                "access": {"tier2_user_ids": [T2]},
+            },
+            env={"CURSOR_API_KEY": "k", "GOD": GOD},
+        )
+        mod.reset_runtime(config=cfg)
+        message = MagicMock()
+        message.id = 10
+        message.content = "follow up"
+        message.attachments = []
+        message.guild = SimpleNamespace(id=1, get_channel=MagicMock(return_value=None))
+        message.channel = MagicMock()
+        message.channel.id = 200
+        message.author = SimpleNamespace(name="owner")
+        message.reference = None
+        target = MagicMock()
+        target.id = 99
+        target.content = "original context"
+        target.author = SimpleNamespace(name="someone")
+        target.reference = None
+        message.channel.fetch_message = AsyncMock(return_value=target)
+        seen = []
+
+        async def fake_chain(tgt, max_length=-1, include_message=False):
+            seen.append(("text", tgt is target, include_message))
+            return [("someone", "original context")] if include_message else None
+
+        async def fake_msg_chain(tgt, max_length=-1, include_message=False):
+            seen.append(("msg", tgt is target, include_message))
+            return [tgt] if include_message else []
+
+        with patch_cursor(mod, "get_reference_chain", new=fake_chain):
+            with patch_cursor(mod, "get_reference_message_chain", new=fake_msg_chain):
+                with patch_cursor(mod, "collect_chain_attachments", return_value=[]):
+                    with patch_cursor(
+                        mod,
+                        "parse_message_reference",
+                        return_value=(200, 99),
+                    ):
+                        text_out, images, skipped = await mod._build_context_from_message(
+                            message,
+                            "follow up",
+                            message_ref="99",
+                        )
+        self.assertEqual(seen, [("text", True, True), ("msg", True, True)])
+        self.assertIn("Reply chain", text_out)
+        self.assertIn("original context", text_out)
+
+
+class TestTranslateGuidelines(unittest.TestCase):
+    def test_tables_guideline_present(self):
+        mod = load_cursor_plugin()
+        text = mod.discord_ui.TRANSLATE_GUIDELINES
+        self.assertIn("Discord does not render markdown tables", text)
+        self.assertIn("triple-backtick code blocks", text)
 
 
 if __name__ == "__main__":

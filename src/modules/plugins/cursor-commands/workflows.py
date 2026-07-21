@@ -530,16 +530,23 @@ async def _build_context_from_message(
                 missing.append(f"Message {ref_message_id} missing or inaccessible.")
 
     if target_message is not None:
+        # Exclude the triggering message (already the instruction). Include only
+        # when --ref resolved a different target message.
+        include_message = target_message is not message
         try:
             ref_chain = await get_reference_chain(
-                target_message, max_length=cfg.chain_depth, include_message=True
+                target_message,
+                max_length=cfg.chain_depth,
+                include_message=include_message,
             )
         except Exception:
             ref_chain = None
             missing.append("Failed to resolve full reply chain text.")
         try:
             msg_objs = await get_reference_message_chain(
-                target_message, max_length=cfg.chain_depth, include_message=True
+                target_message,
+                max_length=cfg.chain_depth,
+                include_message=include_message,
             )
             chain_messages = collect_chain_attachments(msg_objs, max_depth=cfg.chain_depth)
         except Exception:
@@ -607,41 +614,19 @@ async def handle_thread_message(message: discord.Message) -> bool:
     if not prompt and not message.attachments:
         return False
 
-    # Immediate thinking indicator so follow-ups don't look stuck while we
-    # auth / build context / hit the Cursor API. Reuse a visible Activity
-    # message when present; after a cleared terminal stub, post a fresh one.
-    activity_msg = None
-    if session.status_channel_id and session.status_message_id:
-        try:
-            activity_msg = await message.channel.fetch_message(
-                int(session.status_message_id)
-            )
-        except Exception:
-            activity_msg = None
-    if activity_msg is not None:
-        prior = (activity_msg.content or "").strip()
-        if prior in {"", "\u200b"}:
-            activity_msg = None
-    if activity_msg is None:
-        try:
-            activity_msg = await message.channel.send(
-                THREAD_THINKING_INDICATOR,
-                allowed_mentions=CONTENT_MENTIONS,
-            )
-            session.status_channel_id = str(message.channel.id)
-            session.status_message_id = str(activity_msg.id)
-            await sessions.upsert(session)
-        except Exception:
-            logger.exception("Cursor thread activity message create failed")
-            return True
-    else:
-        try:
-            await activity_msg.edit(
-                content=THREAD_THINKING_INDICATOR,
-                allowed_mentions=CONTENT_MENTIONS,
-            )
-        except Exception:
-            logger.debug("Cursor thread thinking indicator edit failed", exc_info=True)
+    # Always post a fresh thinking/activity message. Prior activity messages now
+    # hold frozen Chat Info or a per-run summary and must not be reused.
+    try:
+        activity_msg = await message.channel.send(
+            THREAD_THINKING_INDICATOR,
+            allowed_mentions=CONTENT_MENTIONS,
+        )
+        session.status_channel_id = str(message.channel.id)
+        session.status_message_id = str(activity_msg.id)
+        await sessions.upsert(session)
+    except Exception:
+        logger.exception("Cursor thread activity message create failed")
+        return True
 
     scope = _scope_from_message(message, user_id=owner_id)
     pol_ch = resolve_policy_channel_id(

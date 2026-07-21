@@ -65,6 +65,7 @@ TRANSLATE_GUIDELINES = """Cursor agent output guidelines:
 - Preserve all factual content, code fences, file paths, URLs, and technical details — do not truncate for style.
 - Include the information the user needs from the output; brevity is secondary to completeness here.
 - If the output contains a link, use this format: [link title](the link)
+- Discord does not render markdown tables — always place tables/aligned columns inside triple-backtick code blocks.
 - Do NOT run commands or start your reply with $.
 - Do not mention rewriting, translating, or that an agent wrote this.
 - Output only your reply message."""

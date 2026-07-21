@@ -518,14 +518,13 @@ class TestCursorEffectOrder(unittest.IsolatedAsyncioTestCase):
             bot=MagicMock(add_view=MagicMock()),
             client=_make_client(),
         )
-        activity = MagicMock()
-        activity.id = 55
-        activity.content = "### Activity\n- `grep` (running)"
+        new_activity = MagicMock()
+        new_activity.id = 99
         channel = MagicMock()
         channel.id = 200
         channel.parent_id = 100
-        channel.fetch_message = AsyncMock(return_value=activity)
-        channel.send = AsyncMock()
+        channel.fetch_message = AsyncMock()
+        channel.send = AsyncMock(return_value=new_activity)
         message = SimpleNamespace(
             id=901,
             author=SimpleNamespace(id=int(T2), bot=False, roles=[]),
@@ -537,10 +536,17 @@ class TestCursorEffectOrder(unittest.IsolatedAsyncioTestCase):
         )
         with patch_cursor(mod, "_channel_is_thread", return_value=True):
             with record_effects(mod) as log:
-                instrument_message_edit(activity, log)
+                instrument_channel_send(channel, log)
                 await mod.handle_thread_message(message)
         self.assertEqual(log, ["status_post"])
         self.assertNotIn("defer", log)
+        channel.send.assert_awaited()
+        self.assertEqual(
+            channel.send.await_args.args[0]
+            if channel.send.await_args.args
+            else channel.send.await_args.kwargs.get("content"),
+            THREAD_THINKING_INDICATOR,
+        )
 
     async def test_approve_launch_order(self):
         mod = load_cursor_plugin()

@@ -11,6 +11,34 @@ from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus
 _HEADING_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
 _MENTION_RE = re.compile(r"@(everyone|here)|<@!?&?\d+>")
 
+# Map tool names to rolling summary families (coalesce repeated calls).
+_TOOL_FAMILY_ALIASES: dict[str, str] = {
+    "grep": "search",
+    "glob_file_search": "search",
+    "glob": "search",
+    "websearch": "search",
+    "Task": "subagent",
+    "task": "subagent",
+    "Shell": "shell",
+    "shell": "shell",
+    "Read": "read",
+    "read": "read",
+    "Write": "write",
+    "write": "write",
+    "StrReplace": "edit",
+    "search_replace": "edit",
+}
+
+
+def tool_family(name: str) -> str:
+    text = str(name or "tool").strip()
+    if not text:
+        return "tool"
+    if text in _TOOL_FAMILY_ALIASES:
+        return _TOOL_FAMILY_ALIASES[text]
+    base = text.split("_")[0].lower()
+    return _TOOL_FAMILY_ALIASES.get(base, base or "tool")
+
 
 def redact_untrusted(text: str) -> str:
     text = text or ""

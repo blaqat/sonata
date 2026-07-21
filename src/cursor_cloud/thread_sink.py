@@ -8,9 +8,9 @@ from typing import Any, Awaitable, Callable, Protocol
 from .models import RunSnapshot, RunStatus
 from .thread_renderer import (
     format_thread_chat_info,
-    github_hint_from_snapshot,
     render_thread_activity,
     render_thread_final,
+    render_thread_summary,
 )
 
 FinalTranslator = Callable[[str], Awaitable[str]]
@@ -65,6 +65,17 @@ class ThreadActivitySink:
         agent_name: str | None = None,
         skipped_images: list[str] | None = None,
     ) -> None:
+        if terminal and snapshot.status.is_terminal:
+            if self._last_terminal_run_id == snapshot.run_id:
+                return
+            self._last_terminal_run_id = snapshot.run_id
+            await self._emit_terminal(
+                snapshot,
+                agent_name=agent_name,
+                skipped_images=skipped_images,
+            )
+            return
+
         activity = render_thread_activity(
             snapshot,
             agent_name=agent_name,
@@ -78,46 +89,73 @@ class ThreadActivitySink:
             # Activity edit failures must not suppress the frozen final response.
             self.degraded = True
 
-        if terminal and snapshot.status.is_terminal:
-            if self._last_terminal_run_id == snapshot.run_id:
-                return
-            self._last_terminal_run_id = snapshot.run_id
-            chat_info = None
-            if self._include_chat_info and snapshot.status == RunStatus.FINISHED:
-                chat_info = format_thread_chat_info(
-                    agent_id=snapshot.agent_id,
-                    model=self._chat_info_model,
-                    github=github_hint_from_snapshot(
-                        snapshot,
-                        repository_url=self._chat_info_repository_url,
-                    ),
-                )
-                self._include_chat_info = False
-            # Translate the answer body only — Chat Info must stay a stable header.
-            final = render_thread_final(
-                snapshot,
-                agent_name=agent_name,
-                skipped_images=skipped_images,
-                chat_info=None,
+    async def _emit_terminal(
+        self,
+        snapshot: RunSnapshot,
+        *,
+        agent_name: str | None,
+        skipped_images: list[str] | None,
+    ) -> None:
+        first_finished = (
+            self._include_chat_info and snapshot.status == RunStatus.FINISHED
+        )
+        summary = render_thread_summary(snapshot)
+
+        if first_finished:
+            branch = None
+            for git in list(snapshot.git_branches or []):
+                name = str(git.branch or "").strip()
+                if name:
+                    branch = name
+                    break
+            chat_info = format_thread_chat_info(
+                agent_id=snapshot.agent_id,
+                model=self._chat_info_model,
+                branch=branch,
             )
-            if (
-                self.final_translator is not None
-                and snapshot.status == RunStatus.FINISHED
-            ):
-                try:
-                    final = await self.final_translator(final)
-                except Exception:
-                    # Translator must fail open; keep original final text.
-                    pass
-            if chat_info:
-                final = f"{chat_info.strip()}\n\n{final}"
-            kwargs: dict[str, Any] = {}
-            if self.allowed_mentions is not None:
-                kwargs["allowed_mentions"] = self.allowed_mentions
+            self._include_chat_info = False
             try:
-                await self.channel.send(final[:2000], **kwargs)
+                await self._edit_activity(chat_info, force=True)
             except Exception:
                 self.degraded = True
+            if summary:
+                try:
+                    await self._send(summary)
+                except Exception:
+                    self.degraded = True
+        else:
+            content = summary if summary else "\u200b"
+            try:
+                await self._edit_activity(content, force=True)
+            except Exception:
+                self.degraded = True
+
+        # Translate the answer body only — Chat Info / summary stay outside Sona.
+        final = render_thread_final(
+            snapshot,
+            agent_name=agent_name,
+            skipped_images=skipped_images,
+            chat_info=None,
+        )
+        if (
+            self.final_translator is not None
+            and snapshot.status == RunStatus.FINISHED
+        ):
+            try:
+                final = await self.final_translator(final)
+            except Exception:
+                # Translator must fail open; keep original final text.
+                pass
+        try:
+            await self._send(final)
+        except Exception:
+            self.degraded = True
+
+    async def _send(self, content: str) -> None:
+        kwargs: dict[str, Any] = {}
+        if self.allowed_mentions is not None:
+            kwargs["allowed_mentions"] = self.allowed_mentions
+        await self.channel.send(content[:2000], **kwargs)
 
     async def _edit_activity(self, content: str, *, force: bool = False) -> None:
         now = time.monotonic()

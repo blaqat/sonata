@@ -22,7 +22,7 @@ from .models import (
 )
 from .run_log import RunLogStore, sanitize_log_summary
 from .session_store import is_meaningful_stream_event
-from .status_renderer import render_status, safe_tool_summary
+from .status_renderer import redact_untrusted, render_status, safe_tool_summary, tool_family
 from .stream_gone import is_stream_unavailable_error, is_stream_unavailable_exc
 
 logger = logging.getLogger("sonata.cursor.tracker")
@@ -32,6 +32,9 @@ DEFAULT_POLL_INTERVAL_S = 2.0
 DEFAULT_POLL_MAX_S = 900.0
 # Transient GET failures after stream drop (create/stream race on follow-ups).
 MAX_POLL_RECONCILE_FAILURES = 20
+MAX_SUBAGENTS = 10
+MAX_TASK_LABEL_CHARS = 80
+_TASK_LABEL_KEYS = ("description", "name", "title", "task")
 
 
 class StatusSink(Protocol):
@@ -85,6 +88,30 @@ class RunTracker:
         self.snapshot: RunSnapshot | None = None
         self._pending_log_kinds: set[str] = set()
         self._logged_result_text: str | None = None
+        self._seen_tool_call_ids: set[str] = set()
+        # Transient monotonic thinking timer (not serialized).
+        self._thinking_started_at: float | None = None
+
+    def _close_thinking(self, snapshot: RunSnapshot) -> None:
+        if self._thinking_started_at is None:
+            return
+        elapsed = max(0.0, time.monotonic() - self._thinking_started_at)
+        self._thinking_started_at = None
+        prior = float(snapshot.thinking_seconds or 0.0)
+        snapshot.thinking_seconds = prior + elapsed
+
+    def _task_label_from_args(self, args: Any, *, fallback_index: int) -> str:
+        if isinstance(args, dict):
+            for key in _TASK_LABEL_KEYS:
+                if key not in args:
+                    continue
+                raw = args.get(key)
+                if raw is None:
+                    continue
+                text = redact_untrusted(str(raw)).strip()
+                if text:
+                    return text[:MAX_TASK_LABEL_CHARS]
+        return f"Subagent {fallback_index}"
 
     def apply_event(self, snapshot: RunSnapshot, event: StreamEvent) -> RunSnapshot:
         if event.id:
@@ -93,26 +120,38 @@ class RunTracker:
         data = event.data or {}
 
         if name == "status":
+            self._close_thinking(snapshot)
             snapshot.status = RunStatus.from_api(data.get("status"))
             if data.get("runId"):
                 snapshot.run_id = str(data["runId"])
         elif name == "assistant":
+            self._close_thinking(snapshot)
             snapshot.assistant_text += str(data.get("text") or "")
             if snapshot.status.is_active:
                 snapshot.status = RunStatus.RUNNING
         elif name == "thinking":
+            if self._thinking_started_at is None:
+                self._thinking_started_at = time.monotonic()
             snapshot.thinking_text += str(data.get("text") or "")
         elif name == "tool_call":
+            self._close_thinking(snapshot)
             call_id = str(data.get("callId") or data.get("call_id") or "")
             tool_name = str(data.get("name") or "tool")
             status = str(data.get("status") or "")
+            family = tool_family(tool_name)
             summary = safe_tool_summary(
                 tool_name,
                 data.get("args"),
                 data.get("result"),
                 truncated=data.get("truncated") if isinstance(data.get("truncated"), dict) else None,
             )
-            existing = next((t for t in snapshot.tools if t.call_id == call_id), None)
+            resolved_id = call_id or f"anon-{len(snapshot.tools)}"
+            if resolved_id not in self._seen_tool_call_ids:
+                self._seen_tool_call_ids.add(resolved_id)
+                snapshot.tool_family_counts[family] = (
+                    int(snapshot.tool_family_counts.get(family, 0)) + 1
+                )
+            existing = next((t for t in snapshot.tools if t.call_id == resolved_id), None)
             if existing:
                 existing.status = status
                 existing.summary = summary
@@ -120,21 +159,53 @@ class RunTracker:
             else:
                 snapshot.tools.append(
                     ToolActivity(
-                        call_id=call_id or f"anon-{len(snapshot.tools)}",
+                        call_id=resolved_id,
                         name=tool_name,
                         status=status,
                         summary=summary,
                     )
                 )
-            # Bound tool history
+            # Bound tool history (family counts / subagents are independent).
             if len(snapshot.tools) > 12:
                 snapshot.tools = snapshot.tools[-12:]
+
+            if family == "subagent":
+                existing_sa = next(
+                    (t for t in snapshot.subagents if t.call_id == resolved_id),
+                    None,
+                )
+                if existing_sa:
+                    existing_sa.status = status
+                    existing_sa.summary = summary
+                    existing_sa.name = tool_name
+                    if not existing_sa.label or existing_sa.label.lower().startswith(
+                        "subagent "
+                    ):
+                        existing_sa.label = self._task_label_from_args(
+                            data.get("args"),
+                            fallback_index=snapshot.subagents.index(existing_sa) + 1,
+                        )
+                elif len(snapshot.subagents) < MAX_SUBAGENTS:
+                    label = self._task_label_from_args(
+                        data.get("args"),
+                        fallback_index=len(snapshot.subagents) + 1,
+                    )
+                    snapshot.subagents.append(
+                        ToolActivity(
+                            call_id=resolved_id,
+                            name=tool_name,
+                            status=status,
+                            summary=summary,
+                            label=label,
+                        )
+                    )
         elif name == "interaction_update":
             # Prefer simplified events; ignore rich duplicates.
             pass
         elif name == "heartbeat":
             pass
         elif name == "result":
+            self._close_thinking(snapshot)
             snapshot.status = RunStatus.from_api(data.get("status") or "FINISHED")
             if data.get("text"):
                 snapshot.result_text = str(data.get("text") or "")
@@ -150,6 +221,7 @@ class RunTracker:
             if snapshot.status == RunStatus.FINISHED:
                 snapshot.error_message = ""
         elif name == "error":
+            self._close_thinking(snapshot)
             if is_stream_unavailable_error(data):
                 # Stream ended; caller reconciles via GET run — do not mark ERROR.
                 pass
@@ -159,6 +231,7 @@ class RunTracker:
                     data.get("message") or data.get("code") or "Agent error"
                 )
         elif name == "done":
+            self._close_thinking(snapshot)
             if not snapshot.status.is_terminal:
                 # done without result — leave status as-is but mark finished if running
                 if snapshot.status.is_active and not snapshot.error_message:
@@ -378,6 +451,8 @@ class RunTracker:
     async def _emit(self, *, terminal: bool = False) -> None:
         if self.snapshot is None:
             return
+        if terminal:
+            self._close_thinking(self.snapshot)
         if terminal or self._pending_log_kinds:
             await self._flush_pending_text_logs()
         # Snapshot-aware sinks (thread chat-room UX) bypass classic single-message render.
@@ -429,6 +504,8 @@ class RunTracker:
             status=initial_status,
             last_event_id=last_event_id,
         )
+        self._seen_tool_call_ids.clear()
+        self._thinking_started_at = None
         logger.info(
             "cursor.track_start agent=%s run=%s initial=%s last_event_id=%s",
             agent_id,

@@ -6,38 +6,35 @@ from collections import defaultdict
 from typing import Iterable
 
 from .models import DISCORD_MESSAGE_LIMIT, RunSnapshot, RunStatus, ToolActivity
-from .status_renderer import normalize_headings, redact_untrusted, truncate_message
+from .status_renderer import (
+    normalize_headings,
+    redact_untrusted,
+    tool_family,
+    truncate_message,
+)
 
-# Map tool names to rolling summary families (coalesce repeated calls).
-_TOOL_FAMILY_ALIASES: dict[str, str] = {
-    "grep": "search",
-    "glob_file_search": "search",
-    "glob": "search",
-    "websearch": "search",
-    "Task": "subagent",
-    "task": "subagent",
-    "Shell": "shell",
-    "shell": "shell",
-    "Read": "read",
-    "read": "read",
-    "Write": "write",
-    "write": "write",
-    "StrReplace": "edit",
-    "search_replace": "edit",
+# Re-export for callers that historically imported from this module.
+__all__ = [
+    "THREAD_THINKING_INDICATOR",
+    "format_thread_chat_info",
+    "github_hint_from_snapshot",
+    "render_thread_activity",
+    "render_thread_final",
+    "render_thread_summary",
+    "tool_family",
+]
+
+_FAMILY_EMOJI: dict[str, str] = {
+    "search": "🔍",
+    "read": "📖",
+    "edit": "✏️",
+    "write": "📝",
+    "shell": "🐚",
 }
+_FAILED_STATUSES = frozenset({"failed", "error", "cancelled", "canceled"})
 
 # Immediate ack while a thread follow-up is preparing / waiting on the API.
 THREAD_THINKING_INDICATOR = "<a:aithinking:1527850620273430548> *thinking...*"
-
-
-def tool_family(name: str) -> str:
-    text = str(name or "tool").strip()
-    if not text:
-        return "tool"
-    if text in _TOOL_FAMILY_ALIASES:
-        return _TOOL_FAMILY_ALIASES[text]
-    base = text.split("_")[0].lower()
-    return _TOOL_FAMILY_ALIASES.get(base, base or "tool")
 
 
 def _coalesce_tools(tools: Iterable[ToolActivity]) -> list[str]:
@@ -88,15 +85,56 @@ def format_thread_chat_info(
     *,
     agent_id: str,
     model: str | None = None,
-    github: str | None = None,
+    branch: str | None = None,
 ) -> str:
-    """One-line session header for the first thread final only."""
-    parts = [f"id - {redact_untrusted(agent_id)[:80]}"]
-    if github:
-        parts.append(f"github {redact_untrusted(github)[:80]}")
-    if model:
-        parts.append(redact_untrusted(model)[:60])
-    return "Chat Info: " + " | ".join(parts)
+    """Multiline session header for the first thread final only."""
+    lines = [
+        "### Chat Info",
+        f"- id: `{redact_untrusted(agent_id)[:80]}`",
+    ]
+    branch_text = str(branch or "").strip()
+    if branch_text:
+        lines.append(f"- branch: `{redact_untrusted(branch_text)[:80]}`")
+    model_text = str(model).strip() if model else ""
+    model_disp = redact_untrusted(model_text)[:60] if model_text else "auto"
+    lines.append(f"- model: `{model_disp}`")
+    return "\n".join(lines)
+
+
+def render_thread_summary(snapshot: RunSnapshot) -> str:
+    """Post-run summary: thinking duration, subagents, and tool-family totals."""
+    parts: list[str] = []
+
+    seconds = snapshot.thinking_seconds
+    if seconds is not None and seconds > 0:
+        secs = max(1, int(round(float(seconds))))
+        parts.append(f"💭 Thought for {secs}s")
+
+    subagents = list(snapshot.subagents or [])
+    if subagents:
+        parts.append("### Subagents")
+        for index, agent in enumerate(subagents, start=1):
+            status_l = str(agent.status or "").lower()
+            emoji = "🔴" if status_l in _FAILED_STATUSES else "🟢"
+            label = redact_untrusted(agent.label or "").strip()[:80]
+            if label and not label.lower().startswith("subagent "):
+                parts.append(f"{emoji} Subagent {index}: {label}")
+            else:
+                parts.append(f"{emoji} Subagent {index}")
+
+    counts = {
+        str(family): int(count)
+        for family, count in (snapshot.tool_family_counts or {}).items()
+        if family != "subagent" and int(count) > 0
+    }
+    if counts:
+        parts.append("### Tool Calls")
+        ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        for family, count in ordered:
+            emoji = _FAMILY_EMOJI.get(family, "🔧")
+            parts.append(f"{emoji} `{family}` ×{count}")
+
+    return "\n".join(parts)
 
 
 def render_thread_activity(

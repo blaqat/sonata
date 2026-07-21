@@ -212,6 +212,7 @@ class ToolActivity:
     name: str
     status: str
     summary: str = ""
+    label: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -223,6 +224,7 @@ class ToolActivity:
             name=str(data.get("name") or "tool"),
             status=str(data.get("status") or ""),
             summary=str(data.get("summary") or ""),
+            label=str(data.get("label") or ""),
         )
 
 
@@ -292,6 +294,9 @@ class RunSnapshot:
     error_message: str = ""
     duration_ms: int | None = None
     tools: list[ToolActivity] = field(default_factory=list)
+    tool_family_counts: dict[str, int] = field(default_factory=dict)
+    subagents: list[ToolActivity] = field(default_factory=list)
+    thinking_seconds: float | None = None
     git_branches: list[GitBranchInfo] = field(default_factory=list)
     truncated: bool = False
     degraded: bool = False
@@ -309,6 +314,11 @@ class RunSnapshot:
             "error_message": self.error_message,
             "duration_ms": self.duration_ms,
             "tools": [t.to_dict() for t in self.tools],
+            "tool_family_counts": {
+                str(k): int(v) for k, v in (self.tool_family_counts or {}).items()
+            },
+            "subagents": [t.to_dict() for t in self.subagents],
+            "thinking_seconds": self.thinking_seconds,
             "git_branches": [g.to_dict() for g in self.git_branches],
             "truncated": self.truncated,
             "degraded": self.degraded,
@@ -318,6 +328,20 @@ class RunSnapshot:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RunSnapshot":
+        raw_counts = data.get("tool_family_counts") or {}
+        counts: dict[str, int] = {}
+        if isinstance(raw_counts, dict):
+            for key, value in raw_counts.items():
+                try:
+                    counts[str(key)] = int(value)
+                except (TypeError, ValueError):
+                    continue
+        thinking_seconds = data.get("thinking_seconds")
+        if thinking_seconds is not None:
+            try:
+                thinking_seconds = float(thinking_seconds)
+            except (TypeError, ValueError):
+                thinking_seconds = None
         return cls(
             run_id=str(data.get("run_id") or ""),
             agent_id=str(data.get("agent_id") or ""),
@@ -328,6 +352,11 @@ class RunSnapshot:
             error_message=str(data.get("error_message") or ""),
             duration_ms=data.get("duration_ms"),
             tools=[ToolActivity.from_dict(t) for t in data.get("tools") or []],
+            tool_family_counts=counts,
+            subagents=[
+                ToolActivity.from_dict(t) for t in data.get("subagents") or []
+            ],
+            thinking_seconds=thinking_seconds,
             git_branches=[
                 GitBranchInfo.from_dict(g) for g in data.get("git_branches") or []
             ],

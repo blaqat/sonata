@@ -137,6 +137,109 @@ class TestTracker(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("secret", summary)
         self.assertIn("keys=", summary)
 
+    async def test_family_counts_survive_tool_cap(self):
+        tracker = RunTracker(None, MemoryStatusSink())
+        snap = RunSnapshot(run_id="r", agent_id="a")
+        for i in range(15):
+            tracker.apply_event(
+                snap,
+                StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": f"c{i}",
+                        "name": "grep",
+                        "status": "completed",
+                        "args": {"pattern": f"p{i}"},
+                    },
+                ),
+            )
+        self.assertEqual(len(snap.tools), 12)
+        self.assertEqual(snap.tool_family_counts.get("search"), 15)
+
+    async def test_task_label_whitelist_and_non_task_secrecy(self):
+        tracker = RunTracker(None, MemoryStatusSink())
+        snap = RunSnapshot(run_id="r", agent_id="a")
+        tracker.apply_event(
+            snap,
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "task-1",
+                    "name": "Task",
+                    "status": "completed",
+                    "args": {
+                        "description": "Inventory API credentials",
+                        "secret": "should-not-appear",
+                    },
+                },
+            ),
+        )
+        tracker.apply_event(
+            snap,
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "shell-1",
+                    "name": "Shell",
+                    "status": "completed",
+                    "args": {
+                        "command": "cat /etc/passwd",
+                        "description": "must not become shell label",
+                    },
+                },
+            ),
+        )
+        tracker.apply_event(
+            snap,
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "task-2",
+                    "name": "Task",
+                    "status": "running",
+                    "args": {"prompt": "ignored non-whitelist"},
+                },
+            ),
+        )
+        self.assertEqual(len(snap.subagents), 2)
+        self.assertEqual(snap.subagents[0].label, "Inventory API credentials")
+        self.assertEqual(snap.subagents[1].label, "Subagent 2")
+        self.assertNotIn("should-not-appear", snap.subagents[0].summary)
+        self.assertNotIn("should-not-appear", snap.subagents[0].label)
+        shell = next(t for t in snap.tools if t.call_id == "shell-1")
+        self.assertNotIn("cat /etc/passwd", shell.summary)
+        self.assertNotIn("must not become", shell.summary)
+        self.assertIn("keys=", shell.summary)
+        self.assertEqual(snap.tool_family_counts.get("subagent"), 2)
+        self.assertEqual(snap.tool_family_counts.get("shell"), 1)
+
+    async def test_thinking_seconds_from_monotonic_timer(self):
+        tracker = RunTracker(None, MemoryStatusSink())
+        snap = RunSnapshot(run_id="r", agent_id="a")
+        tracker.apply_event(snap, StreamEvent("thinking", {"text": "hmm"}))
+        self.assertIsNone(snap.thinking_seconds)
+        tracker.apply_event(snap, StreamEvent("assistant", {"text": "ok"}))
+        self.assertIsNotNone(snap.thinking_seconds)
+        self.assertGreaterEqual(snap.thinking_seconds, 0.0)
+
+    async def test_snapshot_serialization_compat_for_new_fields(self):
+        snap = RunSnapshot(
+            run_id="r",
+            agent_id="a",
+            tool_family_counts={"search": 2},
+            subagents=[ToolActivity("t1", "Task", "completed", label="L")],
+            thinking_seconds=1.5,
+        )
+        data = snap.to_dict()
+        restored = RunSnapshot.from_dict(data)
+        self.assertEqual(restored.tool_family_counts, {"search": 2})
+        self.assertEqual(restored.subagents[0].label, "L")
+        self.assertEqual(restored.thinking_seconds, 1.5)
+        legacy = RunSnapshot.from_dict({"run_id": "r", "agent_id": "a"})
+        self.assertEqual(legacy.tool_family_counts, {})
+        self.assertEqual(legacy.subagents, [])
+        self.assertIsNone(legacy.thinking_seconds)
+
     async def test_sse_stream_expired_reconciles_to_finished(self):
         class FakeClient:
             async def stream_run_with_fallback(self, *a, **k):
