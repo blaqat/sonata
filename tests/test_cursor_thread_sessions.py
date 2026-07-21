@@ -20,12 +20,15 @@ from cursor_cloud.config import load_cursor_config
 from cursor_cloud.models import (
     AgentSession,
     GitBranchInfo,
+    RunRecord,
     RunSnapshot,
     RunStatus,
     ScopeKey,
+    StreamEvent,
     ToolActivity,
     utcnow,
 )
+from cursor_cloud.run_tracker import RunTracker
 from cursor_cloud.session_store import MemorySessionStore
 from cursor_cloud.thread_renderer import (
     THREAD_THINKING_INDICATOR,
@@ -777,6 +780,233 @@ class TestThreadActivitySink(unittest.IsolatedAsyncioTestCase):
         self.assertIn("🐚 `shell` ×1", edited)
         self.assertEqual(channel.send.await_count, 1)
         self.assertEqual(channel.send.await_args.args[0], "second answer")
+
+    async def test_first_then_followups_keep_per_run_summaries(self):
+        """Regression: each follow-up keeps its own summary before its answer."""
+
+        class ScriptedClient:
+            def __init__(self, events):
+                self._events = list(events)
+
+            async def stream_run_with_fallback(self, *a, **k):
+                for event in self._events:
+                    yield event
+
+            async def stream_run(self, *a, **k):
+                if False:  # pragma: no cover - async generator
+                    yield None
+                raise AssertionError("resume should not be needed for healthy SSE")
+
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=99))
+        # Fresh activity message per run (mirrors handle_thread_message).
+        activities = [MagicMock(id=i) for i in (1, 2, 3)]
+        for activity in activities:
+            activity.edit = AsyncMock()
+
+        # Run 1: Chat Info + summary message + answer
+        sink1 = ThreadActivitySink(
+            channel,
+            activities[0],
+            edit_interval_ms=0,
+            include_chat_info=True,
+            chat_info_model="auto",
+        )
+        tracker1 = RunTracker(ScriptedClient([
+            StreamEvent("status", {"runId": "r1", "status": "RUNNING"}),
+            StreamEvent("thinking", {"text": "plan"}),
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "t1",
+                    "name": "Task",
+                    "status": "completed",
+                    "args": {"description": "Explore repo"},
+                },
+            ),
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "t2",
+                    "name": "grep",
+                    "status": "completed",
+                    "args": {"pattern": "x"},
+                },
+            ),
+            StreamEvent(
+                "result",
+                {
+                    "runId": "r1",
+                    "status": "FINISHED",
+                    "text": "first answer",
+                    "git": {"branches": [{"branch": "cursor/feat"}]},
+                },
+            ),
+            StreamEvent("done", {}),
+        ]), sink1, edit_interval_ms=10_000)
+        await tracker1.track("bc", "r1")
+
+        first_edit = (
+            activities[0].edit.await_args.kwargs.get("content")
+            or activities[0].edit.await_args.args[0]
+        )
+        self.assertTrue(first_edit.startswith("### Chat Info"))
+        self.assertEqual(channel.send.await_count, 2)
+        self.assertIn("Thought for", channel.send.await_args_list[0].args[0])
+        self.assertIn("### Subagents", channel.send.await_args_list[0].args[0])
+        self.assertIn("🔍 `search` ×1", channel.send.await_args_list[0].args[0])
+        self.assertEqual(channel.send.await_args_list[1].args[0], "first answer")
+
+        # Follow-up 1 — production path: first SSE unavailable, resume recovers tools.
+        channel.send.reset_mock()
+        sink2 = ThreadActivitySink(channel, activities[1], edit_interval_ms=0)
+
+        class FollowUpRaceClient:
+            def __init__(self):
+                self.stream_attempts = 0
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def stream_run(self, agent_id, run_id, *, last_event_id=None):
+                del agent_id, run_id, last_event_id
+                self.stream_attempts += 1
+                if self.stream_attempts < 2:
+                    from cursor_cloud.errors import AgentRunError
+
+                    raise AgentRunError(
+                        "Run stream is no longer available",
+                        code="stream_unavailable",
+                    )
+                yield StreamEvent("status", {"runId": "r2", "status": "RUNNING"})
+                yield StreamEvent("thinking", {"text": "notion next"})
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "m1",
+                        "name": "mcp",
+                        "status": "completed",
+                        "args": {"toolName": "search", "serverName": "notion"},
+                    },
+                )
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "m2",
+                        "name": "mcp",
+                        "status": "completed",
+                        "args": {"toolName": "fetch", "serverName": "notion"},
+                    },
+                )
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "s1",
+                        "name": "Shell",
+                        "status": "completed",
+                        "args": {"command": "echo hi"},
+                    },
+                )
+                yield StreamEvent(
+                    "result",
+                    {"runId": "r2", "status": "FINISHED", "text": "second answer"},
+                )
+                yield StreamEvent("done", {})
+
+            async def get_run(self, agent_id, run_id):
+                if self.stream_attempts < 2:
+                    return RunRecord(
+                        id=run_id,
+                        agent_id=agent_id,
+                        status=RunStatus.RUNNING,
+                    )
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="second answer",
+                )
+
+        tracker2 = RunTracker(
+            FollowUpRaceClient(),
+            sink2,
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        await tracker2.track("bc", "r2", initial_status=RunStatus.CREATING)
+
+        follow1_edit = (
+            activities[1].edit.await_args.kwargs.get("content")
+            or activities[1].edit.await_args.args[0]
+        )
+        self.assertIn("Thought for", follow1_edit)
+        self.assertIn("`mcp:search` ×1", follow1_edit)
+        self.assertIn("`mcp:fetch` ×1", follow1_edit)
+        self.assertIn("🐚 `shell` ×1", follow1_edit)
+        self.assertNotIn("### Chat Info", follow1_edit)
+        self.assertEqual(channel.send.await_count, 1)
+        self.assertEqual(channel.send.await_args.args[0], "second answer")
+
+        # Follow-up 2 with different counts — chronological independence
+        channel.send.reset_mock()
+        sink3 = ThreadActivitySink(channel, activities[2], edit_interval_ms=0)
+        tracker3 = RunTracker(ScriptedClient([
+            StreamEvent("status", {"runId": "r3", "status": "RUNNING"}),
+            StreamEvent("thinking", {"text": "wrap up"}),
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "r1",
+                    "name": "Read",
+                    "status": "completed",
+                    "args": {"path": "a.py"},
+                },
+            ),
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "r2",
+                    "name": "Read",
+                    "status": "completed",
+                    "args": {"path": "b.py"},
+                },
+            ),
+            StreamEvent(
+                "result",
+                {"runId": "r3", "status": "FINISHED", "text": "third answer"},
+            ),
+            StreamEvent("done", {}),
+        ]), sink3, edit_interval_ms=10_000)
+        await tracker3.track("bc", "r3")
+
+        follow2_edit = (
+            activities[2].edit.await_args.kwargs.get("content")
+            or activities[2].edit.await_args.args[0]
+        )
+        self.assertIn("Thought for", follow2_edit)
+        self.assertIn("📖 `read` ×2", follow2_edit)
+        self.assertNotIn("mcp:", follow2_edit)
+        self.assertNotIn("shell", follow2_edit)
+        self.assertEqual(channel.send.await_args.args[0], "third answer")
+        # Prior activity slots remain untouched after their terminal edit.
+        self.assertTrue(
+            (
+                activities[0].edit.await_args.kwargs.get("content")
+                or activities[0].edit.await_args.args[0]
+            ).startswith("### Chat Info")
+        )
+        self.assertIn(
+            "`mcp:search` ×1",
+            activities[1].edit.await_args.kwargs.get("content")
+            or activities[1].edit.await_args.args[0],
+        )
 
     async def test_later_run_empty_summary_uses_zwsp(self):
         channel = MagicMock()

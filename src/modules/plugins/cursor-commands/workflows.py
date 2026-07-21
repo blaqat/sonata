@@ -1062,7 +1062,7 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
                     session.agent_id,
                     session.latest_run_id,
                     getattr(snap.status, "value", snap.status),
-                    (snap.error_message or "")[:200],
+                    (getattr(snap, "error_message", None) or "")[:200],
                 )
             finally:
                 rt.trackers.pop(session.agent_id, None)

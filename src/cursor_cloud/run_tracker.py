@@ -5,11 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, Protocol, runtime_checkable
 
 from .client import CursorCloudClient
-from .errors import CursorCloudError, StreamExpiredError
+from .errors import CursorCloudError, StreamExpiredError, ValidationError
 from .models import (
     GitBranchInfo,
     RunRecord,
@@ -32,6 +32,9 @@ DEFAULT_POLL_INTERVAL_S = 2.0
 DEFAULT_POLL_MAX_S = 900.0
 # Transient GET failures after stream drop (create/stream race on follow-ups).
 MAX_POLL_RECONCILE_FAILURES = 20
+# Best-effort SSE catch-up after GET already reports terminal — must not delay
+# the Discord answer for the full stream read timeout (often many minutes).
+CATCHUP_RESUME_TIMEOUT_S = 12.0
 MAX_SUBAGENTS = 10
 MAX_TASK_LABEL_CHARS = 80
 _TASK_LABEL_KEYS = ("description", "name", "title", "task")
@@ -97,6 +100,10 @@ class RunTracker:
             return
         elapsed = max(0.0, time.monotonic() - self._thinking_started_at)
         self._thinking_started_at = None
+        # Event bursts can fit inside one monotonic tick; keep a visible floor so
+        # follow-up summaries still show Thought when thinking events arrived.
+        if elapsed < 0.001:
+            elapsed = 0.001
         prior = float(snapshot.thinking_seconds or 0.0)
         snapshot.thinking_seconds = prior + elapsed
 
@@ -138,10 +145,11 @@ class RunTracker:
             call_id = str(data.get("callId") or data.get("call_id") or "")
             tool_name = str(data.get("name") or "tool")
             status = str(data.get("status") or "")
-            family = tool_family(tool_name)
+            tool_args = data.get("args")
+            family = tool_family(tool_name, tool_args)
             summary = safe_tool_summary(
                 tool_name,
-                data.get("args"),
+                tool_args,
                 data.get("result"),
                 truncated=data.get("truncated") if isinstance(data.get("truncated"), dict) else None,
             )
@@ -370,8 +378,192 @@ class RunTracker:
             return
         # Ignore unknown event kinds in history (keeps focus on tools/thinking/result).
 
+    def _snapshot_has_traceability(self) -> bool:
+        """True when the snapshot can render a non-empty thread summary."""
+        if self.snapshot is None:
+            return False
+        if float(self.snapshot.thinking_seconds or 0.0) > 0:
+            return True
+        if self.snapshot.subagents:
+            return True
+        counts = self.snapshot.tool_family_counts or {}
+        return any(
+            family != "subagent" and int(count) > 0
+            for family, count in counts.items()
+        )
+
+    async def _apply_stream_event(self, event: StreamEvent) -> bool:
+        """Apply one SSE event. Returns True when the caller should stop the stream."""
+        if self.snapshot is None:
+            return True
+        stream_gone = event.event == "error" and is_stream_unavailable_error(
+            event.data
+        )
+        if event.event == "error":
+            logger.warning(
+                "cursor.sse_error agent=%s run=%s stream_gone=%s data=%r",
+                self.snapshot.agent_id,
+                self.snapshot.run_id,
+                stream_gone,
+                event.data,
+            )
+        self.apply_event(self.snapshot, event)
+        await self._log_event(event)
+        await self._notify_activity(event.event)
+        if stream_gone:
+            return True
+        # Stop on stream end / terminal payload events only. Do NOT stop merely
+        # because GET already marked the snapshot terminal — catch-up after poll
+        # must still read thinking/tool_call events that enrich the summary.
+        if event.event == "done":
+            self._pending_render = False
+            return True
+        if event.event in {"result", "error"}:
+            self._pending_render = False
+            return bool(self.snapshot.status.is_terminal)
+        self._pending_render = True
+        return False
+
+    def _invalid_last_event_id_error(self, exc: BaseException) -> bool:
+        message = " ".join(
+            str(part)
+            for part in (exc, getattr(exc, "user_message", ""), getattr(exc, "code", ""))
+            if part
+        ).lower()
+        code = str(getattr(exc, "code", "") or "").lower()
+        return "last_event" in message or "invalid_last_event" in code
+
+    async def _iter_resume_events(
+        self,
+        stream_run: Callable[..., AsyncIterator[StreamEvent]],
+        agent_id: str,
+        run_id: str,
+        last_event_id: str | None,
+    ) -> AsyncIterator[StreamEvent]:
+        """Yield resume SSE events; retry once without Last-Event-ID if rejected."""
+        try:
+            async for event in stream_run(
+                agent_id, run_id, last_event_id=last_event_id
+            ):
+                yield event
+            return
+        except ValidationError as exc:
+            if not (last_event_id and self._invalid_last_event_id_error(exc)):
+                raise
+            logger.warning(
+                "cursor.stream_resume_retry_without_last_event agent=%s run=%s",
+                agent_id,
+                run_id,
+            )
+        async for event in stream_run(agent_id, run_id, last_event_id=None):
+            yield event
+
+    async def _try_resume_stream(self, agent_id: str, run_id: str) -> bool:
+        """Reconnect to SSE to recover thinking/tool events after stream-gone.
+
+        Follow-up runs often open the stream before it is ready. Polling GET can
+        observe FINISHED without ever receiving tool_call/thinking events. While
+        the retention window is open, retrying ``stream_run`` recovers them.
+
+        Returns True when the snapshot is terminal after this attempt.
+        """
+        if self.snapshot is None or self._stop.is_set():
+            return bool(self.snapshot and self.snapshot.status.is_terminal)
+        stream_run = getattr(self.client, "stream_run", None)
+        if stream_run is None:
+            # Test fakes may only implement stream_run_with_fallback.
+            return bool(self.snapshot.status.is_terminal)
+        last_event_id = self.snapshot.last_event_id
+        logger.info(
+            "cursor.stream_resume_try agent=%s run=%s last_event_id=%s "
+            "has_trace=%s status=%s",
+            agent_id,
+            run_id,
+            last_event_id,
+            self._snapshot_has_traceability(),
+            self.snapshot.status.value,
+        )
+        try:
+            async for event in self._iter_resume_events(
+                stream_run, agent_id, run_id, last_event_id
+            ):
+                if self._stop.is_set():
+                    break
+                stop = await self._apply_stream_event(event)
+                if self._pending_render and self.snapshot and not self.snapshot.status.is_terminal:
+                    self._pending_render = False
+                    await self._emit(terminal=False)
+                if stop:
+                    break
+        except StreamExpiredError as exc:
+            logger.warning(
+                "cursor.stream_resume_expired agent=%s run=%s msg=%r",
+                agent_id,
+                run_id,
+                (exc.user_message or str(exc))[:300],
+            )
+            return bool(self.snapshot and self.snapshot.status.is_terminal)
+        except CursorCloudError as exc:
+            if is_stream_unavailable_exc(exc):
+                logger.warning(
+                    "cursor.stream_resume_unavailable agent=%s run=%s "
+                    "http=%s code=%s msg=%r",
+                    agent_id,
+                    run_id,
+                    getattr(exc, "status", None),
+                    getattr(exc, "code", None),
+                    (exc.user_message or str(exc))[:300],
+                )
+                return bool(self.snapshot and self.snapshot.status.is_terminal)
+            raise
+        except Exception:
+            logger.exception(
+                "cursor.stream_resume_failed agent=%s run=%s", agent_id, run_id
+            )
+            return bool(self.snapshot and self.snapshot.status.is_terminal)
+
+        logger.info(
+            "cursor.stream_resume_end agent=%s run=%s status=%s has_trace=%s",
+            agent_id,
+            run_id,
+            self.snapshot.status.value if self.snapshot else None,
+            self._snapshot_has_traceability(),
+        )
+        return bool(self.snapshot and self.snapshot.status.is_terminal)
+
+    async def _emit_terminal_with_catchup(self, agent_id: str, run_id: str) -> None:
+        """Emit terminal status, with a bounded SSE catch-up when summary is empty.
+
+        Catch-up is best-effort. GET may already have the final answer; never let
+        a hung resume suppress or indefinitely delay that terminal publish.
+        """
+        if self.snapshot is None:
+            return
+        if not self._snapshot_has_traceability():
+            try:
+                await asyncio.wait_for(
+                    self._try_resume_stream(agent_id, run_id),
+                    timeout=CATCHUP_RESUME_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "cursor.stream_catchup_timeout agent=%s run=%s timeout_s=%s",
+                    agent_id,
+                    run_id,
+                    CATCHUP_RESUME_TIMEOUT_S,
+                )
+            except CursorCloudError:
+                # Catchup is best-effort; still publish the final answer.
+                pass
+        self._pending_render = False
+        await self._emit(terminal=True)
+
     async def _follow_until_terminal(self, agent_id: str, run_id: str) -> None:
-        """Poll GET run until the agent finishes after the SSE stream drops."""
+        """Poll GET run until the agent finishes after the SSE stream drops.
+
+        Interleaves SSE resume attempts so follow-up tool/thinking events are not
+        lost when the first stream open races create_run.
+        """
         if self.snapshot is None:
             return
         deadline = time.monotonic() + self.poll_max_s
@@ -384,6 +576,34 @@ class RunTracker:
             self.poll_max_s,
         )
         while not self._stop.is_set() and time.monotonic() < deadline:
+            # Prefer SSE resume: GET alone never carries tool/thinking payloads.
+            try:
+                if await self._try_resume_stream(agent_id, run_id):
+                    # Resume already consumed available SSE; do not open a second
+                    # unbounded stream before publishing the terminal answer.
+                    self._pending_render = False
+                    await self._emit(terminal=True)
+                    return
+            except CursorCloudError as exc:
+                consecutive_failures += 1
+                logger.warning(
+                    "cursor.poll_stream_resume_failed agent=%s run=%s failures=%s "
+                    "http=%s code=%s msg=%r",
+                    agent_id,
+                    run_id,
+                    consecutive_failures,
+                    getattr(exc, "status", None),
+                    getattr(exc, "code", None),
+                    (exc.user_message or str(exc))[:300],
+                )
+                hard = getattr(exc, "status", None) in {401, 403}
+                if hard:
+                    self.snapshot.status = RunStatus.ERROR
+                    self.snapshot.error_message = exc.user_message
+                    self._pending_render = False
+                    await self._emit(terminal=True)
+                    return
+
             try:
                 await self._reconcile_from_api(agent_id, run_id)
                 consecutive_failures = 0
@@ -408,13 +628,13 @@ class RunTracker:
                     return
             if self.snapshot.status.is_terminal:
                 logger.warning(
-                    "cursor.poll_terminal agent=%s run=%s status=%s",
+                    "cursor.poll_terminal agent=%s run=%s status=%s has_trace=%s",
                     agent_id,
                     run_id,
                     self.snapshot.status.value,
+                    self._snapshot_has_traceability(),
                 )
-                self._pending_render = False
-                await self._emit(terminal=True)
+                await self._emit_terminal_with_catchup(agent_id, run_id)
                 return
             self._pending_render = False
             await self._emit(terminal=False)
@@ -445,8 +665,7 @@ class RunTracker:
                     self.snapshot.error_message
                     or "Timed out waiting for run to finish after stream ended."
                 )
-            self._pending_render = False
-            await self._emit(terminal=True)
+            await self._emit_terminal_with_catchup(agent_id, run_id)
 
     async def _emit(self, *, terminal: bool = False) -> None:
         if self.snapshot is None:
@@ -515,6 +734,7 @@ class RunTracker:
         )
         await self._emit(terminal=False)
         coalesce_task = asyncio.create_task(self._coalesce_loop())
+        terminal_emitted = False
         try:
             async for event in self.client.stream_run_with_fallback(
                 agent_id, run_id, last_event_id=last_event_id
@@ -528,17 +748,7 @@ class RunTracker:
                 stream_gone = event.event == "error" and is_stream_unavailable_error(
                     event.data
                 )
-                if event.event == "error":
-                    logger.warning(
-                        "cursor.sse_error agent=%s run=%s stream_gone=%s data=%r",
-                        agent_id,
-                        run_id,
-                        stream_gone,
-                        event.data,
-                    )
-                self.apply_event(self.snapshot, event)
-                await self._log_event(event)
-                await self._notify_activity(event.event)
+                stop = await self._apply_stream_event(event)
 
                 if stream_gone:
                     # Stream ended; GET run may still be RUNNING — keep following.
@@ -556,19 +766,16 @@ class RunTracker:
                             (exc.user_message or str(exc))[:300],
                         )
                     if self.snapshot.status.is_terminal:
-                        self._pending_render = False
-                        await self._emit(terminal=True)
+                        await self._emit_terminal_with_catchup(agent_id, run_id)
+                        terminal_emitted = True
                     else:
                         self._pending_render = False
                         await self._emit(terminal=False)
                         await self._follow_until_terminal(agent_id, run_id)
+                        terminal_emitted = True
                     break
 
-                if self.snapshot.status.is_terminal or event.event in {
-                    "result",
-                    "error",
-                    "done",
-                }:
+                if stop:
                     logger.warning(
                         "cursor.track_sse_terminal agent=%s run=%s event=%s status=%s",
                         agent_id,
@@ -576,13 +783,11 @@ class RunTracker:
                         event.event,
                         self.snapshot.status.value,
                     )
+                    # Healthy SSE path already has events; no catchup needed.
                     self._pending_render = False
                     await self._emit(terminal=True)
-                    if event.event in {"result", "error", "done"} or self.snapshot.status.is_terminal:
-                        if event.event == "done" or self.snapshot.status.is_terminal:
-                            break
-                else:
-                    self._pending_render = True
+                    terminal_emitted = True
+                    break
 
             # Stream ended without a terminal snapshot — poll until finished.
             if (
@@ -597,6 +802,7 @@ class RunTracker:
                     self.snapshot.status.value,
                 )
                 await self._follow_until_terminal(agent_id, run_id)
+                terminal_emitted = True
         except StreamExpiredError as exc:
             logger.warning(
                 "cursor.track_stream_expired agent=%s run=%s msg=%r — will poll",
@@ -607,6 +813,7 @@ class RunTracker:
             # Fallback should have handled; if not, follow via GET run.
             if self.snapshot and not self.snapshot.status.is_terminal:
                 await self._follow_until_terminal(agent_id, run_id)
+                terminal_emitted = True
         except CursorCloudError as exc:
             logger.warning(
                 "cursor.track_cloud_error agent=%s run=%s http=%s code=%s msg=%r",
@@ -621,15 +828,21 @@ class RunTracker:
             if is_stream_unavailable_exc(exc) and self.snapshot:
                 if not self.snapshot.status.is_terminal:
                     await self._follow_until_terminal(agent_id, run_id)
+                    terminal_emitted = True
+                else:
+                    await self._emit_terminal_with_catchup(agent_id, run_id)
+                    terminal_emitted = True
             else:
                 self.snapshot.status = RunStatus.ERROR
                 self.snapshot.error_message = exc.user_message
                 await self._emit(terminal=True)
+                terminal_emitted = True
         except Exception as exc:
             logger.exception("cursor.track_failed agent=%s run=%s", agent_id, run_id)
             self.snapshot.status = RunStatus.ERROR
             self.snapshot.error_message = f"Tracker failed: {exc}"
             await self._emit(terminal=True)
+            terminal_emitted = True
         finally:
             self._stop.set()
             coalesce_task.cancel()
@@ -645,7 +858,11 @@ class RunTracker:
                 getattr(self.snapshot, "degraded", None),
                 (getattr(self.snapshot, "error_message", None) or "")[:200],
             )
-            if self.snapshot and self.snapshot.status.is_terminal:
+            if (
+                not terminal_emitted
+                and self.snapshot
+                and self.snapshot.status.is_terminal
+            ):
                 await self._emit(terminal=True)
         return self.snapshot
 

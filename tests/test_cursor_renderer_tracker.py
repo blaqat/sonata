@@ -1,6 +1,9 @@
+import asyncio
 import pathlib
 import sys
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -19,7 +22,10 @@ from cursor_cloud.status_renderer import (
     initial_queued_message,
     redact_untrusted,
     render_status,
+    tool_family,
 )
+from cursor_cloud.thread_renderer import render_thread_summary
+from cursor_cloud.thread_sink import ThreadActivitySink
 
 
 class TestRenderer(unittest.TestCase):
@@ -488,6 +494,383 @@ class TestTracker(unittest.IsolatedAsyncioTestCase):
         snap = await tracker.track("bc", "r1")
         self.assertEqual(snap.status, RunStatus.FINISHED)
         self.assertIn("from poll after open fail", snap.result_text)
+
+    async def test_mcp_tool_family_from_name_and_args(self):
+        self.assertEqual(tool_family("mcp"), "mcp")
+        self.assertEqual(
+            tool_family("mcp", {"toolName": "search", "serverName": "notion"}),
+            "mcp:search",
+        )
+        self.assertEqual(
+            tool_family("mcp", {"tool_name": "fetch", "server": "plugin-notion"}),
+            "mcp:fetch",
+        )
+        self.assertEqual(
+            tool_family("mcp__plugin-notion-workspace-notion__search"),
+            "mcp:search",
+        )
+        self.assertEqual(tool_family("CallMcpTool", {"name": "notion-search"}), "mcp:notion-search")
+        self.assertEqual(tool_family("read_file"), "read")
+        self.assertEqual(tool_family("run_terminal_cmd"), "shell")
+
+        tracker = RunTracker(None, MemoryStatusSink())
+        snap = RunSnapshot(run_id="r", agent_id="a")
+        tracker.apply_event(
+            snap,
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "m1",
+                    "name": "mcp",
+                    "status": "completed",
+                    "args": {
+                        "toolName": "search",
+                        "serverName": "notion",
+                        "query": "SONA-105 secret-should-not-leak",
+                    },
+                },
+            ),
+        )
+        tracker.apply_event(
+            snap,
+            StreamEvent(
+                "tool_call",
+                {
+                    "callId": "m2",
+                    "name": "mcp",
+                    "status": "completed",
+                    "args": {"toolName": "fetch", "serverName": "notion"},
+                },
+            ),
+        )
+        self.assertEqual(snap.tool_family_counts.get("mcp:search"), 1)
+        self.assertEqual(snap.tool_family_counts.get("mcp:fetch"), 1)
+        summary = render_thread_summary(snap)
+        self.assertIn("`mcp:search` ×1", summary)
+        self.assertIn("`mcp:fetch` ×1", summary)
+        self.assertNotIn("secret-should-not-leak", snap.tools[0].summary)
+        self.assertIn("tool=search", snap.tools[0].summary)
+
+    async def test_followup_stream_race_resume_recovers_tools(self):
+        """Follow-up: first SSE unavailable, later resume delivers thinking/tools/MCP."""
+
+        class FakeClient:
+            def __init__(self):
+                self.polls = 0
+                self.stream_attempts = 0
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def stream_run(self, agent_id, run_id, *, last_event_id=None):
+                del agent_id, run_id, last_event_id
+                self.stream_attempts += 1
+                if self.stream_attempts < 2:
+                    from cursor_cloud.errors import AgentRunError
+
+                    raise AgentRunError(
+                        "Run stream is no longer available",
+                        code="stream_unavailable",
+                    )
+                yield StreamEvent("status", {"runId": "r2", "status": "RUNNING"}, id="1")
+                yield StreamEvent("thinking", {"text": "checking notion"}, id="2")
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "t1",
+                        "name": "mcp",
+                        "status": "completed",
+                        "args": {"toolName": "search", "serverName": "notion"},
+                    },
+                    id="3",
+                )
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "t2",
+                        "name": "grep",
+                        "status": "completed",
+                        "args": {"pattern": "x"},
+                    },
+                    id="4",
+                )
+                yield StreamEvent(
+                    "result",
+                    {
+                        "runId": "r2",
+                        "status": "FINISHED",
+                        "text": "follow-up answer",
+                        "durationMs": 50,
+                    },
+                    id="5",
+                )
+                yield StreamEvent("done", {}, id="6")
+
+            async def get_run(self, agent_id, run_id):
+                self.polls += 1
+                if self.stream_attempts < 2:
+                    return RunRecord(
+                        id=run_id,
+                        agent_id=agent_id,
+                        status=RunStatus.RUNNING,
+                    )
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="follow-up answer",
+                    duration_ms=50,
+                )
+
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        sink = ThreadActivitySink(channel, activity, edit_interval_ms=0)
+        tracker = RunTracker(
+            FakeClient(),
+            sink,
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        snap = await tracker.track("bc", "r2", initial_status=RunStatus.CREATING)
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertEqual(snap.tool_family_counts.get("mcp:search"), 1)
+        self.assertEqual(snap.tool_family_counts.get("search"), 1)
+        self.assertIsNotNone(snap.thinking_seconds)
+        edited = (
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0]
+        )
+        self.assertIn("Thought for", edited)
+        self.assertIn("`mcp:search` ×1", edited)
+        self.assertIn("🔍 `search` ×1", edited)
+        self.assertEqual(channel.send.await_args.args[0], "follow-up answer")
+        self.assertEqual(channel.send.await_count, 1)
+
+    async def test_get_finished_catchup_recovers_tools_once(self):
+        """GET can finish first; bounded catch-up still recovers tool/thinking SSE."""
+
+        class FakeClient:
+            def __init__(self):
+                self.polls = 0
+                self.stream_attempts = 0
+                self.resume_last_event_ids: list[str | None] = []
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def stream_run(self, agent_id, run_id, *, last_event_id=None):
+                del agent_id, run_id
+                self.stream_attempts += 1
+                self.resume_last_event_ids.append(last_event_id)
+                if self.polls < 2:
+                    from cursor_cloud.errors import AgentRunError
+
+                    raise AgentRunError(
+                        "Run stream is no longer available",
+                        code="stream_unavailable",
+                    )
+                yield StreamEvent("thinking", {"text": "catch up"}, id="10")
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "c1",
+                        "name": "mcp",
+                        "status": "completed",
+                        "args": {"toolName": "fetch", "serverName": "notion"},
+                    },
+                    id="11",
+                )
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "c1",
+                        "name": "mcp",
+                        "status": "completed",
+                        "args": {"toolName": "fetch", "serverName": "notion"},
+                    },
+                    id="11",
+                )
+                yield StreamEvent(
+                    "result",
+                    {
+                        "runId": "r2",
+                        "status": "FINISHED",
+                        "text": "caught up",
+                    },
+                    id="12",
+                )
+                yield StreamEvent("done", {}, id="13")
+
+            async def get_run(self, agent_id, run_id):
+                self.polls += 1
+                if self.polls < 2:
+                    return RunRecord(
+                        id=run_id,
+                        agent_id=agent_id,
+                        status=RunStatus.RUNNING,
+                    )
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="caught up",
+                )
+
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        client = FakeClient()
+        tracker = RunTracker(
+            client,
+            ThreadActivitySink(channel, activity, edit_interval_ms=0),
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        snap = await tracker.track("bc", "r2")
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertEqual(snap.tool_family_counts.get("mcp:fetch"), 1)
+        self.assertEqual(channel.send.await_count, 1)
+        self.assertEqual(channel.send.await_args.args[0], "caught up")
+        edited = (
+            activity.edit.await_args.kwargs.get("content")
+            or activity.edit.await_args.args[0]
+        )
+        self.assertIn("`mcp:fetch` ×1", edited)
+        self.assertIn("Thought for", edited)
+
+    async def test_catchup_timeout_still_emits_terminal_answer(self):
+        """Hung SSE catch-up must not suppress the already-known final answer."""
+        import cursor_cloud.run_tracker as run_tracker_mod
+
+        class FakeClient:
+            def __init__(self):
+                self.polls = 0
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def stream_run(self, *a, **k):
+                await asyncio.sleep(30)
+                if False:  # pragma: no cover - async generator
+                    yield None
+
+            async def get_run(self, agent_id, run_id):
+                self.polls += 1
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.FINISHED,
+                    result="answer without tools",
+                )
+
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        with patch.object(run_tracker_mod, "CATCHUP_RESUME_TIMEOUT_S", 0.05):
+            tracker = RunTracker(
+                FakeClient(),
+                ThreadActivitySink(channel, activity, edit_interval_ms=0),
+                edit_interval_ms=10_000,
+                poll_interval_s=0.01,
+                poll_max_s=2.0,
+            )
+            snap = await tracker.track("bc", "r2")
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertEqual(channel.send.await_count, 1)
+        self.assertEqual(channel.send.await_args.args[0], "answer without tools")
+
+    async def test_resume_retries_without_invalid_last_event_id(self):
+        from cursor_cloud.errors import ValidationError
+
+        class FakeClient:
+            def __init__(self):
+                self.calls: list[str | None] = []
+
+            async def stream_run_with_fallback(self, *a, **k):
+                yield StreamEvent("status", {"runId": "r1", "status": "RUNNING"}, id="stale")
+                yield StreamEvent(
+                    "error",
+                    {
+                        "code": "stream_unavailable",
+                        "message": "Run stream is no longer available",
+                    },
+                )
+
+            async def stream_run(self, agent_id, run_id, *, last_event_id=None):
+                del agent_id, run_id
+                self.calls.append(last_event_id)
+                if last_event_id == "stale":
+                    raise ValidationError(
+                        "invalid Last-Event-ID",
+                        code="invalid_last_event",
+                    )
+                yield StreamEvent("thinking", {"text": "ok"}, id="1")
+                yield StreamEvent(
+                    "tool_call",
+                    {
+                        "callId": "t1",
+                        "name": "Read",
+                        "status": "completed",
+                        "args": {"path": "a.py"},
+                    },
+                    id="2",
+                )
+                yield StreamEvent(
+                    "result",
+                    {"runId": "r1", "status": "FINISHED", "text": "ok"},
+                    id="3",
+                )
+                yield StreamEvent("done", {}, id="4")
+
+            async def get_run(self, agent_id, run_id):
+                return RunRecord(
+                    id=run_id,
+                    agent_id=agent_id,
+                    status=RunStatus.RUNNING,
+                )
+
+        channel = MagicMock()
+        channel.send = AsyncMock(return_value=SimpleNamespace(id=2))
+        activity = MagicMock()
+        activity.edit = AsyncMock()
+        client = FakeClient()
+        tracker = RunTracker(
+            client,
+            ThreadActivitySink(channel, activity, edit_interval_ms=0),
+            edit_interval_ms=10_000,
+            poll_interval_s=0.01,
+            poll_max_s=2.0,
+        )
+        snap = await tracker.track("bc", "r1")
+        self.assertEqual(snap.status, RunStatus.FINISHED)
+        self.assertEqual(snap.tool_family_counts.get("read"), 1)
+        self.assertIn("stale", client.calls)
+        self.assertIn(None, client.calls)
+        self.assertEqual(channel.send.await_args.args[0], "ok")
 
 
 class TestRunLog(unittest.IsolatedAsyncioTestCase):

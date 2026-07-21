@@ -27,15 +27,95 @@ _TOOL_FAMILY_ALIASES: dict[str, str] = {
     "write": "write",
     "StrReplace": "edit",
     "search_replace": "edit",
+    "read_file": "read",
+    "run_terminal_cmd": "shell",
 }
 
+# Cursor SSE uses public name ``mcp``; identity often lives in args.
+# Prefer explicit MCP identity keys; keep a short fallback list for CallMcpTool.
+_MCP_TOOL_NAME_KEYS = (
+    "toolName",
+    "tool_name",
+    "providerToolName",
+    "mcpToolName",
+    "name",
+)
+_MCP_SERVER_NAME_KEYS = (
+    "serverName",
+    "server_name",
+    "mcpServerName",
+    "server",
+)
 
-def tool_family(name: str) -> str:
+
+def _slug_tool_token(value: str) -> str:
+    text = redact_untrusted(str(value or "")).strip().lower()
+    text = re.sub(r"[^a-z0-9:_+-]+", "-", text)
+    return text.strip("-_:")[:48]
+
+
+def _mcp_tool_identity(args: Any) -> tuple[str | None, str | None]:
+    """Return (server, tool) labels from an MCP tool_call args object."""
+    if not isinstance(args, dict):
+        return None, None
+    tool: str | None = None
+    server: str | None = None
+    for key in _MCP_TOOL_NAME_KEYS:
+        raw = args.get(key)
+        if isinstance(raw, str) and raw.strip():
+            tool = raw.strip()
+            break
+        if isinstance(raw, dict):
+            for nested_key in ("name", "toolName", "tool_name"):
+                nested = raw.get(nested_key)
+                if isinstance(nested, str) and nested.strip():
+                    tool = nested.strip()
+                    break
+            if tool:
+                break
+    for key in _MCP_SERVER_NAME_KEYS:
+        raw = args.get(key)
+        if isinstance(raw, str) and raw.strip():
+            server = raw.strip()
+            break
+    return server, tool
+
+
+def tool_family(name: str, args: Any = None) -> str:
+    """Map a tool name (+ optional args) to a coalesced summary family.
+
+    MCP tool calls often arrive as ``name="mcp"`` with the real tool in args, or
+    as ``mcp__provider__tool``. Both must count under an ``mcp…`` family rather
+    than being dropped or collapsed into an opaque token.
+    """
     text = str(name or "tool").strip()
     if not text:
         return "tool"
     if text in _TOOL_FAMILY_ALIASES:
         return _TOOL_FAMILY_ALIASES[text]
+
+    lower = text.lower()
+    if lower.startswith("mcp__"):
+        parts = [p for p in text.split("__") if p]
+        if len(parts) >= 3:
+            tool = _slug_tool_token(parts[-1])
+            if tool:
+                return f"mcp:{tool}"
+        return "mcp"
+    if lower in {"mcp", "callmcptool"} or lower.startswith("mcp:"):
+        server, tool = _mcp_tool_identity(args)
+        tool_slug = _slug_tool_token(tool or "")
+        if tool_slug:
+            # Prefer tool identity (search/fetch); server is often a long plugin id.
+            return f"mcp:{tool_slug}"
+        server_slug = _slug_tool_token(server or "")
+        if server_slug:
+            return f"mcp:{server_slug}"
+        if lower.startswith("mcp:") and len(lower) > 4:
+            slug = _slug_tool_token(lower[4:])
+            return f"mcp:{slug}" if slug else "mcp"
+        return "mcp"
+
     base = text.split("_")[0].lower()
     return _TOOL_FAMILY_ALIASES.get(base, base or "tool")
 
@@ -194,15 +274,23 @@ def initial_queued_message(*, run_hint: str | None = None) -> str:
 
 def safe_tool_summary(name: str, args: Any, result: Any, *, truncated: dict | None = None) -> str:
     """Never render raw tool args/results that might contain secrets."""
+    del result  # never render raw tool results
     parts = [name]
     if truncated:
         if truncated.get("args"):
             parts.append("args=truncated")
         if truncated.get("result"):
             parts.append("result=truncated")
-    # Only include shallow keys, not values.
+    # Only include shallow keys, not values — except MCP tool identity labels.
     if isinstance(args, dict):
         keys = sorted(str(k) for k in args.keys())[:6]
         if keys:
             parts.append("keys=" + ",".join(keys))
+        lower = str(name or "").strip().lower()
+        if lower in {"mcp", "callmcptool"} or lower.startswith("mcp"):
+            server, tool = _mcp_tool_identity(args)
+            if tool:
+                parts.append(f"tool={_slug_tool_token(tool)}")
+            if server:
+                parts.append(f"server={_slug_tool_token(server)}")
     return redact_untrusted(" ".join(parts))[:160]
