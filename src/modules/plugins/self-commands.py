@@ -85,6 +85,173 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
+def normalize_url(target: str) -> str:
+    """Normalize and validate a URL for remote fetches."""
+    target = target.strip()
+    if not target:
+        raise ValueError("URL cannot be empty")
+
+    parsed = parse.urlsplit(target)
+    if not parsed.scheme:
+        target = f"https://{target}"
+        parsed = parse.urlsplit(target)
+
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("URL must use http or https")
+
+    if not parsed.netloc:
+        raise ValueError("URL is missing a host")
+
+    return parse.urlunsplit(parsed)
+
+
+def _extract_markdown_title(markdown: str) -> Optional[str]:
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or None
+    return None
+
+
+def _truncate_markdown(markdown: str, limit: int) -> tuple[str, bool]:
+    if len(markdown) <= limit:
+        return markdown, False
+    trimmed = markdown[:limit].rstrip()
+    return trimmed + "\n\n...[truncated]", True
+
+
+def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
+    """
+    Fetch a webpage through Cloudflare Browser Rendering /markdown.
+    Returns structured data for self-command and agent usage.
+    """
+    target = " ".join(target_parts).strip()
+    if not target:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ URL cannot be empty",
+        }
+
+    try:
+        normalized_url = normalize_url(target)
+    except ValueError as exc:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Invalid URL: {exc}",
+        }
+
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_API_TOKEN
+    if not account_id or not api_token:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Cloudflare Browser Rendering is not configured",
+        }
+
+    endpoint = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{account_id}/browser-rendering/markdown"
+    )
+    config = MANAGER.MANAGER.config.get("read", {})
+    max_chars = config.get("max_chars", 8000)
+    timeout = config.get("timeout", 45)
+    goto_timeout = config.get("goto_timeout_ms", 30000)
+    body = {
+        "url": normalized_url,
+        "gotoOptions": {
+            "timeout": goto_timeout,
+            "waitUntil": config.get("wait_until", "networkidle2"),
+        },
+    }
+
+    try:
+        response = requests.post(
+            endpoint,
+            headers={
+                "Authorization": f"Bearer {api_token}",
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=timeout,
+        )
+    except requests.Timeout:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Cloudflare markdown extraction timed out",
+        }
+    except requests.RequestException as exc:
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Cloudflare request failed: {str(exc)}",
+        }
+
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+
+    if not response.ok:
+        error_bits = []
+        if isinstance(payload, dict):
+            for err in payload.get("errors", []):
+                msg = err.get("message")
+                if msg:
+                    error_bits.append(msg)
+        detail = "; ".join(error_bits) if error_bits else response.text.strip()
+        detail = detail or f"HTTP {response.status_code}"
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": f"❌ Cloudflare markdown extraction failed: {detail}",
+        }
+
+    if not isinstance(payload, dict) or not payload.get("success"):
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "error",
+            "message": "❌ Cloudflare markdown extraction returned an invalid response",
+        }
+
+    markdown = payload.get("result", "")
+    if not isinstance(markdown, str) or not markdown.strip():
+        return {
+            "result": [],
+            "attempts": [],
+            "status": "not_found",
+            "message": "❌ No readable page content returned",
+        }
+
+    content, truncated = _truncate_markdown(markdown.strip(), max_chars)
+    title = _extract_markdown_title(markdown) or parse.urlsplit(normalized_url).netloc
+
+    return {
+        "result": [
+            {
+                "backend": "cloudflare_markdown",
+                "url": normalized_url,
+                "title": title,
+                "content": content,
+                "truncated": truncated,
+            }
+        ],
+        "attempts": [],
+        "status": "found",
+        "message": f"📄 Read page context for {normalized_url}",
+    }
+
+
 def perplexity_search(*search_term: str) -> Dict[str, Any]:
     """
     Perform a web search using Perplexity AI.
@@ -417,6 +584,16 @@ def imagine(*prompt):
         "title": prompt,
         "link": response,
     }
+
+
+@MANAGER.command(
+    "read",
+    "$read <url>",
+    "Read a URL to get context for links users post in chat.",
+    "Use this when someone posts a link and you need the page context not just search results. Return the extracted content details and use the URL exactly.",
+)
+def read_url(*target: str) -> Dict[str, Any]:
+    return cloudflare_markdown_read(*target)
 
 
 @MANAGER.command(

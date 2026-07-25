@@ -162,6 +162,19 @@ class TerminalConsole:
         pending.future.set_result(value)
         return True, "Prompt input accepted."
 
+    async def cancel_prompt(
+        self, session_id: str, prompt_id: str | None = None
+    ) -> tuple[bool, str]:
+        pending = self.pending_prompts.get(session_id)
+        if pending is None:
+            return False, "No prompt is waiting for input."
+        if prompt_id is not None and pending.prompt_id != prompt_id:
+            return False, "No matching prompt is waiting for input."
+        if pending.future.done():
+            return False, "Prompt already resolved."
+        pending.future.set_result("exit")
+        return True, "Prompt exited."
+
     async def request_prompt(
         self,
         session_id: str,
@@ -525,7 +538,33 @@ class TermConsoleServer:
             return (
                 200 if ok else 409,
                 {"Content-Type": "application/json"},
-                json.dumps({"ok": ok, "message": message}).encode(),
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "message": message,
+                        "prompt_active": self.console.pending_prompts.get(session_id)
+                        is not None,
+                    }
+                ).encode(),
+            )
+
+        if method == "POST" and route == "/api/prompt/exit":
+            payload = _json_body(request)
+            raw_prompt_id = payload.get("prompt_id")
+            prompt_id = None if raw_prompt_id is None else str(raw_prompt_id)
+            ok, message = await self.console.cancel_prompt(session_id, prompt_id)
+            self._log(f"prompt-exit {session_id[:6]} -> {'ok' if ok else 'blocked'}")
+            return (
+                200 if ok else 409,
+                {"Content-Type": "application/json"},
+                json.dumps(
+                    {
+                        "ok": ok,
+                        "message": message,
+                        "prompt_active": self.console.pending_prompts.get(session_id)
+                        is not None,
+                    }
+                ).encode(),
             )
 
         return 404, {"Content-Type": "text/plain; charset=utf-8"}, b"Not Found"
@@ -842,7 +881,7 @@ def _html_page(base_path: str) -> str:
     }
     .composer {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr auto auto;
       gap: 12px;
       align-items: end;
     }
@@ -916,6 +955,7 @@ def _html_page(base_path: str) -> str:
         <div id="consoleCard" class="hidden stack">
           <form id="commandForm" class="composer">
             <textarea id="commandInput" placeholder="Send a term-command..."></textarea>
+            <button class="toolbtn hidden" id="exitPromptButton" type="button">Exit</button>
             <button class="sendbtn" id="runButton" type="submit">Send</button>
           </form>
           <div id="log"></div>
@@ -949,7 +989,9 @@ def _html_page(base_path: str) -> str:
     const clearBtn = document.getElementById('clearBtn');
     const reverseToggle = document.getElementById('reverseToggle');
     const runButton = document.getElementById('runButton');
+    const exitPromptButton = document.getElementById('exitPromptButton');
     let eventSource = null;
+    let reconnectTimer = null;
     const blankState = () => ({ authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] });
     let state = blankState();
 
@@ -961,7 +1003,9 @@ def _html_page(base_path: str) -> str:
 
     function resetClientState(message='') {
       if (eventSource) eventSource.close();
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       eventSource = null;
+      reconnectTimer = null;
       state = blankState();
       logEl.innerHTML = '';
       commandInput.value = '';
@@ -976,6 +1020,13 @@ def _html_page(base_path: str) -> str:
         return;
       }
       appendLine(`[status] ${text}`, 'meta');
+    }
+
+    function clearPromptState(message='Prompt exited.') {
+      state.pending_prompt = null;
+      delete commandInput.dataset.promptId;
+      syncUi();
+      if (message) setMessage(message);
     }
 
     function escapeHtml(value) {
@@ -1150,6 +1201,8 @@ def _html_page(base_path: str) -> str:
       const blocked = !signedIn || !state.is_controller || (state.busy && !state.pending_prompt);
       runButton.disabled = blocked;
       commandInput.disabled = blocked;
+      exitPromptButton.disabled = !signedIn || !state.is_controller || !state.pending_prompt;
+      exitPromptButton.classList.toggle('hidden', !state.pending_prompt);
       takeoverBtn.disabled = !signedIn;
       if (signedIn) setAuthMessage('');
       if (state.pending_prompt) {
@@ -1178,7 +1231,11 @@ def _html_page(base_path: str) -> str:
       });
       let data = {};
       try { data = await response.json(); } catch (_err) {}
-      if (!response.ok) throw new Error(data.message || 'Request failed');
+      if (!response.ok) {
+        const error = new Error(data.message || 'Request failed');
+        error.data = data;
+        throw error;
+      }
       return data;
     }
 
@@ -1190,6 +1247,10 @@ def _html_page(base_path: str) -> str:
     }
 
     function connectEvents() {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
       if (eventSource) eventSource.close();
       eventSource = new EventSource(joinPath('/api/events'), { withCredentials: true });
       eventSource.onmessage = (event) => handleEvent(JSON.parse(event.data), false);
@@ -1197,6 +1258,22 @@ def _html_page(base_path: str) -> str:
         if (eventSource) eventSource.close();
         eventSource = null;
         syncUi();
+        if (state.authenticated && !reconnectTimer) {
+          reconnectTimer = setTimeout(async () => {
+            reconnectTimer = null;
+            try {
+              const data = await api('/api/session', { method: 'GET' });
+              state = { ...state, ...data, authenticated: true };
+              resetLog(state.history || []);
+              connectEvents();
+              syncUi();
+              setMessage('Reconnected.');
+            } catch (_err) {
+              syncUi();
+              connectEvents();
+            }
+          }, 1000);
+        }
       };
     }
 
@@ -1299,6 +1376,10 @@ def _html_page(base_path: str) -> str:
         }
         setMessage(result.message || (state.pending_prompt ? 'Prompt submitted.' : 'Command sent.'));
       } catch (err) {
+        if (state.pending_prompt && err.data && err.data.prompt_active === false) {
+          clearPromptState('Prompt expired. Your text is still here; send it again if you still want to run it.');
+          return;
+        }
         setMessage(err.message, 'error');
       }
     });
@@ -1307,6 +1388,24 @@ def _html_page(base_path: str) -> str:
       if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         commandForm.requestSubmit();
+      }
+    });
+
+    exitPromptButton.addEventListener('click', async () => {
+      if (!state.pending_prompt) return;
+      try {
+        await ensureControl();
+        const result = await api('/api/prompt/exit', {
+          method: 'POST',
+          body: JSON.stringify({ prompt_id: state.pending_prompt.prompt_id }),
+        });
+        clearPromptState(result.message || 'Prompt exited.');
+      } catch (err) {
+        if (err.data && err.data.prompt_active === false) {
+          clearPromptState('Prompt already expired.');
+          return;
+        }
+        setMessage(err.message, 'error');
       }
     });
 
