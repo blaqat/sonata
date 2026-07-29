@@ -20,7 +20,6 @@ from nuvem_de_som import SoundCloud as sc
 from youtubesearchpython import VideosSearch
 
 from modules.AI_manager import AI_Manager
-from modules.activation_trace import get_active_activation_trace
 from modules.utils import (
     async_cprint as cprint,
 )
@@ -54,10 +53,6 @@ Hooks    -----------------------------------------------------------------------
 @MANAGER.effect_post
 def request_chat(_, message, **config):
     """Check if the message contains a command and execute it"""
-    trace = get_active_activation_trace()
-    if trace:
-        trace.stage("ai.response.command_scan", response_length=len(str(message)))
-
     # Regular expression to find commands prefixed with $
     command_pattern = re.compile(r"\$(\w+)\s*(.*)")
 
@@ -65,21 +60,15 @@ def request_chat(_, message, **config):
     if match:
         command = match.group(1)
         args = match.group(2).split()
-        if trace:
-            trace.stage("self_command.detected", command=command, args=args)
 
         cprint(f"COMMAND {command}", "cyan")
         cprint(f"ARGS {' '.join(args)}", "purple")
 
         # Validate the command
         if not MANAGER.do("command", "validate", command):
-            if trace:
-                trace.stage("self_command.rejected", command=command)
             return message
 
-        if trace:
-            trace.stage("self_command.accepted", command=command)
-        response = CONTEXT.prompt_manager.send(
+        return CONTEXT.prompt_manager.send(
             "SelfCommand",
             config["config"]["history"],
             command,
@@ -87,12 +76,7 @@ def request_chat(_, message, **config):
             AI=config["AI"],
             config=config["config"],
         )
-        if trace:
-            trace.stage("self_command.response.generated", command=command)
-        return response
 
-    if trace:
-        trace.stage("self_command.not_requested")
     return message
 
 
@@ -1149,9 +1133,6 @@ def SelfCommand(history, command, *args):
     command = command.split("\n")[0] if "\n" in command else command
     args = " ".join(args)
     args = args.split("\n")[0].split(" ") if "\n" in args else args.split(" ")
-    trace = get_active_activation_trace()
-    if trace:
-        trace.stage("self_command.execution.started", command=command, args=args)
     # ls = M.do("command", "list")
     cmd_instructions = MANAGER.get("command")[command]["instructions"]
     cmd_instructions = (
@@ -1163,12 +1144,6 @@ def SelfCommand(history, command, *args):
     )
 
     response = str(MANAGER.do("command", "use", command, *args))
-    if trace:
-        trace.stage(
-            "self_command.execution.completed",
-            command=command,
-            output_length=len(response),
-        )
     cprint("COMMAND OUTPUT " + response, "purple")
     command = "$" + command + " " + " ".join(args) + ""
 
