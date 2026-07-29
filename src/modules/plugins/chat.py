@@ -32,7 +32,13 @@ import discord
 from discord.ext import commands
 
 from modules.AI_manager import AI_Manager
-from modules.activation_trace import ActivationTrace, use_activation_trace
+from modules.activation_trace import (
+    ActivationTrace,
+    chat_wake_word_pattern,
+    find_chat_wake_word,
+    get_active_activation_trace,
+    use_activation_trace,
+)
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
     ChannelPolicies,
@@ -218,6 +224,28 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     await self.process_commands(message)
 
 
+async def _process_chat_activation(
+    bot: commands.Bot,
+    message: discord.Message,
+    bot_whitelist,
+    trace: ActivationTrace | None,
+) -> None:
+    if trace is None:
+        await bot.process_commands(message, bot_whitelist=bot_whitelist)
+        return
+
+    trace.stage("discord.process_commands.started", content=message.content)
+    try:
+        with use_activation_trace(trace):
+            await bot.process_commands(message, bot_whitelist=bot_whitelist)
+    except Exception as error:
+        trace.finish("failed", error=f"{type(error).__name__}: {error}")
+        raise
+    else:
+        trace.stage("discord.process_commands.completed")
+        trace.finish("completed")
+
+
 async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
     """Handle messages sent in guild channels; enforces chat policy then command routing."""
     AI = Sonata.config.get("auto")
@@ -253,6 +281,27 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
+    sonata_exp = chat_wake_word_pattern(self.user.id)
+    matched_wake_word = find_chat_wake_word(message.content, self.user.id)
+    called_sonata = matched_wake_word is not None
+    activation_trace = None
+    if called_sonata:
+        activation_trace = ActivationTrace(
+            source="guild_chat",
+            emit=lambda log_message: cprint(log_message, "yellow"),
+        )
+        activation_trace.stage(
+            "chat.message.received",
+            guild_id=message.guild.id,
+            channel_id=message.channel.id,
+            user_id=message.author.id,
+        )
+        activation_trace.stage(
+            "chat.wake_word.matched",
+            matched_text=matched_wake_word,
+            aliases=("sonata", "sona", "ソナ", "ソナタ", "@mention"),
+        )
+
     policy_manager = Sonata.chat.policy_manager
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
@@ -263,6 +312,8 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         user_id=message.author.id,
         role_ids=role_ids,
     )
+    if activation_trace:
+        activation_trace.stage("chat.policy.can_speak.checked", allowed=can_speak)
     if not can_speak:
         if is_command:
             await message.reply(
@@ -270,6 +321,8 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
                 mention_author=False,
             )
         cprint(f"Sona blocked by channel policy in {message.channel.name}", "yellow")
+        if activation_trace:
+            activation_trace.finish("blocked", reason="channel policy disabled Sonata")
         return
 
     if is_command and not policy_manager.is_command_allowed(
@@ -287,6 +340,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             f"Blocked command '{command_name}' by channel policy in {message.channel.name}",
             "yellow",
         )
+        if activation_trace:
+            activation_trace.finish(
+                "blocked",
+                reason=f"command '{command_name}' denied by channel policy",
+            )
         return
 
     respond_all = policy_manager.should_respond_all(
@@ -330,13 +388,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     message_reference_id = (
         message_reference is not None and message_reference.author.id or None
     )
-
-    sonata_names = {"sonata", "sona", "ソナ", "ソナタ"}
-    sonata_exp = re.compile(
-        f"<@{self.user.id}>|" + "|".join([f"\\b{name}\\b" for name in sonata_names]),
-        re.IGNORECASE,
-    )
-    called_sonata = bool(sonata_exp.search(message.content))
 
     if USE_REPLY_REF and message_reference is not None:
         message_reference = await get_ref_chain(message_reference, include_message=True)
@@ -416,13 +467,25 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         Sonata.chat.send(
             message.channel.id, "User", get_full_name(message), message.content
         )
+        if activation_trace:
+            activation_trace.stage("chat.user_message.stored")
 
-    if not (
+    should_respond = (
         respond_all
         or is_command
         or message_reference_id == self.user.id
         or called_sonata
-    ):
+    )
+    if activation_trace:
+        activation_trace.stage(
+            "chat.response_gate.checked",
+            allowed=should_respond,
+            called_sonata=called_sonata,
+            respond_all=respond_all,
+            is_command=is_command,
+            reply_to_sonata=message_reference_id == self.user.id,
+        )
+    if not should_respond:
         return
 
     # Pass referenced messages to AI
@@ -447,15 +510,35 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             else:
                 message.content += "0"
             message.content = f"${AI} " + message.content
-            await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
+            if activation_trace:
+                activation_trace.stage(
+                    "chat.reply.rewritten_as_command",
+                    ai_command=AI,
+                )
+            await _process_chat_activation(
+                self, message, BOT_WHITELIST, activation_trace
+            )
             return
         #
         # await self.process_commands(message)
         # return
 
     if VALID_USER and (sonata_exp.search(message.content) or respond_all):
+        original_content = message.content
         message.content = sonata_exp.sub("", message.content).strip()
+        if activation_trace:
+            activation_trace.stage(
+                "chat.wake_word.stripped",
+                before=original_content,
+                after=message.content,
+            )
         message.content = f"${AI} {message.content}"
+        if activation_trace:
+            activation_trace.stage(
+                "chat.message.rewritten_as_command",
+                ai_command=AI,
+                content=message.content,
+            )
         if _name in RESPONSES:
             chance, response = RESPONSES.get(
                 message.author.name, RESPONSES.get(message.author.nick)
@@ -467,7 +550,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         else:
             message.content += "0"
 
-    await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
+    await _process_chat_activation(self, message, BOT_WHITELIST, activation_trace)
 
 
 @MANAGER.effect("chat", "set", prepend=True)
@@ -666,6 +749,9 @@ def chat(sona: AI_Manager):
             new_c["images"] = ((c if c else {}).get("images") or {}).get(id, None)
             new_c.update(config)
             try:
+                activation_trace = (
+                    activation_trace or get_active_activation_trace()
+                )
                 if activation_trace:
                     activation_trace.stage(
                         "chat.request.prepared",

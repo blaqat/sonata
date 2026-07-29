@@ -5,17 +5,25 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+import re
 from typing import Callable, Iterator
 from uuid import uuid4
 
 
 TraceEmitter = Callable[[str], None]
+CHAT_WAKE_NAMES = ("sonata", "sona", "ソナ", "ソナタ")
 
 
-def matches_voice_wake_word(transcript: str, wake_word: str = "sonata") -> bool:
-    """Mirror the voice listener's case-insensitive substring match."""
+def chat_wake_word_pattern(bot_user_id: int) -> re.Pattern[str]:
+    names = "|".join(rf"\b{re.escape(name)}\b" for name in CHAT_WAKE_NAMES)
+    return re.compile(rf"<@{bot_user_id}>|{names}", re.IGNORECASE)
 
-    return wake_word.casefold() in transcript.casefold()
+
+def find_chat_wake_word(message: str, bot_user_id: int) -> str | None:
+    """Return the exact mention or bounded Sonata alias that activated chat."""
+
+    match = chat_wake_word_pattern(bot_user_id).search(message)
+    return match.group(0) if match else None
 
 
 def _format_value(value: object) -> str:
