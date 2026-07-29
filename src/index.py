@@ -36,6 +36,7 @@ from xai_sdk.chat import system as xai_system
 from xai_sdk.chat import user as xai_user
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
+from modules.activation_trace import ActivationTrace, matches_voice_wake_word
 from modules.channel_policies import (
     parse_bool,
     format_channel_policy,
@@ -685,6 +686,7 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
         except AttributeError as _:
             return None
 
+    trace = None
     try:
         for user in recorded_users:
             name = get_name(user)
@@ -698,25 +700,50 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
             data.name = "audio.mp3"
 
             # if audio is too short, skip
-            if len(data.read()) <= 60000:
+            audio_size = len(data.read())
+            if audio_size <= 60000:
                 continue
 
+            trace = ActivationTrace(
+                source="voice",
+                emit=lambda message: cprint(message, "yellow"),
+            )
+            trace.stage(
+                "voice.audio.accepted",
+                user=name,
+                channel_id=sink.vc.channel.id,
+                bytes=audio_size,
+            )
             cprint(f"Transcribing audio from {name}...", "blue")
+            trace.stage(
+                "whisper.request.dispatched",
+                model="whisper-1",
+                prompt="Your name is Sonata",
+            )
 
             words = openai.audio.transcriptions.create(
                 file=data,
                 model="whisper-1",
                 prompt="Your name is Sonata",
             ).text.lower()
+            trace.stage("whisper.transcript.received", transcript=words)
 
             id = sink.vc.channel.id
 
             #  def send( kelf, id, message_type, author, message, replying_to=None,):
             Sonata.chat.send(id, "User", name, words)
+            trace.stage("chat.user_message.stored")
 
             command = None
-            if "sonata" in words:
+            wake_word_matched = matches_voice_wake_word(words)
+            trace.stage(
+                "wake_word.checked",
+                rule="'sonata' substring",
+                matched=wake_word_matched,
+            )
+            if wake_word_matched:
                 command = words
+                trace.stage("wake_word.matched", wake_word="sonata")
             # if "sona" in words or "?" in words:
             #     command = words
 
@@ -729,6 +756,7 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
                     AI="OpenAI",
                     # AI=Sonata.config.get("AI", "Gemini"),
                     instructions=PROMPT_MANAGER.get("VoiceInstructions"),
+                    activation_trace=trace,
                     # model="gpt-4o",
                 )
                 # if response starts with 'sonata' remove it
@@ -736,12 +764,23 @@ async def vc_callback(sink: discord.sinks, channel: discord.TextChannel, *args):
                     r = r.split("sonata")[1].strip()
                 r = name + ": " + r
                 # Wait for speaking mutex to be released
+                trace.stage("voice.tts.waiting")
                 await speaking_mutex.acquire()
+                trace.stage("voice.tts.started", response_length=len(r))
                 await say(sink.vc, r)
                 speaking_mutex.release()
+                trace.stage("voice.tts.completed")
+                trace.finish("completed")
+            else:
+                trace.finish(
+                    "ignored",
+                    reason="transcript did not contain the 'sonata' substring",
+                )
 
     except Exception as e:
         is_ready = True
+        if trace:
+            trace.finish("failed", error=f"{type(e).__name__}: {e}")
         cprint(e, "red")
 
     await start_recording(sink.vc, channel)

@@ -32,6 +32,7 @@ import discord
 from discord.ext import commands
 
 from modules.AI_manager import AI_Manager
+from modules.activation_trace import ActivationTrace, use_activation_trace
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
     ChannelPolicies,
@@ -646,6 +647,7 @@ def chat(sona: AI_Manager):
             AI=sona.config.get("AI"),
             error_prompt=None,
             save=True,
+            activation_trace: ActivationTrace | None = None,
             **config,
         ):
             """Request a response from the AI for a given message and chat ID."""
@@ -664,33 +666,50 @@ def chat(sona: AI_Manager):
             new_c["images"] = ((c if c else {}).get("images") or {}).get(id, None)
             new_c.update(config)
             try:
-                if "using_assistant" not in new_c and prompt_manager.exists("History"):
-                    response = sona.do(
-                        "chat",
-                        "request",
-                        prompt_manager.prompts["History"](chat_history)
-                        + prompt_manager.prompts["Message"](
-                            user_name, message, replying_to
+                if activation_trace:
+                    activation_trace.stage(
+                        "chat.request.prepared",
+                        channel_id=id,
+                        user=user_name,
+                        ai=AI,
+                    )
+                with use_activation_trace(activation_trace):
+                    if activation_trace:
+                        activation_trace.stage("ai.request.dispatched")
+                    if "using_assistant" not in new_c and prompt_manager.exists(
+                        "History"
+                    ):
+                        response = sona.do(
+                            "chat",
+                            "request",
+                            prompt_manager.prompts["History"](chat_history)
+                            + prompt_manager.prompts["Message"](
+                                user_name, message, replying_to
+                            )
+                            + "\nJust state your message here: ",
+                            *args,
+                            AI=AI,
+                            config=new_c,
                         )
-                        + "\nJust state your message here: ",
-                        *args,
-                        AI=AI,
-                        config=new_c,
-                    )
-                else:
-                    response = sona.do(
-                        "chat",
-                        "request",
-                        prompt_manager.prompts["MessageAssistant"],
-                        user_name,
-                        message,
-                        *args,
-                        AI=AI,
-                        config=new_c,
-                    )
+                    else:
+                        response = sona.do(
+                            "chat",
+                            "request",
+                            prompt_manager.prompts["MessageAssistant"],
+                            user_name,
+                            message,
+                            *args,
+                            AI=AI,
+                            config=new_c,
+                        )
 
                 if save:
                     self.send(id, "Bot", sona.name, response, replying_to)
+                if activation_trace:
+                    activation_trace.stage(
+                        "chat.response.stored",
+                        response_length=len(str(response)),
+                    )
                 # HACK: This is a hack to get the images from the config to clear
                 # (c.get("images") or {})[id] = None
                 # (sona.config.get().get("images") or {})[id] = None
