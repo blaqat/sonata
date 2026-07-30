@@ -52,7 +52,6 @@ from modules.utils import (
     gif_provider_get_dl_url,
     get_trace,
 )
-import random
 import re
 from zoneinfo import ZoneInfo
 
@@ -65,7 +64,6 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
         "auto": "o",
         "view_replies": True,
         "ignore": [],
-        "response_map": {},  # {userName: (response, random chance)}
         "bot_whitelist": [],
         "censor": True,
     },
@@ -223,7 +221,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     CENSOR = Sonata.config.get("censor", True)
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
-    RESPONSES = Sonata.config.get("response_map", {})
     BOT_WHITELIST = Sonata.config.get("bot_whitelist", [])
     VALID_USER = (
         message.author.bot
@@ -431,20 +428,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         #     message.reference.message_id
         # )
         if message_reference_id == self.user.id:
-            if (
-                message.author.name in RESPONSES
-                or message.author.nick
-                and message.author.nick in RESPONSES
-            ):
-                chance, response = RESPONSES.get(
-                    message.author.name, RESPONSES.get(message.author.nick)
-                )
-                if random.random() < chance:
-                    await message.reply(response, mention_author=False)
-                    Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
-                    message.content += "1"
-            else:
-                message.content += "0"
             message.content = f"${AI} " + message.content
             await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
             return
@@ -455,16 +438,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if VALID_USER and (sonata_exp.search(message.content) or respond_all):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
-        if _name in RESPONSES:
-            chance, response = RESPONSES.get(
-                message.author.name, RESPONSES.get(message.author.nick)
-            )
-            if random.random() < chance:
-                await message.reply(response, mention_author=False)
-                Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
-                message.content += "1"
-        else:
-            message.content += "0"
 
     await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
 
