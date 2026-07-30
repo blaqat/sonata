@@ -1252,11 +1252,6 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
     channel = await get_channel(ctx)
     try:
         message = " ".join(message)
-        if message is None or message == "":
-            message = "0"
-        respond_or_chat = message[-1] == "1"
-        message = message[:-1]
-        # respond_or_chat = False
 
         name = get_full_name(ctx)
         _ref = None
@@ -1278,9 +1273,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             )
             if intercept_reply is not None:
                 r = await intercept_reply(r, Sonata)
-                await ctx_reply(ctx, r, not respond_or_chat)
-            else:
-                await ctx_reply(ctx, r, not respond_or_chat)
+            await ctx_reply(ctx, r)
             Sonata.chat.send(channel.id, "Bot", Sonata.name, r, _ref)
         RESPONSE_FAILURES[(await get_channel(ctx)).id] = 0
     except Exception as e:
