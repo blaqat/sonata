@@ -753,7 +753,7 @@ class AccessController:
     async def consume_grant_for_submit(
         self, grant: RunGrant, envelope: RunRequestEnvelope
     ) -> RunGrant:
-        """Atomically consume a one-run grant before API submit.
+        """Atomically validate a grant before API submit.
 
         Timed grants are not consumed. If API submit fails after one-run
         consumption, callers must surface GrantConsumedError and must not

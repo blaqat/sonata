@@ -805,20 +805,21 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
                     )
                     raise BusyRunError()
 
-            # Consume one-run grants only after busy rejection, under the same
-            # lock as API submit (prevents concurrent duplicate creates).
-            if grant is not None and getattr(grant, "kind", None) == "once" and not getattr(
+            # Revalidate timed grants and consume one-run grants after busy
+            # rejection, immediately before API submit.
+            grant_kind = getattr(grant, "kind", None)
+            if grant is not None and grant_kind in {"once", "timed"} and not getattr(
                 grant, "consumed", False
             ):
                 if envelope is None:
                     raise ValidationError(
-                        "Missing envelope for one-run grant consume",
+                        "Missing envelope for grant validation",
                         user_message=(
-                            "Approval grant could not be consumed safely; please resubmit."
+                            "Approval grant could not be validated safely; please resubmit."
                         ),
                     )
                 grant = await rt.access.consume_grant_for_submit(grant, envelope)
-                grant_consumed = True
+                grant_consumed = grant_kind == "once"
 
             # Defensive: if busy somehow appears after consume, fail-closed.
             if agent_id and not force_new:

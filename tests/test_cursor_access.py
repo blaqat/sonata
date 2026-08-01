@@ -140,6 +140,18 @@ class TestApprovals(unittest.IsolatedAsyncioTestCase):
         decided2 = await ctrl.decide_request(GOD, req2.request_id, mode="timed", minutes=30)
         self.assertEqual(decided2.grant_minutes, 30)
 
+    async def test_timed_grant_revalidated_before_submit(self):
+        ctrl, store = make_controller()
+        env = envelope()
+        req = await ctrl.create_approval_request(env, prompt_preview="p")
+        await ctrl.decide_request(GOD, req.request_id, mode="timed", minutes=30)
+        grant = await store.get_grant(req.grant_id)
+        grant.revoked = True
+        await store.save_grant(grant)
+
+        with self.assertRaises(StaleStateError):
+            await ctrl.consume_grant_for_submit(grant, env)
+
     async def test_expiry_12h(self):
         ctrl, _ = make_controller()
         env = envelope()
