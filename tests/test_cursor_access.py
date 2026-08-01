@@ -158,6 +158,21 @@ class TestApprovals(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(StaleStateError):
             await ctrl.decide_request(GOD, req.request_id, mode="once")
 
+    async def test_request_save_failure_does_not_leave_grant(self):
+        ctrl, store = make_controller()
+        req = await ctrl.create_approval_request(envelope(), prompt_preview="p")
+        original_save_request = store.save_request
+
+        async def fail_approval_save(request):
+            if request.decision == ApprovalDecision.APPROVED_ONCE:
+                raise RuntimeError("request save failed")
+            return await original_save_request(request)
+
+        store.save_request = fail_approval_save
+        with self.assertRaises(RuntimeError):
+            await ctrl.decide_request(GOD, req.request_id, mode="once")
+        self.assertEqual(await store.list_grants(), [])
+
     async def test_submit_failed_after_consume_fail_closed(self):
         ctrl, _ = make_controller()
         env = envelope()

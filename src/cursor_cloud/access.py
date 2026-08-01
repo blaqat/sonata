@@ -578,6 +578,7 @@ class AccessController:
         await self.require_approver(actor_id)
         lock = self.store.lock_for(f"request:{request_id}")
         async with lock:
+            await self.require_approver(actor_id)
             request = await self.store.get_request(request_id)
             if request is None:
                 raise StaleStateError(user_message="Approval request not found.")
@@ -679,13 +680,13 @@ class AccessController:
                     request_id=request.request_id,
                     created_by=str(actor_id),
                 )
-                await self.store.save_grant(grant)
                 request.decision = ApprovalDecision.APPROVED_ONCE
                 request.grant_id = grant.grant_id
                 request.grant_minutes = None
                 request.decided_at = now
                 request.decided_by = str(actor_id)
                 await self.store.save_request(request)
+                await self.store.save_grant(grant)
                 await self.audit(
                     actor_id,
                     "approval_once",
@@ -706,13 +707,13 @@ class AccessController:
                     request_id=request.request_id,
                     created_by=str(actor_id),
                 )
-                await self.store.save_grant(grant)
                 request.decision = ApprovalDecision.APPROVED_TIMED
                 request.grant_id = grant.grant_id
                 request.grant_minutes = mins
                 request.decided_at = now
                 request.decided_by = str(actor_id)
                 await self.store.save_request(request)
+                await self.store.save_grant(grant)
                 await self.audit(
                     actor_id,
                     "approval_timed",

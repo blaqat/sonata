@@ -29,7 +29,7 @@ logger = logging.getLogger("sonata.cursor.client")
 
 def parse_sse_chunk(buffer: str) -> tuple[list[StreamEvent], str]:
     """Parse complete SSE events from a text buffer; return events + remainder."""
-    buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
+    buffer = buffer.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
     events: list[StreamEvent] = []
     parts = buffer.split("\n\n")
     remainder = parts.pop() if parts else ""
@@ -40,23 +40,30 @@ def parse_sse_chunk(buffer: str) -> tuple[list[StreamEvent], str]:
             remainder = ""
     for block in parts:
         block = block.strip("\n")
-        if not block or block.startswith(":"):
+        if not block:
             continue
         event_name = "message"
         event_id: str | None = None
         data_lines: list[str] = []
+        has_field = False
         for line in block.split("\n"):
             if line.startswith(":"):
                 continue
             if line.startswith("id:"):
+                has_field = True
                 event_id = line[3:].lstrip()
             elif line.startswith("event:"):
+                has_field = True
                 event_name = line[6:].lstrip() or "message"
             elif line.startswith("data:"):
+                has_field = True
                 data_lines.append(line[5:].lstrip())
             elif line.startswith("data"):
                 # `data` with no colon => empty data per SSE spec edge cases
+                has_field = True
                 data_lines.append("")
+        if not has_field:
+            continue
         raw = "\n".join(data_lines)
         payload: dict[str, Any]
         if not raw:

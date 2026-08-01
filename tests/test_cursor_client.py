@@ -58,6 +58,15 @@ class TestParseSSE(unittest.TestCase):
         self.assertEqual(events[0].id, None)
         self.assertEqual(events[0].data["status"], "RUNNING")
 
+    def test_comments_and_bom_are_ignored(self):
+        events, remainder = parse_sse_chunk(
+            '\ufeff: heartbeat\r\nevent: result\r\ndata: {"ok":true}\r\n\r\n'
+        )
+        self.assertEqual(remainder, "")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "result")
+        self.assertTrue(events[0].data["ok"])
+
 
 class TestCursorClient(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
