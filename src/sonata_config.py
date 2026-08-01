@@ -107,15 +107,6 @@ def _project_plugin_defaults() -> dict[str, Any]:
             "view_replies": True,
             "auto": "c",
             "ignore": [],
-            "response_map": {
-                "subi": [
-                    0.005,
-                    "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
-                ],
-                "log": [0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"],
-                "blaqat": [0.005, "yes master"],
-                "ans": [0.01, "youre the robot why dont u tell me hmmm?"],
-            },
             "bot_whitelist": [
                 "BluBot",
                 1311742291521835048,
