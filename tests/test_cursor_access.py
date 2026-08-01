@@ -179,9 +179,18 @@ class TestApprovals(unittest.IsolatedAsyncioTestCase):
     async def test_image_retention_bound(self):
         store = ImageRetentionStore(max_total_bytes=10)
         big = ImageInput(mime_type="image/png", data_b64="a" * 20, size_bytes=20)
-        item = await store.put("r1", [big, ImageInput(mime_type="image/png", data_b64="bb", size_bytes=2)])
-        # First image alone exceeds cap => retained may be empty or partial
-        self.assertLessEqual(item.total_bytes, 10)
+        with self.assertRaises(ValueError):
+            await store.put(
+                "r1",
+                [big, ImageInput(mime_type="image/png", data_b64="bb", size_bytes=2)],
+            )
+        self.assertEqual(store.total_bytes, 0)
+
+        small = ImageInput(mime_type="image/png", data_b64="a" * 8, size_bytes=8)
+        await store.put("r1", [small])
+        with self.assertRaises(ValueError):
+            await store.put("r2", [small])
+        self.assertEqual(store.total_bytes, 8)
 
     async def test_audit_bounded(self):
         ctrl, store = make_controller()

@@ -20,8 +20,8 @@ from .models import (
 
 
 MESSAGE_URL_RE = re.compile(
-    r"(?:https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/channels/)?"
-    r"(?:@me|\d+)/(\d+)/(\d+)"
+    r"^https?://(?:ptb\.|canary\.)?discord(?:app)?\.com/channels/"
+    r"(@me|\d+)/(\d+)/(\d+)(?:[/?#].*)?$"
 )
 MESSAGE_ID_RE = re.compile(r"^\d{5,30}$")
 
@@ -107,16 +107,21 @@ def guess_mime(content_type: str | None, filename: str | None, url: str | None) 
             return mime
         if mime == "image/jpg":
             return "image/jpeg"
-    name = (filename or "") + " " + (url or "")
-    lower = name.lower()
-    if lower.endswith(".png") or ".png?" in lower:
-        return "image/png"
-    if lower.endswith(".jpg") or lower.endswith(".jpeg") or ".jpg?" in lower or ".jpeg?" in lower:
-        return "image/jpeg"
-    if lower.endswith(".gif") or ".gif?" in lower:
-        return "image/gif"
-    if lower.endswith(".webp") or ".webp?" in lower:
-        return "image/webp"
+    filename_lower = (filename or "").lower()
+    url_lower = (url or "").lower()
+    for ext, mime in (
+        (".png", "image/png"),
+        (".jpg", "image/jpeg"),
+        (".jpeg", "image/jpeg"),
+        (".gif", "image/gif"),
+        (".webp", "image/webp"),
+    ):
+        if (
+            filename_lower.endswith(ext)
+            or url_lower.endswith(ext)
+            or f"{ext}?" in url_lower
+        ):
+            return mime
     return None
 
 
@@ -132,29 +137,16 @@ def parse_message_reference(
     text = str(raw).strip()
     match = MESSAGE_URL_RE.search(text)
     if match:
-        channel_id, message_id = match.group(1), match.group(2)
-        # Full URL may include guild; reject cross-guild when parseable.
-        full = re.search(
-            r"discord(?:app)?\.com/channels/(@me|\d+)/(\d+)/(\d+)", text
-        )
-        if full:
-            guild_part = full.group(1)
-            if (
-                guild_part != "@me"
-                and current_guild_id is not None
-                and str(guild_part) != str(current_guild_id)
-            ):
-                raise ValidationError(
-                    "Message reference is in another guild.",
-                    user_message="That message is not in this server.",
-                )
-            if (
-                current_channel_id is not None
-                and str(full.group(2)) != str(current_channel_id)
-                and False
-            ):
-                # Cross-channel within guild is allowed if bot can fetch it.
-                pass
+        guild_part, channel_id, message_id = match.groups()
+        if (
+            guild_part != "@me"
+            and current_guild_id is not None
+            and str(guild_part) != str(current_guild_id)
+        ):
+            raise ValidationError(
+                "Message reference is in another guild.",
+                user_message="That message is not in this server.",
+            )
         return channel_id, message_id
     if MESSAGE_ID_RE.match(text):
         if current_channel_id is None:
@@ -205,7 +197,8 @@ def collect_chain_attachments(
     """Build chronological ChainMessage list from already-fetched message objects."""
     seen_ids: set[str] = set()
     chain: list[ChainMessage] = []
-    for msg in messages[: max(0, max_depth)]:
+    limit = max(0, max_depth)
+    for msg in messages[-limit:] if limit else []:
         mid = str(getattr(msg, "id", "") or "")
         if not mid or mid in seen_ids:
             continue

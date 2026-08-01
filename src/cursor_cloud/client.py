@@ -29,6 +29,7 @@ logger = logging.getLogger("sonata.cursor.client")
 
 def parse_sse_chunk(buffer: str) -> tuple[list[StreamEvent], str]:
     """Parse complete SSE events from a text buffer; return events + remainder."""
+    buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
     events: list[StreamEvent] = []
     parts = buffer.split("\n\n")
     remainder = parts.pop() if parts else ""

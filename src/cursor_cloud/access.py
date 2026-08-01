@@ -177,14 +177,20 @@ class ImageRetentionStore:
         expires_at=None,
     ) -> ImageRetention:
         async with self._lock:
+            existing = self.total_bytes
+            if request_id in self._items:
+                existing -= self._items[request_id].total_bytes
             total = 0
             retained: list[ImageInput] = []
             for img in images:
                 size = img.size_bytes or (
                     len(img.data_b64) * 3 // 4 if img.data_b64 else 0
                 )
-                if total + size > self.max_total_bytes:
-                    break
+                if existing + total + size > self.max_total_bytes:
+                    raise ValueError(
+                        f"Image retention limit exceeded ({existing + total + size} > "
+                        f"{self.max_total_bytes})"
+                    )
                 retained.append(img)
                 total += size
             item = ImageRetention(
@@ -343,7 +349,13 @@ class AccessController:
             new_value = "reset"
             resulting = await self._file_tier(target)
         else:
-            tier_int = int(tier)
+            try:
+                tier_int = int(tier)
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    "Invalid tier",
+                    user_message="Assignable tiers are 1, 2, 3, or reset.",
+                ) from exc
             if tier_int not in (1, 2, 3):
                 raise ValidationError(
                     "Invalid tier",
@@ -353,10 +365,11 @@ class AccessController:
             resulting = AccessTier(tier_int)
 
         previous = await self.resolve_tier(target)
-        overlay = await self.store.get_overlay()
-        assignments = dict(overlay.get("assignments") or {})
-        assignments[target] = new_value
-        await self.store.set_overlay({"assignments": assignments})
+        async with self.store.lock_for("overlay:assignments"):
+            overlay = await self.store.get_overlay()
+            assignments = dict(overlay.get("assignments") or {})
+            assignments[target] = new_value
+            await self.store.set_overlay({"assignments": assignments})
         await self.audit(
             actor_id,
             "set_tier",
@@ -431,9 +444,18 @@ class AccessController:
                 str(status_message_id) if status_message_id is not None else None
             ),
         )
-        await self.store.save_request(request)
         if images:
-            await self.images.put(request.request_id, images, expires_at=expires)
+            try:
+                await self.images.put(request.request_id, images, expires_at=expires)
+            except ValueError as exc:
+                raise ValidationError(
+                    "Image retention limit exceeded",
+                    user_message=(
+                        "These images are too large to hold for approval. "
+                        "Please resubmit with fewer or smaller images."
+                    ),
+                ) from exc
+        await self.store.save_request(request)
         await self.audit(
             envelope.requester_id,
             "approval_created",
@@ -445,15 +467,21 @@ class AccessController:
     async def expire_stale_requests(self) -> list[ApprovalRequest]:
         now = utcnow()
         expired: list[ApprovalRequest] = []
-        for request in await self.store.list_requests():
-            if request.decision != ApprovalDecision.PENDING:
-                continue
-            if request.expires_at and now >= request.expires_at:
-                request.decision = ApprovalDecision.EXPIRED
-                request.decided_at = now
-                await self.store.save_request(request)
-                await self.images.discard(request.request_id)
-                expired.append(request)
+        for candidate in await self.store.list_requests():
+            lock = self.store.lock_for(f"request:{candidate.request_id}")
+            async with lock:
+                request = await self.store.get_request(candidate.request_id)
+                if request is None:
+                    continue
+                if request.decision != ApprovalDecision.PENDING:
+                    continue
+                if request.expires_at and now >= request.expires_at:
+                    await self._revoke_unused_request_grant(request)
+                    request.decision = ApprovalDecision.EXPIRED
+                    request.decided_at = now
+                    await self.store.save_request(request)
+                    await self.images.discard(request.request_id)
+                    expired.append(request)
         await self.images.purge_expired()
         return expired
 
@@ -477,14 +505,13 @@ class AccessController:
             if request.decision in {
                 ApprovalDecision.DENIED,
                 ApprovalDecision.EXPIRED,
+                ApprovalDecision.CONSUMED,
+                ApprovalDecision.REVOKED,
             }:
                 await self.images.discard(request.request_id)
                 return request
             if request.grant_id:
-                grant = await self.store.get_grant(request.grant_id)
-                if grant is not None and not grant.consumed and not grant.revoked:
-                    grant.revoked = True
-                    await self.store.save_grant(grant)
+                await self._revoke_unused_request_grant(request)
             request.decision = ApprovalDecision.DENIED
             request.decided_at = utcnow()
             request.decided_by = str(actor_id)
@@ -581,6 +608,32 @@ class AccessController:
                 await self.images.discard(request.request_id)
                 raise StaleStateError(user_message="Approval request expired.")
 
+            mode_norm = str(mode).lower().strip()
+            timed_minutes: int | None = None
+            if mode_norm not in {
+                "deny",
+                "denied",
+                "once",
+                "approve_once",
+                "one",
+                "timed",
+                "approve_timed",
+                "time",
+                "minutes",
+            }:
+                raise ValidationError(
+                    f"Unknown approval mode {mode}",
+                    user_message="Use once, timed, or deny.",
+                )
+            if mode_norm in {"timed", "approve_timed", "time", "minutes"}:
+                try:
+                    timed_minutes = self.access_config.clamp_grant_minutes(minutes)
+                except (TypeError, ValueError) as exc:
+                    raise ValidationError(
+                        "Invalid timed grant minutes",
+                        user_message="Timed grant minutes must be a number.",
+                    ) from exc
+
             prior_decision = request.decision
             # Superseding a prior unused approval: revoke old grant first.
             if prior_decision in {
@@ -598,7 +651,6 @@ class AccessController:
                         )
                     )
 
-            mode_norm = str(mode).lower().strip()
             if mode_norm in {"deny", "denied"}:
                 request.decision = ApprovalDecision.DENIED
                 request.decided_at = now
@@ -643,7 +695,7 @@ class AccessController:
                 return request
 
             if mode_norm in {"timed", "approve_timed", "time", "minutes"}:
-                mins = self.access_config.clamp_grant_minutes(minutes)
+                mins = timed_minutes
                 grant = RunGrant(
                     grant_id=new_id("gr"),
                     scope=request.envelope.scope,
@@ -749,11 +801,13 @@ class AccessController:
 
     async def revoke_grant(self, actor_id: str | int, grant_id: str) -> RunGrant:
         await self.require_god(actor_id)
-        grant = await self.store.get_grant(grant_id)
-        if grant is None:
-            raise StaleStateError(user_message="Grant not found.")
-        grant.revoked = True
-        await self.store.save_grant(grant)
+        lock = self.store.lock_for(f"grant:{grant_id}")
+        async with lock:
+            grant = await self.store.get_grant(grant_id)
+            if grant is None:
+                raise StaleStateError(user_message="Grant not found.")
+            grant.revoked = True
+            await self.store.save_grant(grant)
         await self.audit(
             actor_id, "grant_revoked", target_id=grant_id, detail={}
         )

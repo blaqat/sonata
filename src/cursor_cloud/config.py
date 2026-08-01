@@ -53,6 +53,14 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def _as_str_list(value: Any) -> list[str]:
     if value is None:
         return []
@@ -147,9 +155,10 @@ def load_cursor_config(
     """Build config from plugin kwargs + environment (secrets never from JSON)."""
     env_map = env if env is not None else os.environ
     raw = {**DEFAULT_PLUGIN_CONFIG, **(plugin_config or {})}
+    access_in = raw.get("access")
     access_raw = {
         **DEFAULT_PLUGIN_CONFIG["access"],
-        **(raw.get("access") or {}),
+        **(access_in if isinstance(access_in, dict) else {}),
     }
 
     api_key = str(env_map.get("CURSOR_API_KEY") or "").strip()
@@ -179,13 +188,13 @@ def load_cursor_config(
     idle_minutes = max(1, min(240, idle_minutes))
 
     return CursorCloudConfig(
-        enabled=bool(raw.get("enabled", False)),
+        enabled=_as_bool(raw.get("enabled"), False),
         api_key=api_key,
         api_base_url=str(raw.get("api_base_url") or DEFAULT_API_BASE).rstrip("/"),
         default_repository_url=str(raw.get("default_repository_url") or "").strip(),
         default_ref=str(raw.get("default_ref") or "main").strip() or "main",
         default_model=str(raw.get("default_model") or "").strip(),
-        auto_create_pr=bool(raw.get("auto_create_pr", False)),
+        auto_create_pr=_as_bool(raw.get("auto_create_pr"), False),
         chain_depth=max(1, _as_int(raw.get("chain_depth"), 20)),
         max_images=max(1, min(5, _as_int(raw.get("max_images"), 5))),
         max_image_bytes=_as_int(raw.get("max_image_bytes"), 15 * 1024 * 1024),
