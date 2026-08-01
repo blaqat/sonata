@@ -600,9 +600,12 @@ class AccessController:
                 raise StaleStateError(
                     user_message=f"Request already {request.decision.value}."
                 )
-            if request.expires_at and now >= request.expires_at:
-                if request.decision != ApprovalDecision.PENDING:
-                    await self._revoke_unused_request_grant(request)
+            if (
+                request.decision == ApprovalDecision.PENDING
+                and request.expires_at
+                and now >= request.expires_at
+            ):
+                await self._revoke_unused_request_grant(request)
                 request.decision = ApprovalDecision.EXPIRED
                 request.decided_at = now
                 await self.store.save_request(request)

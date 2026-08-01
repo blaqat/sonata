@@ -67,6 +67,16 @@ class TestParseSSE(unittest.TestCase):
         self.assertEqual(events[0].event, "result")
         self.assertTrue(events[0].data["ok"])
 
+    def test_split_crlf_is_not_treated_as_two_newlines(self):
+        events, remainder = parse_sse_chunk("event: result\r")
+        self.assertEqual(events, [])
+        events, remainder = parse_sse_chunk(
+            remainder + '\ndata: {"ok":true}\r\n\r\n'
+        )
+        self.assertEqual(remainder, "")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].event, "result")
+
 
 class TestCursorClient(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):

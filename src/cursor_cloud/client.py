@@ -29,7 +29,11 @@ logger = logging.getLogger("sonata.cursor.client")
 
 def parse_sse_chunk(buffer: str) -> tuple[list[StreamEvent], str]:
     """Parse complete SSE events from a text buffer; return events + remainder."""
-    buffer = buffer.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    buffer = buffer.lstrip("\ufeff")
+    trailing_cr = buffer.endswith("\r")
+    if trailing_cr:
+        buffer = buffer[:-1]
+    buffer = buffer.replace("\r\n", "\n").replace("\r", "\n")
     events: list[StreamEvent] = []
     parts = buffer.split("\n\n")
     remainder = parts.pop() if parts else ""
@@ -75,7 +79,7 @@ def parse_sse_chunk(buffer: str) -> tuple[list[StreamEvent], str]:
             except json.JSONDecodeError:
                 payload = {"text": raw}
         events.append(StreamEvent(event=event_name, data=payload, id=event_id))
-    return events, remainder
+    return events, remainder + ("\r" if trailing_cr else "")
 
 
 class CursorCloudClient:

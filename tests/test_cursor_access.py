@@ -158,6 +158,16 @@ class TestApprovals(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(StaleStateError):
             await ctrl.decide_request(GOD, req.request_id, mode="once")
 
+    async def test_approved_request_override_ignores_pending_deadline(self):
+        ctrl, store = make_controller()
+        req = await ctrl.create_approval_request(envelope(), prompt_preview="p")
+        await ctrl.decide_request(GOD, req.request_id, mode="timed", minutes=30)
+        req.expires_at = utcnow() - timedelta(seconds=1)
+        await store.save_request(req)
+
+        decided = await ctrl.decide_request(GOD, req.request_id, mode="deny")
+        self.assertEqual(decided.decision, ApprovalDecision.DENIED)
+
     async def test_request_save_failure_does_not_leave_grant(self):
         ctrl, store = make_controller()
         req = await ctrl.create_approval_request(envelope(), prompt_preview="p")
