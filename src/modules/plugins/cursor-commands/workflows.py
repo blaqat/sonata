@@ -903,8 +903,10 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
                             status_msg.channel, agent.name or suggested_name
                         )
                 else:
-                    existing_tracker = rt.trackers.get(agent_id)
                     prior_session = await sessions.get_session(scope, agent_id)
+                    if prior_session is None:
+                        raise OwnershipError()
+                    existing_tracker = rt.trackers.get(agent_id)
                     prior_status = None
                     if prior_session is not None:
                         prior_status = getattr(
