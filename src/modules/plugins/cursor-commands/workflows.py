@@ -767,7 +767,10 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
     if status_msg is None and not skip_status_post:
         status_msg = await ui.post_status(initial_queued_message())
 
-    status_cleanup: tuple[str, str] | None = None  # (kind, message)
+    status_cleanup: tuple[str, str] | None = (
+        "error",
+        "### Error\nCursor run did not start.",
+    )
     grant_consumed = False
     session: AgentSession | None = None
     pending_exc: BaseException | None = None
@@ -966,7 +969,7 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
         pending_exc = exc
 
     # Discord status cleanup/edit OUTSIDE the scope lock (slow I/O).
-    if status_cleanup is not None:
+    if pending_exc is not None and status_cleanup is not None:
         kind, content = status_cleanup
         if kind == "busy":
             await _delete_or_edit_status_msg(status_msg, content)
