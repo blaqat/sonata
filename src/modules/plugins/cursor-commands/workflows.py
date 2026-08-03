@@ -724,7 +724,6 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
     scope = ctx.scope
     sessions = rt.sessions
     client = rt.client
-    role_ids = list(ctx.role_ids or [])
     thread_bound = ctx.thread_bound
     parent_channel_id = ctx.parent_channel_id
     pol_ch = ctx.policy_channel_id
@@ -743,6 +742,9 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
     user_prompt = ctx.user_prompt
     user_name = ctx.user_name
     auth_interaction = _auth_interaction_from_ui(ui)
+    launch_guild = getattr(ui, "guild", None)
+    if launch_guild is None and auth_interaction is not None:
+        launch_guild = getattr(auth_interaction, "guild", None)
 
     # Pre-check busy under the scope lock BEFORE posting public Queued status,
     # so concurrent callers cannot leave orphan status messages.
@@ -783,7 +785,7 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
                 user_id=scope.user_id,
                 guild_id=scope.guild_id,
                 channel_id=scope.channel_id,
-                role_ids=role_ids,
+                role_ids=await _role_ids_for_user(launch_guild, scope.user_id),
                 subcommand=auth_subcommand,
                 interaction=auth_interaction,
                 policy_channel_id=pol_ch,
@@ -907,6 +909,12 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
                     if prior_session is None:
                         raise OwnershipError()
                     existing_tracker = rt.trackers.get(agent_id)
+                    if existing_tracker is not None and not existing_tracker.done():
+                        logger.warning(
+                            "cursor.tracker_wait agent=%s prior_alive=True",
+                            agent_id,
+                        )
+                        await asyncio.gather(existing_tracker, return_exceptions=True)
                     prior_status = None
                     if prior_session is not None:
                         prior_status = getattr(
@@ -1047,37 +1055,51 @@ async def launch(rt: CursorRuntime, ui: LaunchUI, prepared: PreparedRun) -> Agen
         )
 
         async def _runner():
+            current_task = asyncio.current_task()
+            run_id = session.latest_run_id
+            initial_status = session.latest_run_status
             try:
                 logger.warning(
                     "cursor.tracker_task_start agent=%s run=%s status=%s",
                     session.agent_id,
-                    session.latest_run_id,
-                    getattr(session.latest_run_status, "value", session.latest_run_status),
+                    run_id,
+                    getattr(initial_status, "value", initial_status),
                 )
                 snap = await tracker.track(
                     session.agent_id,
-                    session.latest_run_id,
-                    initial_status=session.latest_run_status,
+                    run_id,
+                    initial_status=initial_status,
                 )
-                finalize_session_from_snapshot(session, snap, sink=sink)
-                await sessions.upsert(session)
+                current_session = await sessions.get_session(scope, session.agent_id)
+                if current_session is not None and current_session.latest_run_id == run_id:
+                    finalize_session_from_snapshot(current_session, snap, sink=sink)
+                    await sessions.upsert(current_session)
+                else:
+                    logger.warning(
+                        "cursor.tracker_stale_finalize agent=%s run=%s latest_run=%s",
+                        session.agent_id,
+                        run_id,
+                        getattr(current_session, "latest_run_id", None),
+                    )
                 logger.warning(
                     "cursor.tracker_task_end agent=%s run=%s status=%s err=%r",
                     session.agent_id,
-                    session.latest_run_id,
+                    run_id,
                     getattr(snap.status, "value", snap.status),
                     (getattr(snap, "error_message", None) or "")[:200],
                 )
             finally:
-                rt.trackers.pop(session.agent_id, None)
+                if rt.trackers.get(session.agent_id) is current_task:
+                    rt.trackers.pop(session.agent_id, None)
 
         prior = rt.trackers.get(session.agent_id)
         if prior is not None and not prior.done():
             logger.warning(
-                "cursor.tracker_overwrite agent=%s run=%s prior_alive=True",
+                "cursor.tracker_wait agent=%s run=%s prior_alive=True",
                 session.agent_id,
                 session.latest_run_id,
             )
+            await asyncio.gather(prior, return_exceptions=True)
         rt.trackers[session.agent_id] = asyncio.create_task(_runner())
     return session
 

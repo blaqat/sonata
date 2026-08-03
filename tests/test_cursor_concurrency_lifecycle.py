@@ -190,6 +190,39 @@ def _interaction(user_id, *, guild_id=1, channel_id=2):
     return interaction
 
 
+def _prepared_followup(mod, scope, status_msg, *, role_ids):
+    envelope = RunRequestEnvelope(
+        requester_id=scope.user_id,
+        scope=scope,
+        prompt_text="p",
+        model="m",
+        repository_url="https://github.com/o/r",
+        starting_ref="main",
+        agent_id="a1",
+        is_follow_up=True,
+    )
+    ctx = mod.RunContext(
+        scope=scope,
+        role_ids=role_ids,
+        thread_bound=False,
+        parent_channel_id=None,
+        policy_channel_id=scope.channel_id,
+        status_msg=status_msg,
+        subcommand="run",
+        skip_status_post=True,
+    )
+    return mod.PreparedRun(
+        ctx=ctx,
+        prompt_text="p",
+        images=[],
+        skipped=[],
+        envelope=envelope,
+        force_new=False,
+        agent_id="a1",
+        grant=None,
+    )
+
+
 class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
     async def test_concurrent_launch_busy_no_orphan_and_one_submit(self):
         """Slow _public widens TOCTOU: both may post; loser status cleaned; 1 submit."""
@@ -393,6 +426,119 @@ class TestNoOrphanBusyStatus(unittest.IsolatedAsyncioTestCase):
         events = await access.store.list_audit(limit=20)
         self.assertTrue(any(e.action == "submit_failed_after_consume" for e in events))
         client.create_run.assert_not_awaited()
+
+    async def test_launch_revalidates_current_requester_roles(self):
+        mod = load_cursor_plugin()
+        sessions, access, cfg, client = _bootstrap(mod)
+        scope = ScopeKey("1", "2", T1)
+        await sessions.upsert(
+            AgentSession(
+                scope=scope,
+                agent_id="a1",
+                owner_id=T1,
+                active=True,
+                latest_run_id="r0",
+                latest_run_status=RunStatus.FINISHED,
+            )
+        )
+        interaction = _interaction(T1)
+        interaction.guild.get_member.return_value = SimpleNamespace(
+            roles=[SimpleNamespace(id=99)]
+        )
+        ui = mod.workflows.ChannelUI.for_channel(
+            interaction.channel,
+            user_id=T1,
+            guild_id=1,
+            guild=interaction.guild,
+            client=client,
+        )
+        status_msg = SimpleNamespace(
+            id=10,
+            channel=SimpleNamespace(id=2),
+            edit=AsyncMock(),
+        )
+        prepared = _prepared_followup(mod, scope, status_msg, role_ids=["stale"])
+        auth = AsyncMock()
+
+        class FinishedTracker:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def track(self, *args, **kwargs):
+                return SimpleNamespace(status=RunStatus.FINISHED, degraded=False)
+
+        with patch_cursor(mod, "_revalidate_run_auth", new=auth):
+            with patch_cursor(mod, "RunTracker", new=FinishedTracker):
+                await mod.launch(mod.get_runtime(), ui, prepared)
+                tracker = mod.get_runtime().trackers.get("a1")
+                if tracker is not None:
+                    await tracker
+
+        auth.assert_awaited_once()
+        self.assertEqual(auth.await_args.kwargs["role_ids"], ["99"])
+
+    async def test_launch_waits_for_prior_tracker_before_submit(self):
+        mod = load_cursor_plugin()
+        sessions, access, cfg, client = _bootstrap(mod)
+        scope = ScopeKey("1", "2", T1)
+        await sessions.upsert(
+            AgentSession(
+                scope=scope,
+                agent_id="a1",
+                owner_id=T1,
+                active=True,
+                latest_run_id="r0",
+                latest_run_status=RunStatus.FINISHED,
+            )
+        )
+        prior_release = asyncio.Event()
+        prior_started = asyncio.Event()
+
+        async def prior_runner():
+            prior_started.set()
+            await prior_release.wait()
+
+        prior = asyncio.create_task(prior_runner())
+        mod.get_runtime().trackers["a1"] = prior
+        await prior_started.wait()
+
+        interaction = _interaction(T1)
+        ui = mod.workflows.ChannelUI.for_channel(
+            interaction.channel,
+            user_id=T1,
+            guild_id=1,
+            guild=interaction.guild,
+            client=client,
+        )
+        status_msg = SimpleNamespace(
+            id=10,
+            channel=SimpleNamespace(id=2),
+            edit=AsyncMock(),
+        )
+        prepared = _prepared_followup(mod, scope, status_msg, role_ids=[])
+        auth = AsyncMock()
+
+        class FinishedTracker:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def track(self, *args, **kwargs):
+                return SimpleNamespace(status=RunStatus.FINISHED, degraded=False)
+
+        with patch_cursor(mod, "_revalidate_run_auth", new=auth):
+            with patch_cursor(mod, "RunTracker", new=FinishedTracker):
+                launch_task = asyncio.create_task(
+                    mod.launch(mod.get_runtime(), ui, prepared)
+                )
+                await asyncio.sleep(0)
+                self.assertEqual(client.create_run.await_count, 0)
+                prior_release.set()
+                await launch_task
+                tracker = mod.get_runtime().trackers.get("a1")
+                if tracker is not None:
+                    await tracker
+
+        client.create_run.assert_awaited_once()
 
 
 class TestIdleDecisionDedupe(unittest.IsolatedAsyncioTestCase):
