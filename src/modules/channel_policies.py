@@ -219,6 +219,7 @@ class ChannelPolicies:
         self.loaded = False
         self.policy_api = get_or_create_policy_api(sonata)
         self._ensure_chat_namespace()
+        self.init()
 
     def _ensure_chat_namespace(self):
         if self.policy_api.has_namespace("chat"):
@@ -234,6 +235,84 @@ class ChannelPolicies:
                 "chat.command.*": True,
             },
         )
+
+    def _has_beacon(self):
+        has_method = getattr(self.sonata, "has", None)
+        if callable(has_method):
+            try:
+                return bool(has_method("beacon"))
+            except Exception:
+                return hasattr(self.sonata, "beacon")
+        return hasattr(self.sonata, "beacon")
+
+    def _policy_from_scope_rules(self, scope, scope_id):
+        rules = self.policy_api.get_scope_rules("chat", scope, scope_id)
+        if not rules:
+            return None
+
+        policy = ChannelPolicy.default()
+        allowed_commands = []
+        denied_commands = []
+        allowlist_mode = False
+
+        for rule in rules:
+            if rule.action == "chat.can_speak":
+                policy.can_speak = rule.effect != EFFECT_DENY
+            elif rule.action == "chat.respond_all":
+                policy.respond_all = rule.effect == EFFECT_ALLOW
+            elif rule.action == "chat.command.*":
+                allowlist_mode = rule.effect == EFFECT_DENY
+            elif rule.action.startswith("chat.command."):
+                command = normalize_command_name(
+                    rule.action.removeprefix("chat.command.")
+                )
+                if not command:
+                    continue
+                if rule.effect == EFFECT_ALLOW:
+                    allowed_commands.append(command)
+                else:
+                    denied_commands.append(command)
+
+        if allowlist_mode:
+            policy.command_policy_mode = ALLOWLIST
+            policy.commands = normalize_commands(allowed_commands)
+        else:
+            policy.command_policy_mode = DENYLIST
+            policy.commands = normalize_commands(denied_commands)
+
+        return policy
+
+    def refresh_from_policy_api(self):
+        """Rebuild ChannelPolicies maps from PolicyAPI chat rules for persistence."""
+        guilds = {}
+        for scope_id in self.policy_api.list_scope_ids("chat", "guild"):
+            policy = self._policy_from_scope_rules("guild", scope_id)
+            if policy is not None:
+                guilds[str(scope_id)] = policy
+
+        users = {}
+        for scope_id in self.policy_api.list_scope_ids("chat", "user"):
+            policy = self._policy_from_scope_rules("user", scope_id)
+            if policy is not None:
+                users[str(scope_id)] = policy
+
+        channels = {}
+        for scope_id in self.policy_api.list_scope_ids("chat", "channel"):
+            policy = self._policy_from_scope_rules("channel", scope_id)
+            if policy is not None:
+                channels[str(scope_id)] = policy
+
+        self.guilds = guilds
+        self.users = users
+        self.channels = channels
+        self.loaded = True
+
+        for guild_id, policy in self.guilds.items():
+            self._sync_guild_scope(guild_id, policy)
+        for user_id, policy in self.users.items():
+            self._sync_user_scope(user_id, policy)
+        for channel_id, policy in self.channels.items():
+            self._sync_channel_scope(channel_id, policy)
 
     def _sync_channel_scope(self, channel_id, policy):
         key = str(channel_id)
@@ -414,7 +493,7 @@ class ChannelPolicies:
             users=serialized_users,
             groups=serialized_groups,
         )
-        if self.sonata.has("beacon"):
+        if self._has_beacon():
             policies_branch = self.sonata.beacon.branch("policies")
             policies_branch.illuminate("channels", serialized_channels)
             policies_branch.illuminate("guilds", serialized_guilds)
@@ -422,11 +501,13 @@ class ChannelPolicies:
             policies_branch.illuminate("groups", serialized_groups)
 
     def init(self):
+        if self.loaded:
+            return self.channels
         beacon_channels = {}
         beacon_guilds = {}
         beacon_users = {}
         beacon_groups = {}
-        if self.sonata.has("beacon"):
+        if self._has_beacon():
             policies_branch = self.sonata.beacon.branch("policies")
             beacon_channels = policies_branch.discover("channels") or {}
             beacon_guilds = policies_branch.discover("guilds") or {}

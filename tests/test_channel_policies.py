@@ -65,6 +65,9 @@ class FakeSonata:
         self._beacon_store = {}
         self.beacon = FakeBranch(self._beacon_store)
 
+    def has(self, name):
+        return hasattr(self, name)
+
 
 class FakeChannel:
     def __init__(self, channel_id):

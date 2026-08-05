@@ -214,9 +214,12 @@ class PolicyAdmin:
     # ── Persistence ──────────────────────────────────────────────────────
 
     def _persist(self, namespace):
-        # Chat namespace uses ChannelPolicies persistence (legacy path)
+        # Chat namespace uses ChannelPolicies persistence (legacy path).
+        # Bridge PolicyAPI → ChannelPolicies first so $policy mutations survive restart.
         if namespace == "chat" and hasattr(self.sonata, "chat"):
-            self.sonata.chat.policy_manager._persist()
+            manager = self.sonata.chat.policy_manager
+            manager.refresh_from_policy_api()
+            manager._persist()
             return
         # Generic namespace persistence
         self._persist_namespace(namespace)
@@ -231,15 +234,13 @@ class PolicyAdmin:
             branch.illuminate(namespace, data)
 
     def _serialize_namespace(self, namespace):
-        ns_rules = self.api._rules.get(namespace, {})
         serialized = {"rules": {}, "groups": {}}
 
         for scope in SCOPES:
-            scope_map = ns_rules.get(scope, {})
             if scope == "group":
                 continue
-            for scope_id, rules in scope_map.items():
-                for rule in rules:
+            for scope_id in self.api.list_scope_ids(namespace, scope):
+                for rule in self.api.get_scope_rules(namespace, scope, scope_id):
                     key = f"{scope}:{scope_id}"
                     entry = serialized["rules"].setdefault(key, [])
                     entry.append({"action": rule.action, "effect": rule.effect})

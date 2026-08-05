@@ -309,6 +309,13 @@ class PolicyAPI:
         self._require_namespace(key)
         return list(self._rules[key][scope_key].get(scope_id_key, []))
 
+    def list_scope_ids(self, namespace: str, scope: str) -> list[str]:
+        """Return sorted scope ids that currently have rules in ``namespace``/``scope``."""
+        key = self._normalize_namespace(namespace)
+        scope_key = self._normalize_scope(scope)
+        self._require_namespace(key)
+        return sorted(self._rules[key][scope_key].keys())
+
     def evaluate(
         self,
         namespace: str,

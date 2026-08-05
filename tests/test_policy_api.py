@@ -62,6 +62,14 @@ class FakeSonata:
         self._beacon_store = {}
         self.beacon = FakeBranch(self._beacon_store)
 
+    def has(self, name):
+        return hasattr(self, name)
+
+
+class FakeChat:
+    def __init__(self, policy_manager):
+        self.policy_manager = policy_manager
+
 
 class PolicyApiTests(unittest.TestCase):
     def test_duplicate_namespace_registration_is_rejected(self):
@@ -402,6 +410,59 @@ class PolicyApiTests(unittest.TestCase):
         )
         self.assertFalse(
             policies.should_respond_all(guild_id=2, channel_id=10, user_id=1)
+        )
+
+    def test_refresh_from_policy_api_bridges_unified_chat_rules(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+
+        policies.policy_api.set_rule(
+            "chat", "channel", 444, "chat.can_speak", "deny"
+        )
+        policies.policy_api.set_rule(
+            "chat", "channel", 444, "chat.command.*", "deny"
+        )
+        policies.policy_api.set_rule(
+            "chat", "channel", 444, "chat.command.help", "allow"
+        )
+
+        policies.refresh_from_policy_api()
+
+        channel_policy = policies.get_channel_policy(444)
+        self.assertFalse(channel_policy.can_speak)
+        self.assertEqual(channel_policy.command_policy_mode, ALLOWLIST)
+        self.assertEqual(channel_policy.commands, ["help"])
+
+    def test_policy_admin_chat_rules_persist_across_reload(self):
+        policy_admin_mod = _load_module(
+            "policy_admin", pathlib.Path("src/modules/policy_admin.py")
+        )
+        PolicyAdmin = policy_admin_mod.PolicyAdmin
+
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+        sonata.chat = FakeChat(policies)
+        sonata.policy_api = policies.policy_api
+        admin = PolicyAdmin(sonata)
+
+        admin.set_rule("chat", "channel", "555", "chat.can_speak", "deny")
+        admin.set_rule("chat", "channel", "555", "chat.respond_all", "allow")
+
+        self.assertFalse(
+            policies.can_speak(guild_id=1, channel_id=555, user_id=7)
+        )
+        self.assertTrue(
+            policies.should_respond_all(guild_id=1, channel_id=555, user_id=7)
+        )
+        self.assertIn("555", sonata.config.get("channels", {}))
+        self.assertFalse(sonata.config.get("channels")["555"]["can_speak"])
+        self.assertTrue(sonata.config.get("channels")["555"]["respond_all"])
+
+        sonata.policy_api = None
+        reloaded = ChannelPolicies(sonata)
+        self.assertFalse(reloaded.can_speak(guild_id=1, channel_id=555, user_id=7))
+        self.assertTrue(
+            reloaded.should_respond_all(guild_id=1, channel_id=555, user_id=7)
         )
 
 
