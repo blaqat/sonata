@@ -6,10 +6,11 @@ description: Generate or fill out a Dev Plan for a specific ticket.
 
 1. Fetch the specified Notion ticket
 
-2. If no Dev Plan child exists, create one (`Type=Plan`, Parent = ticket)
+2. If no Dev Plan child exists, create one with `template_id`
+   `65724354-9f63-8382-8898-810fd27b31e7`; set Parent = ticket URL
 
-3. Fill out the Dev Plan based on ticket context, acceptance criteria, and
-   codebase understanding
+3. Fill **Goal**, **Plan**, and **Validation** (re-fetch if template sections
+   aren't there yet)
 
 4. Set Dev Plan → `Ready`
 

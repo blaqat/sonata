@@ -13,6 +13,7 @@ read and update tickets.
 | **Project page** | https://app.notion.com/p/39d243549f638012be2bca1294ec5c79 |
 | **SONA Tickets DB** | https://app.notion.com/p/ba5243549f63822db8f9019f8d89beb6 |
 | **Data source** | `collection://fe024354-9f63-83db-87dc-07f92799408c` |
+| **Page templates** | `.agents/notion-templates.md` |
 
 Ticket IDs are auto-incremented as **`SONA-{n}`** (Notion `ID` property). Always
 reference tickets by that ID (e.g. `SONA-12`). Legacy Linear IDs may appear in
@@ -53,13 +54,30 @@ page comments for history only — do not create new Linear issues.
 
 Do **not** put milestones on Dev Plan (`Type=Plan`) pages.
 
+### Page templates
+
+Prefer the SONA Tickets database templates via `template_id` on
+`notion-create-pages`. Template apply can be async — re-fetch before filling
+sections if needed.
+
+| Type | Template | `template_id` |
+|------|----------|---------------|
+| `Story` | Feature Ticket | `bd624354-9f63-8237-99c9-015f6ae2a183` |
+| `Bug` | Bug Ticket | `f5024354-9f63-821a-ad85-81550fdbc659` |
+| `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
+| `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
+| `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
+
+Ticket templates: **Description**, **Acceptance Criteria**. Dev Plan: **Goal**,
+**Plan**, **Validation**. More detail: `.agents/notion-templates.md`.
+
 ### Dev Plans
 
 Dev Plans are **child pages** in the same DB:
 
-1. Create with **Type** = `Plan`
+1. Create with the **Dev Plan** template (`Type` = `Plan`)
 2. Set **Parent** → the parent ticket
-3. Put the plan body in the page content
+3. Fill **Goal**, **Plan**, and **Validation** sections in the page body
 4. After filling: parent → `Planning`, Plan child → `Ready` (ready for human review)
 
 ## Project Management
@@ -68,14 +86,15 @@ Dev Plans are **child pages** in the same DB:
 
 When noticing potential improvements, bugs, or missing functionality during implementation:
 
-1. Create a new page in **SONA Tickets** with:
+1. Create a new page in **SONA Tickets** using the matching **page template**
+   (see table above):
    - **Name**: clear, concise summary
    - **Type**: `Story` / `Bug` / `Spike` / `Task` as appropriate
-   - Acceptance criteria in the page body (specific, testable)
    - **Points**: story point estimate
    - **Milestones** / **Priority** / **Board** when known
-   - Description / context in the body
-2. Create a child **Dev Plan** (`Type=Plan`, **Parent** = new ticket) and fill it out.
+   - Fill **Description** and **Acceptance Criteria** in the template body
+2. Create a child **Dev Plan** using the Dev Plan template (`Type=Plan`,
+   **Parent** = new ticket) and fill **Goal**, **Plan**, **Validation**.
 3. Set parent ticket **Status** to `Planning`.
 4. Set Dev Plan **Status** to `Ready`.
 

@@ -12,6 +12,17 @@ Tracking lives in **Notion**, not Linear. Full workflow: `AGENTS.md` and
 - **Project:** https://app.notion.com/p/39d243549f638012be2bca1294ec5c79
 - **SONA Tickets:** https://app.notion.com/p/ba5243549f63822db8f9019f8d89beb6
 - **Data source:** `collection://fe024354-9f63-83db-87dc-07f92799408c`
+- **Page templates** (prefer when creating tickets):
+
+| Type | Template | `template_id` |
+|------|----------|---------------|
+| `Story` | Feature Ticket | `bd624354-9f63-8237-99c9-015f6ae2a183` |
+| `Bug` | Bug Ticket | `f5024354-9f63-821a-ad85-81550fdbc659` |
+| `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
+| `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
+| `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
+
+- Details: `.agents/notion-templates.md`
 - IDs: `SONA-{n}` (Notion auto-increment `ID`)
 - Statuses: `New` → `Planning` → `Ready` → `In progress` → `In Review` → `Done`
 - Dev Plans: child pages with `Type=Plan` + `Parent` relation

@@ -9,10 +9,14 @@ description: Generate or fill out a Dev Plan for a specific ticket. Use this whe
 
 1. Fetch the specified Notion ticket
 
-2. If no Dev Plan child exists, create one (`Type=Plan`, Parent = ticket)
+2. If no Dev Plan child exists, create one via `notion-create-pages`:
+   - `parent`: `{ "data_source_id": "fe024354-9f63-83db-87dc-07f92799408c" }`
+   - Prefer `template_id`: `65724354-9f63-8382-8898-810fd27b31e7` (Dev Plan)
+   - `properties`: Name (`Dev Plan`), Type (`Plan`), Parent = ticket URL
 
-3. Fill out the Dev Plan based on ticket context, acceptance criteria, and
-   codebase understanding
+3. Fill **Goal**, **Plan**, and **Validation** based on ticket context,
+   acceptance criteria, and codebase understanding (fetch the page first;
+   re-fetch if template sections aren't there yet)
 
 4. Set Dev Plan → `Ready`
 
