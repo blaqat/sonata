@@ -61,11 +61,15 @@ Sonata responds to natural language messages and supports various commands prefi
 
 ## Configuration
 
-The bot can be configured through the `src/index.py` file and environment variables. Key settings include:
+The bot can be configured through `sonata.config.json` (or `SONATA_CONFIG`) and environment variables. Key settings include:
 - AI model preferences
 - Voice chat options
 - GIF search providers
 - Emoji handling
+
+### Staging / testing
+
+Prefer a **second Discord bot** (separate Discord application + separate Railway service and Beacon volume) over runtime-switching the prod token. See [docs/staging-bot.md](docs/staging-bot.md).
 
 ## Plugins
 
