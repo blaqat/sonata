@@ -215,6 +215,43 @@ class ChatHookRoutingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(bot.processed[0][0], "$c keep this 0")
 
+    async def test_leading_command_with_wake_keyword_stays_command(self):
+        _, bot, _ = await self._run_hook("$help sonata")
+
+        self.assertEqual(bot.processed[0][0], "$help sonata")
+
+    async def test_leading_command_with_sona_keyword_stays_command(self):
+        _, bot, _ = await self._run_hook("$play foo sona")
+
+        self.assertEqual(bot.processed[0][0], "$play foo sona")
+
+    async def test_reply_to_sonata_with_leading_command_stays_command(self):
+        reference = types.SimpleNamespace(author=types.SimpleNamespace(id=99))
+        _, bot, _ = await self._run_hook("$help", reference=reference)
+
+        self.assertEqual(bot.processed[0][0], "$help")
+
+    async def test_reply_to_sonata_plain_text_still_ai(self):
+        reference = types.SimpleNamespace(author=types.SimpleNamespace(id=99))
+        _, bot, _ = await self._run_hook("hello there", reference=reference)
+
+        self.assertEqual(bot.processed[0][0], "$c hello there")
+
+    async def test_keyword_first_with_embedded_command_stays_ai(self):
+        _, bot, _ = await self._run_hook("sonata $help")
+
+        self.assertEqual(bot.processed[0][0], "$c $help")
+
+    async def test_keyword_first_play_stays_ai(self):
+        _, bot, _ = await self._run_hook("sona $play something")
+
+        self.assertEqual(bot.processed[0][0], "$c $play something")
+
+    async def test_keyword_only_still_ai(self):
+        _, bot, _ = await self._run_hook("hey sonata what is up")
+
+        self.assertEqual(bot.processed[0][0], "$c hey  what is up")
+
 
 def _load_ai_question():
     source = (SRC_ROOT / "index.py").read_text()
