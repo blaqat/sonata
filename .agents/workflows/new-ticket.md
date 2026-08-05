@@ -6,8 +6,8 @@ description: Create a new ticket from scratch.
 
 1. Ask clarifying questions if title/context is vague
 
-2. Create a page in **SONA Tickets** via `notion-create-pages` with the matching
-   `template_id` (**never blank**); set properties (no `content`):
+2. Create a page in **SONA Tickets** via `notion-create-pages`; prefer matching
+   `template_id`:
 
    | Type | Template | `template_id` |
    |------|----------|---------------|
@@ -16,7 +16,8 @@ description: Create a new ticket from scratch.
    | `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
    | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
 
-3. Fill **Description** and **Acceptance Criteria** via `notion-update-page`
+3. Fill **Description** and **Acceptance Criteria** (re-fetch if template
+   sections aren't there yet)
 
 4. Create a child Dev Plan with `template_id`
    `65724354-9f63-8382-8898-810fd27b31e7`; fill **Goal**, **Plan**, **Validation**

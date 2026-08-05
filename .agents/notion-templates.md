@@ -1,7 +1,6 @@
 # SONA Tickets — Notion page templates
 
-Agents must use these database templates when creating tickets and Dev Plans.
-Do **not** create blank pages in SONA Tickets.
+Prefer these database templates when creating tickets and Dev Plans.
 
 **Data source:** `collection://fe024354-9f63-83db-87dc-07f92799408c`
 
@@ -17,8 +16,8 @@ Do **not** create blank pages in SONA Tickets.
 
 ## Template body sections
 
-| Template | Sections (fill via `update_content` after creation) |
-|----------|-----------------------------------------------------|
+| Template | Sections |
+|----------|----------|
 | Feature / Bug / Spike / Task | **Description**, **Acceptance Criteria** |
 | Dev Plan | **Goal**, **Plan**, **Validation** |
 
@@ -32,15 +31,13 @@ Do **not** create blank pages in SONA Tickets.
    - `parent`: `{ "data_source_id": "fe024354-9f63-83db-87dc-07f92799408c" }`
    - Per page: set `template_id` to the ID for the ticket **Type**
    - Set `properties` (`Name`, `Type`, `Status`, `Points`, `Milestones`, `Parent`, …)
-   - Do **not** pass `content` when using `template_id` (the template provides layout)
-   - Template application is async; the page may appear blank briefly
+   - Template application can be async; the page may look blank briefly
 
-3. **Fill body content** — `notion-update-page` with `command: "update_content"`:
-   - Fetch the new page first to see exact section text
-   - Replace empty blocks under each heading (Description, Acceptance Criteria, Goal, etc.)
-   - Only add content for sections the template does not cover
+3. **Fill body content** — fetch the page, then `notion-update-page` with
+   `command: "update_content"` to fill the template sections. If headings are not
+   there yet, re-fetch and try again.
 
-4. **Apply template to existing page** (rare): `notion-update-page` with
+4. **Apply template to existing page**: `notion-update-page` with
    `command: "apply_template"` and `template_id` — appends template content.
 
 ## Example: create a Story + Dev Plan

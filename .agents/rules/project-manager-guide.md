@@ -49,9 +49,9 @@ Do **not** milestone Dev Plan (`Type=Plan`) pages.
 
 ### Page templates
 
-**Never create blank pages.** Always pass `template_id` to `notion-create-pages`.
-Set properties but do not pass `content`. Fill template sections via
-`notion-update-page` after creation.
+Prefer the SONA Tickets database templates via `template_id` on
+`notion-create-pages`. Template apply can be async — re-fetch before filling
+sections if needed.
 
 | Type | Template | `template_id` |
 |------|----------|---------------|
@@ -61,7 +61,7 @@ Set properties but do not pass `content`. Fill template sections via
 | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
 | `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
 
-Full MCP examples: `.agents/notion-templates.md`.
+More detail: `.agents/notion-templates.md`.
 
 ### Dev Plans
 

@@ -11,7 +11,7 @@ description: Create a new ticket from scratch. Use this when you identify a bug,
 
 2. Create a page in **SONA Tickets** via `notion-create-pages`:
    - `parent`: `{ "data_source_id": "fe024354-9f63-83db-87dc-07f92799408c" }`
-   - `template_id` — **required**; pick by ticket **Type**:
+   - Prefer `template_id` by ticket **Type**:
 
    | Type | Template | `template_id` |
    |------|----------|---------------|
@@ -21,12 +21,11 @@ description: Create a new ticket from scratch. Use this when you identify a bug,
    | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
 
    - `properties`: Name, Type, Status (`New`), Points, Milestones (when clear)
-   - Do **not** pass `content` (template provides layout)
 
-3. Fill **Description** and **Acceptance Criteria** via `notion-update-page`
-   (`update_content`) after the template applies
+3. Fill **Description** and **Acceptance Criteria** (fetch the page first; re-fetch
+   if template sections aren't there yet)
 
-4. Create a child Dev Plan with `template_id`:
+4. Create a child Dev Plan with `template_id`
    `65724354-9f63-8382-8898-810fd27b31e7` (`Type=Plan`, **Parent** = new ticket);
    fill **Goal**, **Plan**, **Validation**
 
