@@ -998,6 +998,23 @@ async def ctx_reply(ctx, r, reply=True):
         await ctx.send(r[:2000])
 
 
+async def ctx_reply_chunks(ctx, text, reply=True):
+    """Send a potentially long reply as successive Discord messages."""
+    remaining = str(text or "")
+    if not remaining:
+        return
+    first = True
+    while remaining:
+        chunk = remaining[:2000]
+        if len(remaining) > 2000:
+            split_at = chunk.rfind("\n")
+            if split_at > 1000:
+                chunk = chunk[:split_at]
+        await ctx_reply(ctx, chunk, reply=reply and first)
+        remaining = remaining[len(chunk) :].lstrip("\n")
+        first = False
+
+
 async def get_channel(ctx):
     """
     Returns the channel from the context, handling both message and interaction contexts.
@@ -1057,7 +1074,7 @@ async def policy_cmd(ctx, action="", *args):
     try:
         result = await _handle_policy_action(ctx, admin, action, args, usage)
         if result is not None:
-            return await ctx_reply(ctx, result)
+            return await ctx_reply_chunks(ctx, result)
     except PolicyAdminError as e:
         return await ctx_reply(ctx, str(e))
 
@@ -1073,37 +1090,37 @@ async def _handle_policy_action(ctx, admin, action, args, usage):
         if len(args) < 3:
             return usage
         namespace, scope, target = args[0], args[1], args[2]
-        target = _resolve_discord_target(ctx, scope, target)
+        target = await _resolve_and_validate_discord_target(ctx, scope, target)
         return admin.show_rules(namespace, scope, target)
 
     if action == "set":
         if len(args) < 5:
             return usage
         namespace, scope, target, act, effect = args[0], args[1], args[2], args[3], args[4]
-        target = _resolve_discord_target(ctx, scope, target)
+        target = await _resolve_and_validate_discord_target(ctx, scope, target)
         return admin.set_rule(namespace, scope, target, act, effect)
 
     if action == "remove":
         if len(args) < 4:
             return usage
         namespace, scope, target, act = args[0], args[1], args[2], args[3]
-        target = _resolve_discord_target(ctx, scope, target)
+        target = await _resolve_and_validate_discord_target(ctx, scope, target)
         return admin.remove_rule(namespace, scope, target, act)
 
     if action == "clear":
         if len(args) < 3:
             return usage
         namespace, scope, target = args[0], args[1], args[2]
-        target = _resolve_discord_target(ctx, scope, target)
+        target = await _resolve_and_validate_discord_target(ctx, scope, target)
         return admin.clear_scope(namespace, scope, target)
 
     if action == "groups":
-        return _handle_policy_groups(ctx, admin, args, usage)
+        return await _handle_policy_groups(ctx, admin, args, usage)
 
     return None
 
 
-def _handle_policy_groups(ctx, admin, args, usage):
+async def _handle_policy_groups(ctx, admin, args, usage):
     if len(args) < 2:
         return usage
     sub = args[0].lower()
@@ -1122,6 +1139,8 @@ def _handle_policy_groups(ctx, admin, args, usage):
         namespace, group = args[1], args[2]
         members = args[3] if len(args) > 3 else None
         roles = args[4] if len(args) > 4 else None
+        members = _resolve_discord_id_csv(members, _resolve_discord_user_id)
+        roles = _resolve_discord_id_csv(roles, _resolve_discord_role_id)
         return admin.upsert_group(namespace, group, members=members, role_ids=roles)
 
     if sub == "remove":
@@ -1134,6 +1153,7 @@ def _handle_policy_groups(ctx, admin, args, usage):
             return usage
         op, namespace, group, user = args[1], args[2], args[3], args[4]
         user_id = _resolve_discord_user_id(user)
+        await _validate_discord_target(ctx, "user", user_id)
         if op == "add":
             return admin.add_group_member(namespace, group, user_id)
         if op == "remove":
@@ -1145,6 +1165,7 @@ def _handle_policy_groups(ctx, admin, args, usage):
             return usage
         op, namespace, group, role = args[1], args[2], args[3], args[4]
         role_id = _resolve_discord_role_id(role)
+        await _validate_discord_target(ctx, "group", role_id, role_check=True)
         if op == "add":
             return admin.add_group_role(namespace, group, role_id)
         if op == "remove":
@@ -1152,6 +1173,67 @@ def _handle_policy_groups(ctx, admin, args, usage):
         return usage
 
     return usage
+
+
+def _resolve_discord_id_csv(raw, resolver):
+    if raw is None or raw == "-":
+        return raw
+    parts = [part.strip() for part in str(raw).split(",") if part.strip()]
+    return ",".join(resolver(part) for part in parts)
+
+
+async def _resolve_and_validate_discord_target(ctx, scope, raw_target):
+    target = _resolve_discord_target(ctx, scope, raw_target)
+    return await _validate_discord_target(ctx, scope, target)
+
+
+async def _validate_discord_target(ctx, scope, target_id, *, role_check=False):
+    guild = getattr(ctx, "guild", None)
+    if guild is None:
+        raise PolicyAdminError("Policy commands must be used in a server.")
+
+    scope_lower = scope.lower()
+    tid = str(target_id)
+
+    if role_check:
+        if not tid.isdigit():
+            raise PolicyAdminError(f"Invalid role id `{tid}`.")
+        role = guild.get_role(int(tid))
+        if role is None:
+            raise PolicyAdminError(f"Role `{tid}` is not in this server.")
+        return tid
+
+    if scope_lower == "guild":
+        if tid != str(guild.id):
+            raise PolicyAdminError("Guild target must be this server. Use `here`.")
+        return tid
+
+    if scope_lower == "channel":
+        if not tid.isdigit():
+            raise PolicyAdminError(f"Invalid channel id `{tid}`.")
+        channel = guild.get_channel(int(tid))
+        if channel is None:
+            get_thread = getattr(guild, "get_thread", None)
+            channel = get_thread(int(tid)) if callable(get_thread) else None
+        if channel is None:
+            raise PolicyAdminError(f"Channel `{tid}` is not in this server.")
+        return tid
+
+    if scope_lower == "user":
+        if not tid.isdigit():
+            raise PolicyAdminError(f"Invalid user id `{tid}`.")
+        member = guild.get_member(int(tid))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(tid))
+            except Exception:
+                member = None
+        if member is None:
+            raise PolicyAdminError(f"User `{tid}` is not a member of this server.")
+        return tid
+
+    # group name targets are validated by PolicyAdmin.canonicalize_target
+    return tid
 
 
 def _resolve_discord_target(ctx, scope, raw_target):
@@ -1188,7 +1270,7 @@ def _resolve_discord_target(ctx, scope, raw_target):
 def _resolve_discord_user_id(raw):
     raw = str(raw).strip()
     if raw.startswith("<@&") and raw.endswith(">"):
-        return raw
+        raise PolicyAdminError(f"Expected a user mention, got role mention `{raw}`.")
     if raw.startswith("<@") and raw.endswith(">"):
         inner = raw[2:-1]
         if inner.startswith("!"):
@@ -1201,6 +1283,8 @@ def _resolve_discord_role_id(raw):
     raw = str(raw).strip()
     if raw.startswith("<@&") and raw.endswith(">"):
         return raw[3:-1]
+    if raw.startswith("<@") and raw.endswith(">"):
+        raise PolicyAdminError(f"Expected a role mention, got user mention `{raw}`.")
     return raw
 
 

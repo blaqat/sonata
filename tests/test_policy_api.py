@@ -433,6 +433,31 @@ class PolicyApiTests(unittest.TestCase):
         self.assertEqual(channel_policy.command_policy_mode, ALLOWLIST)
         self.assertEqual(channel_policy.commands, ["help"])
 
+    def test_refresh_from_policy_api_preserves_custom_chat_rules(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+
+        policies.policy_api.set_rule(
+            "chat", "channel", 777, "chat.feature.custom", "allow"
+        )
+        policies.policy_api.set_rule(
+            "chat", "channel", 777, "chat.can_speak", "deny"
+        )
+
+        policies.refresh_from_policy_api()
+
+        rules = {
+            (rule.action, rule.effect)
+            for rule in policies.policy_api.get_scope_rules("chat", "channel", 777)
+        }
+        self.assertIn(("chat.feature.custom", "allow"), rules)
+        self.assertIn(("chat.can_speak", "deny"), rules)
+        channel_policy = policies.get_channel_policy(777)
+        self.assertEqual(
+            channel_policy.extra_rules,
+            [{"action": "chat.feature.custom", "effect": "allow"}],
+        )
+
     def test_policy_admin_chat_rules_persist_across_reload(self):
         policy_admin_mod = _load_module(
             "policy_admin", pathlib.Path("src/modules/policy_admin.py")

@@ -93,6 +93,34 @@ def should_respond_to_message(
     return policy.respond_all or is_command or is_reply_to_sonata or called_sonata
 
 
+def _is_canonical_chat_action(action):
+    if action in {"chat.can_speak", "chat.respond_all", "chat.command.*"}:
+        return True
+    return action.startswith("chat.command.")
+
+
+def _normalize_extra_rules(extra_rules):
+    if not extra_rules:
+        return []
+    normalized = []
+    seen = set()
+    for rule in extra_rules:
+        if not isinstance(rule, dict):
+            continue
+        action = str(rule.get("action") or "").strip().lower()
+        effect = str(rule.get("effect") or "").strip().lower()
+        if not action or effect not in {EFFECT_ALLOW, EFFECT_DENY}:
+            continue
+        if _is_canonical_chat_action(action):
+            continue
+        key = (action, effect)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({"action": action, "effect": effect})
+    return normalized
+
+
 @dataclass
 class ChannelPolicy:
     # Stored shape for one guild/channel/user policy row (mirrored into PolicyAPI "chat" rules).
@@ -100,6 +128,8 @@ class ChannelPolicy:
     respond_all: bool = False
     command_policy_mode: str = DENYLIST
     commands: list[str] | None = None
+    # Non-standard chat.* actions preserved across PolicyAPI ↔ ChannelPolicies round-trips.
+    extra_rules: list[dict] | None = None
 
     def __post_init__(self):
         self.can_speak = bool(self.can_speak)
@@ -107,6 +137,7 @@ class ChannelPolicy:
         if self.command_policy_mode not in {ALLOWLIST, DENYLIST}:
             self.command_policy_mode = DENYLIST
         self.commands = normalize_commands(self.commands)
+        self.extra_rules = _normalize_extra_rules(self.extra_rules)
 
     @classmethod
     def default(cls):
@@ -115,6 +146,7 @@ class ChannelPolicy:
             respond_all=False,
             command_policy_mode=DENYLIST,
             commands=[],
+            extra_rules=[],
         )
 
     @classmethod
@@ -125,6 +157,7 @@ class ChannelPolicy:
             respond_all=False,
             command_policy_mode=ALLOWLIST,
             commands=[],
+            extra_rules=[],
         )
 
     @classmethod
@@ -135,6 +168,7 @@ class ChannelPolicy:
                 respond_all=policy.respond_all,
                 command_policy_mode=policy.command_policy_mode,
                 commands=policy.commands,
+                extra_rules=policy.extra_rules,
             )
 
         if not isinstance(policy, dict):
@@ -145,15 +179,19 @@ class ChannelPolicy:
             respond_all=policy.get("respond_all", False),
             command_policy_mode=policy.get("command_policy_mode", DENYLIST),
             commands=policy.get("commands", []),
+            extra_rules=policy.get("extra_rules", []),
         )
 
     def to_dict(self):
-        return {
+        data = {
             "can_speak": self.can_speak,
             "respond_all": self.respond_all,
             "command_policy_mode": self.command_policy_mode,
             "commands": list(self.commands),
         }
+        if self.extra_rules:
+            data["extra_rules"] = [dict(rule) for rule in self.extra_rules]
+        return data
 
     def clone(self):
         return type(self).normalize(self)
@@ -254,6 +292,7 @@ class ChannelPolicies:
         allowed_commands = []
         denied_commands = []
         allowlist_mode = False
+        extra_rules = []
 
         for rule in rules:
             if rule.action == "chat.can_speak":
@@ -272,6 +311,8 @@ class ChannelPolicies:
                     allowed_commands.append(command)
                 else:
                     denied_commands.append(command)
+            else:
+                extra_rules.append({"action": rule.action, "effect": rule.effect})
 
         if allowlist_mode:
             policy.command_policy_mode = ALLOWLIST
@@ -280,7 +321,7 @@ class ChannelPolicies:
             policy.command_policy_mode = DENYLIST
             policy.commands = normalize_commands(denied_commands)
 
-        return policy
+        return policy.with_updates(extra_rules=extra_rules)
 
     def refresh_from_policy_api(self):
         """Rebuild ChannelPolicies maps from PolicyAPI chat rules for persistence."""
@@ -364,6 +405,15 @@ class ChannelPolicies:
                     f"chat.command.{normalize_command_name(command)}",
                     EFFECT_ALLOW,
                 )
+
+        for rule in policy.extra_rules:
+            self.policy_api.set_rule(
+                "chat",
+                scope,
+                scope_id,
+                rule["action"],
+                rule["effect"],
+            )
 
     def _sync_policy_api(self):
         # Order does not affect evaluate(); each scope id is independent

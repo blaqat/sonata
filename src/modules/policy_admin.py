@@ -70,12 +70,34 @@ class PolicyAdmin:
             raise PolicyAdminError("Target cannot be empty.")
         return t
 
+    def canonicalize_target(self, namespace, scope, target):
+        """Normalize targets; group scopes must use existing `{namespace}:{name}` ids."""
+        ns = self.require_namespace(namespace)
+        sc = self.validate_scope(scope)
+        t = self.normalize_target(target)
+        if sc != "group":
+            return t
+
+        if ":" in t:
+            group_ns, name = t.split(":", 1)
+            if group_ns != ns:
+                raise PolicyAdminError(
+                    f"Group target `{t}` must use namespace `{ns}`."
+                )
+        else:
+            name = t
+            t = f"{ns}:{name}"
+
+        if self.api.get_group(ns, name) is None:
+            raise PolicyAdminError(f"Group `{name}` not found in `{ns}`.")
+        return t
+
     # ── Read operations ──────────────────────────────────────────────────
 
     def show_rules(self, namespace, scope, target):
         ns = self.require_namespace(namespace)
         sc = self.validate_scope(scope)
-        t = self.normalize_target(target)
+        t = self.canonicalize_target(ns, sc, target)
         rules = self.api.get_scope_rules(ns, sc, t)
         if not rules:
             return f"No rules for `{ns}` {sc} `{t}`."
@@ -120,7 +142,7 @@ class PolicyAdmin:
     def set_rule(self, namespace, scope, target, action, effect):
         ns = self.require_namespace(namespace)
         sc = self.validate_scope(scope)
-        t = self.normalize_target(target)
+        t = self.canonicalize_target(ns, sc, target)
         a = self.validate_action(ns, action)
         e = self.validate_effect(effect)
         rule = self.api.set_rule(ns, sc, t, a, e)
@@ -130,7 +152,7 @@ class PolicyAdmin:
     def remove_rule(self, namespace, scope, target, action):
         ns = self.require_namespace(namespace)
         sc = self.validate_scope(scope)
-        t = self.normalize_target(target)
+        t = self.canonicalize_target(ns, sc, target)
         a = self.validate_action(ns, action)
         removed = self.api.remove_rule(ns, sc, t, a)
         if not removed:
@@ -143,7 +165,7 @@ class PolicyAdmin:
     def clear_scope(self, namespace, scope, target):
         ns = self.require_namespace(namespace)
         sc = self.validate_scope(scope)
-        t = self.normalize_target(target)
+        t = self.canonicalize_target(ns, sc, target)
         self.api.clear_scope(ns, sc, t)
         self._persist(ns)
         return f"Cleared all rules for {sc} `{t}` in `{ns}`."
