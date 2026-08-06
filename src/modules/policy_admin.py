@@ -149,6 +149,10 @@ class PolicyAdmin:
         t = self.canonicalize_target(ns, sc, target)
         a = self.validate_action(ns, action)
         e = self.validate_effect(effect)
+        if a == "chat.protected" and sc != "channel":
+            raise PolicyAdminError(
+                "`chat.protected` is channel-scoped only (Beacon encryption is per channel)."
+            )
         rule = self.api.set_rule(ns, sc, t, a, e)
         self._persist(ns)
         return f"Set `{a}` → `{e}` on {sc} `{t}` in `{ns}`."

@@ -302,8 +302,6 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     channel_protected = policy_manager.is_protected(
         guild_id=message.guild.id,
         channel_id=message.channel.id,
-        user_id=message.author.id,
-        role_ids=role_ids,
     )
 
     _guild_name = message.guild.name

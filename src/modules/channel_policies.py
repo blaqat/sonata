@@ -312,9 +312,19 @@ class ChannelPolicies:
         beacon_home = getattr(getattr(self.sonata, "beacon", None), "home", None)
         if not beacon_home:
             return None
-        beacon_home = str(beacon_home)
-        normalized = beacon_home.replace("\\", "/").strip("/").lower()
+        # Match Beacon path normalization so encrypt rules evaluate against the same key.
+        normalized = re.sub(
+            r"/+", "/", str(beacon_home).replace("\\", "/")
+        ).strip("/").lower()
         return f"beacon.encrypt.path.{normalized}/chat/value/i{channel_id}"
+
+    def _clear_beacon_chat_history_rule(self, channel_id):
+        beacon_action = self._beacon_chat_history_action(channel_id)
+        if beacon_action is None or not self.policy_api.has_namespace("beacon"):
+            return
+        self.policy_api.remove_rule(
+            "beacon", "guild", "__global__", beacon_action
+        )
 
     def _policy_from_scope_rules(self, scope, scope_id):
         rules = self.policy_api.get_scope_rules("chat", scope, scope_id)
@@ -333,7 +343,8 @@ class ChannelPolicies:
             elif rule.action == "chat.respond_all":
                 policy.respond_all = rule.effect == EFFECT_ALLOW
             elif rule.action == "chat.protected":
-                policy.protected = rule.effect == EFFECT_ALLOW
+                if scope == "channel":
+                    policy.protected = rule.effect == EFFECT_ALLOW
             elif rule.action == "chat.command.*":
                 allowlist_mode = rule.effect == EFFECT_DENY
             elif rule.action.startswith("chat.command."):
@@ -438,7 +449,9 @@ class ChannelPolicies:
                 "chat", scope, scope_id, "chat.respond_all", EFFECT_ALLOW
             )
 
-        if policy.protected:
+        # Protection is channel-scoped so Beacon encrypt paths stay aligned with
+        # the privacy decision. Ignore protected flags on guild/user scopes.
+        if policy.protected and scope == "channel":
             self.policy_api.set_rule(
                 "chat", scope, scope_id, "chat.protected", EFFECT_ALLOW
             )
@@ -497,18 +510,24 @@ class ChannelPolicies:
     def _normalize_users_map(self, users):
         if not isinstance(users, dict):
             return {}
-        return {
-            str(user_id): ChannelPolicy.normalize(policy)
-            for user_id, policy in users.items()
-        }
+        normalized = {}
+        for user_id, policy in users.items():
+            policy = ChannelPolicy.normalize(policy)
+            if policy.protected:
+                policy = policy.with_updates(protected=False)
+            normalized[str(user_id)] = policy
+        return normalized
 
     def _normalize_guilds_map(self, guilds):
         if not isinstance(guilds, dict):
             return {}
-        return {
-            str(guild_id): ChannelPolicy.normalize(policy)
-            for guild_id, policy in guilds.items()
-        }
+        normalized = {}
+        for guild_id, policy in guilds.items():
+            policy = ChannelPolicy.normalize(policy)
+            if policy.protected:
+                policy = policy.with_updates(protected=False)
+            normalized[str(guild_id)] = policy
+        return normalized
 
     def _normalize_channels_map(self, channels):
         if not isinstance(channels, dict):
@@ -865,6 +884,7 @@ class ChannelPolicies:
         key = str(channel_id)
         removed = self.channels.pop(key, None)
         self.policy_api.clear_scope("chat", "channel", key)
+        self._clear_beacon_chat_history_rule(key)
         self._persist()
         return removed.clone() if removed is not None else None
 
@@ -952,14 +972,12 @@ class ChannelPolicies:
         role_ids=None,
         group_ids=None,
     ):
+        # Channel-only: privacy/logging must not be overridden by user/group rules,
+        # and Beacon encryption is keyed per channel path.
         return self.policy_api.evaluate(
             "chat",
             "chat.protected",
-            guild_id=guild_id,
             channel_id=channel_id,
-            user_id=user_id,
-            role_ids=role_ids,
-            group_ids=group_ids,
             default=False,
         )
 
