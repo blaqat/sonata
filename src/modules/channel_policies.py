@@ -94,9 +94,9 @@ def should_respond_to_message(
 
 
 def _is_canonical_chat_action(action):
-    if action in {"chat.can_speak", "chat.respond_all", "chat.command.*"}:
-        return True
-    return action.startswith("chat.command.")
+    # Specific chat.command.<name> allows may be preserved via extra_rules in
+    # denylist mode; only the structural/wildcard actions are reserved here.
+    return action in {"chat.can_speak", "chat.respond_all", "chat.command.*"}
 
 
 def _normalize_extra_rules(extra_rules):
@@ -320,6 +320,11 @@ class ChannelPolicies:
         else:
             policy.command_policy_mode = DENYLIST
             policy.commands = normalize_commands(denied_commands)
+            # Keep explicit allows that aren't represented by denylist commands.
+            for command in normalize_commands(allowed_commands):
+                extra_rules.append(
+                    {"action": f"chat.command.{command}", "effect": EFFECT_ALLOW}
+                )
 
         return policy.with_updates(extra_rules=extra_rules)
 

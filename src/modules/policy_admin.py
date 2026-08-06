@@ -80,17 +80,21 @@ class PolicyAdmin:
 
         if ":" in t:
             group_ns, name = t.split(":", 1)
+            group_ns = group_ns.strip().lower()
+            name = name.strip().lower()
             if group_ns != ns:
                 raise PolicyAdminError(
                     f"Group target `{t}` must use namespace `{ns}`."
                 )
         else:
-            name = t
-            t = f"{ns}:{name}"
+            name = t.strip().lower()
+
+        if not name:
+            raise PolicyAdminError("Group name cannot be empty.")
 
         if self.api.get_group(ns, name) is None:
             raise PolicyAdminError(f"Group `{name}` not found in `{ns}`.")
-        return t
+        return f"{ns}:{name}"
 
     # ── Read operations ──────────────────────────────────────────────────
 

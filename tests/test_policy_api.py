@@ -26,6 +26,7 @@ channel_policies_mod = _load_module(
 
 ALLOWLIST = channel_policies_mod.ALLOWLIST
 ChannelPolicies = channel_policies_mod.ChannelPolicies
+ChannelPolicy = channel_policies_mod.ChannelPolicy
 PolicyAPI = policy_api_mod.PolicyAPI
 
 
@@ -457,6 +458,49 @@ class PolicyApiTests(unittest.TestCase):
             channel_policy.extra_rules,
             [{"action": "chat.feature.custom", "effect": "allow"}],
         )
+
+    def test_refresh_preserves_explicit_command_allows_in_denylist_mode(self):
+        sonata = FakeSonata()
+        policies = ChannelPolicies(sonata)
+        policies.policy_api.set_rule(
+            "chat", "channel", 888, "chat.command.foo", "allow"
+        )
+        policies.policy_api.set_rule(
+            "chat", "channel", 888, "chat.command.bar", "deny"
+        )
+
+        policies.refresh_from_policy_api()
+
+        rules = {
+            (rule.action, rule.effect)
+            for rule in policies.policy_api.get_scope_rules("chat", "channel", 888)
+        }
+        self.assertIn(("chat.command.foo", "allow"), rules)
+        self.assertIn(("chat.command.bar", "deny"), rules)
+
+    def test_canonicalize_group_target_lowercases_and_rejects_empty(self):
+        policy_admin_mod = _load_module(
+            "policy_admin", pathlib.Path("src/modules/policy_admin.py")
+        )
+        PolicyAdmin = policy_admin_mod.PolicyAdmin
+        PolicyAdminError = policy_admin_mod.PolicyAdminError
+
+        sonata = FakeSonata()
+        admin = PolicyAdmin(sonata)
+        admin.api.upsert_group("core", "mods", members=["1"])
+
+        self.assertEqual(
+            admin.canonicalize_target("core", "group", "core:Mods"),
+            "core:mods",
+        )
+        self.assertEqual(admin.canonicalize_target("core", "group", "Mods"), "core:mods")
+        with self.assertRaises(PolicyAdminError):
+            admin.canonicalize_target("core", "group", "core:")
+        msg = admin.set_rule("core", "group", "core:Mods", "core.feature.x", "allow")
+        self.assertIn("core:mods", msg)
+        rules = admin.api.get_scope_rules("core", "group", "core:mods")
+        self.assertEqual([r.action for r in rules], ["core.feature.x"])
+        self.assertEqual(admin.api.get_scope_rules("core", "group", "core:Mods"), [])
 
     def test_policy_admin_chat_rules_persist_across_reload(self):
         policy_admin_mod = _load_module(
