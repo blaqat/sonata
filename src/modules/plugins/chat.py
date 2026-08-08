@@ -12,9 +12,10 @@ before running commands or AI flows: **can_speak**, per-command allow/deny (see
 ``command_policy_mode`` in ``channel_policies``), then **respond_all** for whether
 proactive replies are allowed. DMs are not gated by channel policy.
 
-Configure overrides via ``$policy`` (Discord) or ``policy`` (terminal); see
-``policy_admin`` module docstring. ``$policy`` bypasses channel gating so admins
-can recover access from disabled channels.
+Configure overrides via ``$policy`` (Discord policy plugin) or ``policy``
+(terminal); see ``policy_admin`` / ``policy_cli``. ``$policy`` bypasses channel
+gating so admins can recover access from disabled channels. Durable chat rules
+live in ``policy_namespaces.chat``.
 """
 
 # TODO: Make  message class

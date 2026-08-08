@@ -1,13 +1,18 @@
 """
-Per-guild / per-channel / per-user **chat** policy storage and evaluation.
+Per-guild / per-channel / per-user **chat** policy façade and evaluation.
 
-**ChannelPolicy** (serialized under config keys ``channels``, ``guilds``, ``users``,
-and ``groups``) fields:
+Durable chat rules live in ``PolicyAPI`` namespace ``chat``, persisted under
+``policy_namespaces.chat`` (same shape as other namespaces). ``ChannelPolicy``
+is an in-memory projection for programmatic helpers and legacy migration.
+
+**ChannelPolicy** fields (projection of PolicyAPI rules):
 
 - **can_speak**: If false, the bot does not process the channel (commands get a short
   reply; normal chat is ignored).
 - **respond_all**: If true, the bot may respond without an @mention, reply, or
   ``$command`` (subject to ``should_respond_to_message`` in callers).
+- **protected**: If true (channel scope only), Beacon encrypts that channel's chat
+  memory path (``chat.protected``; side effects in ``policy_effects``).
 - **command_policy_mode**: ``denylist`` (default) or ``allowlist``.
 - **commands**: Normalized command names (no leading ``$``).
 
@@ -15,22 +20,30 @@ In **denylist** mode, each name in ``commands`` is **blocked**; ``allow``/``deny
 mutate that list. In **allowlist** mode, only listed commands are permitted;
 ``blacklist_add`` applies a full mute-style policy (no speak, allowlist, empty list).
 
-**ChannelPolicies** loads merged beacon + config data, persists changes back, and
-syncs into ``PolicyAPI`` namespace ``chat`` so ``evaluate`` can merge **user**,
-**group**, **channel**, and **guild** rules (see ``policy_api.EVAL_PRECEDENCE``).
+**ChannelPolicies** migrates legacy ``channels``/``guilds``/``users``/``groups``
+config once into ``policy_namespaces.chat``, then treats PolicyAPI as source of
+truth. Evaluation merges **user**, **group**, **channel**, and **guild** rules
+(see ``policy_api.EVAL_PRECEDENCE``).
 
-**Operator commands** (same behavior): Discord ``$channels …`` (requires Manage
-Server), terminal ``channels …``. Programmatic access: ``sonata.chat.policy_manager``
-after the chat plugin loads.
+**Operator commands**: Discord ``$policy …`` (requires Manage Server), terminal
+``policy …`` (shared dispatch in ``policy_cli``; mutations via ``policy_admin``).
+Programmatic access: ``sonata.chat.policy_manager`` after the chat plugin loads.
 """
 
 import re
 from dataclasses import dataclass
 
 from modules.policy_api import EFFECT_ALLOW, EFFECT_DENY, get_or_create_policy_api
+from modules.policy_effects import (
+    beacon_chat_history_action,
+    clear_beacon_chat_history_rule,
+    ensure_beacon_namespace,
+    has_beacon,
+    sync_chat_protected_effects,
+)
 
 
-# Hard-coded channel ids still treated as no-speak (see chat mem validate); prefer $channels / config for new blocks.
+# Hard-coded channel ids still treated as no-speak (see chat mem validate); prefer $policy / config for new blocks.
 LEGACY_CHANNEL_BLACKLIST = {
     1175907292072398858,
     724158738138660894,
@@ -259,7 +272,7 @@ class ChannelPolicy:
 
 
 class ChannelPolicies:
-    """Loads policy dicts from config/beacon, pushes them into PolicyAPI for evaluate()."""
+    """Chat policy façade: PolicyAPI is durable truth; maps are a projection."""
 
     def __init__(self, sonata):
         self.sonata = sonata
@@ -270,7 +283,7 @@ class ChannelPolicies:
         self.loaded = False
         self.policy_api = get_or_create_policy_api(sonata)
         self._ensure_chat_namespace()
-        self._ensure_beacon_namespace()
+        ensure_beacon_namespace(sonata, self.policy_api)
         self.init()
 
     def _ensure_chat_namespace(self):
@@ -290,41 +303,13 @@ class ChannelPolicies:
         )
 
     def _has_beacon(self):
-        has_method = getattr(self.sonata, "has", None)
-        if callable(has_method):
-            try:
-                return bool(has_method("beacon"))
-            except Exception:
-                return hasattr(self.sonata, "beacon")
-        return hasattr(self.sonata, "beacon")
-
-    def _ensure_beacon_namespace(self):
-        if not self._has_beacon():
-            return
-        if self.policy_api.has_namespace("beacon"):
-            self.policy_api.activate_namespace("beacon")
-            return
-        self.policy_api.register_namespace("beacon", plugin=True)
+        return has_beacon(self.sonata)
 
     def _beacon_chat_history_action(self, channel_id):
-        if not self._has_beacon():
-            return None
-        beacon_home = getattr(getattr(self.sonata, "beacon", None), "home", None)
-        if not beacon_home:
-            return None
-        # Match Beacon path normalization so encrypt rules evaluate against the same key.
-        normalized = re.sub(
-            r"/+", "/", str(beacon_home).replace("\\", "/")
-        ).strip("/").lower()
-        return f"beacon.encrypt.path.{normalized}/chat/value/i{channel_id}"
+        return beacon_chat_history_action(self.sonata, channel_id)
 
     def _clear_beacon_chat_history_rule(self, channel_id):
-        beacon_action = self._beacon_chat_history_action(channel_id)
-        if beacon_action is None or not self.policy_api.has_namespace("beacon"):
-            return
-        self.policy_api.remove_rule(
-            "beacon", "guild", "__global__", beacon_action
-        )
+        clear_beacon_chat_history_rule(self.sonata, channel_id, self.policy_api)
 
     def _policy_from_scope_rules(self, scope, scope_id):
         rules = self.policy_api.get_scope_rules("chat", scope, scope_id)
@@ -375,9 +360,7 @@ class ChannelPolicies:
         return policy.with_updates(extra_rules=extra_rules)
 
     def refresh_from_policy_api(self):
-        """Rebuild ChannelPolicies maps from PolicyAPI chat rules for persistence."""
-        old_channel_ids = set(self.channels.keys())
-
+        """Rebuild in-memory ChannelPolicy maps from PolicyAPI (projection only)."""
         guilds = {}
         for scope_id in self.policy_api.list_scope_ids("chat", "guild"):
             policy = self._policy_from_scope_rules("guild", scope_id)
@@ -400,21 +383,7 @@ class ChannelPolicies:
         self.users = users
         self.channels = channels
         self.loaded = True
-
-        if self._has_beacon() and self.policy_api.has_namespace("beacon"):
-            for channel_id in old_channel_ids.union(channels.keys()):
-                beacon_action = self._beacon_chat_history_action(channel_id)
-                if beacon_action is not None:
-                    self.policy_api.remove_rule(
-                        "beacon", "guild", "__global__", beacon_action
-                    )
-
-        for guild_id, policy in self.guilds.items():
-            self._sync_guild_scope(guild_id, policy)
-        for user_id, policy in self.users.items():
-            self._sync_user_scope(user_id, policy)
-        for channel_id, policy in self.channels.items():
-            self._sync_channel_scope(channel_id, policy)
+        sync_chat_protected_effects(self.sonata, self.policy_api)
 
     def _sync_channel_scope(self, channel_id, policy):
         key = str(channel_id)
@@ -432,11 +401,6 @@ class ChannelPolicies:
         policy = ChannelPolicy.normalize(policy)
         # Full replace for this scope id so removed commands disappear from PolicyAPI
         self.policy_api.clear_scope("chat", scope, scope_id)
-        beacon_action = None
-        if scope == "channel":
-            beacon_action = self._beacon_chat_history_action(scope_id)
-            if beacon_action is not None and self.policy_api.has_namespace("beacon"):
-                self.policy_api.remove_rule("beacon", "guild", "__global__", beacon_action)
 
         if not policy.can_speak:
             self.policy_api.set_rule(
@@ -449,20 +413,11 @@ class ChannelPolicies:
                 "chat", scope, scope_id, "chat.respond_all", EFFECT_ALLOW
             )
 
-        # Protection is channel-scoped so Beacon encrypt paths stay aligned with
-        # the privacy decision. Ignore protected flags on guild/user scopes.
+        # Protection is channel-scoped only (Beacon encrypt paths are per channel).
         if policy.protected and scope == "channel":
             self.policy_api.set_rule(
                 "chat", scope, scope_id, "chat.protected", EFFECT_ALLOW
             )
-            if beacon_action is not None and self.policy_api.has_namespace("beacon"):
-                self.policy_api.set_rule(
-                    "beacon",
-                    "guild",
-                    "__global__",
-                    beacon_action,
-                    EFFECT_ALLOW,
-                )
 
         if policy.command_policy_mode == DENYLIST:
             for command in policy.commands:
@@ -619,27 +574,31 @@ class ChannelPolicies:
             )
 
     def _persist(self):
-        # Authoritative JSON in config; beacon branch mirrors for networked sync if present
-        serialized_channels = self._serialize_channels()
-        serialized_guilds = self._serialize_guilds()
-        serialized_users = self._serialize_users()
-        serialized_groups = self._serialize_groups()
-        self.sonata.config.set(
-            channels=serialized_channels,
-            guilds=serialized_guilds,
-            users=serialized_users,
-            groups=serialized_groups,
-        )
-        if self._has_beacon():
-            policies_branch = self.sonata.beacon.branch("policies")
-            policies_branch.illuminate("channels", serialized_channels)
-            policies_branch.illuminate("guilds", serialized_guilds)
-            policies_branch.illuminate("users", serialized_users)
-            policies_branch.illuminate("groups", serialized_groups)
+        """Persist chat namespace in PolicyAPI-native ``policy_namespaces`` shape."""
+        from modules.policy_admin import get_or_create_policy_admin
 
-    def init(self):
-        if self.loaded:
-            return self.channels
+        admin = get_or_create_policy_admin(self.sonata)
+        admin._persist_namespace("chat")
+        sync_chat_protected_effects(self.sonata, self.policy_api)
+
+    def _has_native_chat(self):
+        config_ns = self.sonata.config.get("policy_namespaces", {}) or {}
+        if config_ns.get("chat"):
+            return True
+        if self._has_beacon():
+            try:
+                data = (
+                    self.sonata.beacon.branch("policies")
+                    .branch("namespaces")
+                    .discover("chat")
+                )
+            except Exception:
+                data = None
+            if data:
+                return True
+        return False
+
+    def _load_legacy_maps(self):
         beacon_channels = {}
         beacon_guilds = {}
         beacon_users = {}
@@ -651,12 +610,11 @@ class ChannelPolicies:
             beacon_users = policies_branch.discover("users") or {}
             beacon_groups = policies_branch.discover("groups") or {}
 
-        configured_channels = self.sonata.config.get("channels", {})
-        configured_guilds = self.sonata.config.get("guilds", {})
-        configured_users = self.sonata.config.get("users", {})
-        configured_groups = self.sonata.config.get("groups", {})
+        configured_channels = self.sonata.config.get("channels", {}) or {}
+        configured_guilds = self.sonata.config.get("guilds", {}) or {}
+        configured_users = self.sonata.config.get("users", {}) or {}
+        configured_groups = self.sonata.config.get("groups", {}) or {}
 
-        # Beacon first, then config overwrites (local edits win)
         guilds = {}
         guilds.update(self._normalize_guilds_map(beacon_guilds))
         guilds.update(self._normalize_guilds_map(configured_guilds))
@@ -672,14 +630,45 @@ class ChannelPolicies:
         groups = {}
         groups.update(self._normalize_groups_map(beacon_groups))
         groups.update(self._normalize_groups_map(configured_groups))
+        return guilds, users, channels, groups
 
+    def _clear_legacy_chat_stores(self):
+        """Stop dual-write: clear legacy ChannelPolicy blob keys after migration."""
+        self.sonata.config.set(channels={}, guilds={}, users={}, groups={})
+        if self._has_beacon():
+            policies_branch = self.sonata.beacon.branch("policies")
+            policies_branch.illuminate("channels", {})
+            policies_branch.illuminate("guilds", {})
+            policies_branch.illuminate("users", {})
+            policies_branch.illuminate("groups", {})
+
+    def _migrate_legacy_to_native(self, admin):
+        guilds, users, channels, groups = self._load_legacy_maps()
+        if not (guilds or users or channels or groups):
+            return False
         self.guilds = guilds
         self.users = users
         self.channels = channels
         self.groups = groups
-        self.loaded = True
         self._sync_policy_api()
-        self._persist()
+        admin._persist_namespace("chat")
+        self._clear_legacy_chat_stores()
+        return True
+
+    def init(self):
+        if self.loaded:
+            return self.channels
+
+        from modules.policy_admin import get_or_create_policy_admin
+
+        admin = get_or_create_policy_admin(self.sonata)
+        if self._has_native_chat():
+            admin.load_namespace("chat")
+        else:
+            self._migrate_legacy_to_native(admin)
+
+        self.refresh_from_policy_api()
+        self.loaded = True
         return self.channels
 
     def get_guilds(self):

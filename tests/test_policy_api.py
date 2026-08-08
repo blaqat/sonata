@@ -550,6 +550,42 @@ class PolicyApiTests(unittest.TestCase):
         self.assertEqual([r.action for r in rules], ["core.feature.x"])
         self.assertEqual(admin.api.get_scope_rules("core", "group", "core:Mods"), [])
 
+    def test_legacy_channel_blobs_migrate_to_policy_namespaces(self):
+        sonata = FakeSonata()
+        sonata.config.set(
+            channels={
+                "321": {
+                    "can_speak": False,
+                    "respond_all": True,
+                    "protected": True,
+                    "command_policy_mode": "denylist",
+                    "commands": ["help"],
+                }
+            }
+        )
+        policies = ChannelPolicies(sonata)
+        self.assertFalse(policies.can_speak(guild_id=1, channel_id=321, user_id=7))
+        self.assertTrue(
+            policies.should_respond_all(guild_id=1, channel_id=321, user_id=7)
+        )
+        self.assertTrue(policies.is_protected(guild_id=1, channel_id=321, user_id=7))
+        self.assertEqual(sonata.config.get("channels", {}), {})
+        native_rules = (
+            sonata.config.get("policy_namespaces", {})
+            .get("chat", {})
+            .get("rules", {})
+            .get("channel:321", [])
+        )
+        actions = {(r["action"], r["effect"]) for r in native_rules}
+        self.assertIn(("chat.can_speak", "deny"), actions)
+        self.assertIn(("chat.respond_all", "allow"), actions)
+        self.assertIn(("chat.protected", "allow"), actions)
+        self.assertIn(("chat.command.help", "deny"), actions)
+
+        sonata.policy_api = None
+        reloaded = ChannelPolicies(sonata)
+        self.assertTrue(reloaded.is_protected(guild_id=1, channel_id=321, user_id=7))
+
     def test_policy_admin_chat_rules_persist_across_reload(self):
         policy_admin_mod = _load_module(
             "policy_admin", pathlib.Path("src/modules/policy_admin.py")
@@ -571,9 +607,14 @@ class PolicyApiTests(unittest.TestCase):
         self.assertTrue(
             policies.should_respond_all(guild_id=1, channel_id=555, user_id=7)
         )
-        self.assertIn("555", sonata.config.get("channels", {}))
-        self.assertFalse(sonata.config.get("channels")["555"]["can_speak"])
-        self.assertTrue(sonata.config.get("channels")["555"]["respond_all"])
+        native = sonata.config.get("policy_namespaces", {}).get("chat", {})
+        channel_rules = {
+            (rule["action"], rule["effect"])
+            for rule in native.get("rules", {}).get("channel:555", [])
+        }
+        self.assertIn(("chat.can_speak", "deny"), channel_rules)
+        self.assertIn(("chat.respond_all", "allow"), channel_rules)
+        self.assertEqual(sonata.config.get("channels", {}), {})
 
         sonata.policy_api = None
         reloaded = ChannelPolicies(sonata)

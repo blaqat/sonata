@@ -3,8 +3,8 @@ Shared policy admin service layer for ``$policy`` (Discord) and ``policy`` (term
 
 Centralizes namespace validation, scope/target normalization, action and effect
 validation, formatting of rule and group output, and persistence hooks. Command
-entrypoints resolve Discord or terminal-specific references at the edge, then
-delegate to this service.
+entrypoints resolve Discord or terminal-specific references at the edge, route
+through ``policy_cli.dispatch_policy_command``, then mutate via this service.
 """
 
 from modules.policy_api import (
@@ -244,15 +244,17 @@ class PolicyAdmin:
     # ── Persistence ──────────────────────────────────────────────────────
 
     def _persist(self, namespace):
-        # Chat namespace uses ChannelPolicies persistence (legacy path).
-        # Bridge PolicyAPI → ChannelPolicies first so $policy mutations survive restart.
-        if namespace == "chat" and hasattr(self.sonata, "chat"):
-            manager = self.sonata.chat.policy_manager
-            manager.refresh_from_policy_api()
-            manager._persist()
-            return
-        # Generic namespace persistence
+        # All namespaces (including chat) persist in PolicyAPI-native shape.
         self._persist_namespace(namespace)
+        if namespace != "chat":
+            return
+        from modules.policy_effects import sync_chat_protected_effects
+
+        sync_chat_protected_effects(self.sonata, self.api)
+        chat = getattr(self.sonata, "chat", None)
+        manager = getattr(chat, "policy_manager", None) if chat is not None else None
+        if manager is not None and hasattr(manager, "refresh_from_policy_api"):
+            manager.refresh_from_policy_api()
 
     def _persist_namespace(self, namespace):
         data = self._serialize_namespace(namespace)
@@ -364,8 +366,10 @@ def _parse_csv(value):
 
 
 def get_or_create_policy_admin(sonata):
+    api = get_or_create_policy_api(sonata)
     admin = getattr(sonata, "_policy_admin", None)
-    if isinstance(admin, PolicyAdmin):
+    # Recreate when PolicyAPI was replaced (e.g. tests / process re-init).
+    if isinstance(admin, PolicyAdmin) and admin.api is api:
         return admin
     admin = PolicyAdmin(sonata)
     setattr(sonata, "_policy_admin", admin)

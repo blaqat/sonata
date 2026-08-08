@@ -20,8 +20,8 @@ occurred, the result is ``True``; otherwise ``default`` or ``default_decisions``
 ``set_group_rule`` sets allow/deny for actions on that group.
 
 Obtain the process-wide instance with ``get_or_create_policy_api(sonata)``. The chat
-plugin's ``ChannelPolicies`` registers the ``chat`` namespace and mirrors persisted
-policies into this API.
+plugin's ``ChannelPolicies`` registers the ``chat`` namespace; durable chat rules are
+persisted under ``policy_namespaces.chat`` like other namespaces.
 """
 
 from dataclasses import dataclass, field

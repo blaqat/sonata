@@ -21,6 +21,7 @@ from modules.channel_policies import (
     parse_channel_reference,
 )
 from modules.policy_admin import PolicyAdminError, get_or_create_policy_admin
+from modules.policy_cli import dispatch_policy_command
 from modules.term_console import (
     CURRENT_IO,
     TermConsoleServer,
@@ -840,7 +841,15 @@ async def manage_policies(mem, bot, manager):
         return
 
     try:
-        result = await _handle_term_policy(mem, bot, admin, action, args, usage)
+        result = await dispatch_policy_command(
+            admin,
+            action,
+            args,
+            usage,
+            resolve_target=lambda scope, target: _resolve_term_target(
+                mem, bot, scope, target
+            ),
+        )
         if result is not None:
             cprint(result, "yellow")
             return
@@ -849,94 +858,6 @@ async def manage_policies(mem, bot, manager):
         return
 
     cprint(usage, "yellow")
-
-
-async def _handle_term_policy(mem, bot, admin, action, args, usage):
-    if action == "namespaces":
-        ns_list = admin.list_namespaces()
-        return "Namespaces: " + ", ".join(ns_list)
-
-    if action == "show":
-        if len(args) < 3:
-            return usage
-        namespace, scope, raw_target = args[0], args[1], args[2]
-        target = await _resolve_term_target(mem, bot, scope, raw_target)
-        return admin.show_rules(namespace, scope, target)
-
-    if action == "set":
-        if len(args) < 5:
-            return usage
-        namespace, scope, raw_target, act, effect = args[0], args[1], args[2], args[3], args[4]
-        target = await _resolve_term_target(mem, bot, scope, raw_target)
-        return admin.set_rule(namespace, scope, target, act, effect)
-
-    if action == "remove":
-        if len(args) < 4:
-            return usage
-        namespace, scope, raw_target, act = args[0], args[1], args[2], args[3]
-        target = await _resolve_term_target(mem, bot, scope, raw_target)
-        return admin.remove_rule(namespace, scope, target, act)
-
-    if action == "clear":
-        if len(args) < 3:
-            return usage
-        namespace, scope, raw_target = args[0], args[1], args[2]
-        target = await _resolve_term_target(mem, bot, scope, raw_target)
-        return admin.clear_scope(namespace, scope, target)
-
-    if action == "groups":
-        return _handle_term_policy_groups(admin, args, usage)
-
-    return None
-
-
-def _handle_term_policy_groups(admin, args, usage):
-    if len(args) < 2:
-        return usage
-    sub = args[0].lower()
-
-    if sub == "list":
-        return admin.list_groups(args[1])
-
-    if sub == "show":
-        if len(args) < 3:
-            return usage
-        return admin.show_group(args[1], args[2])
-
-    if sub == "upsert":
-        if len(args) < 3:
-            return usage
-        namespace, group = args[1], args[2]
-        members = args[3] if len(args) > 3 else None
-        roles = args[4] if len(args) > 4 else None
-        return admin.upsert_group(namespace, group, members=members, role_ids=roles)
-
-    if sub == "remove":
-        if len(args) < 3:
-            return usage
-        return admin.remove_group(args[1], args[2])
-
-    if sub == "member":
-        if len(args) < 5:
-            return usage
-        op, namespace, group, user_id = args[1], args[2], args[3], args[4]
-        if op == "add":
-            return admin.add_group_member(namespace, group, user_id)
-        if op == "remove":
-            return admin.remove_group_member(namespace, group, user_id)
-        return usage
-
-    if sub == "role":
-        if len(args) < 5:
-            return usage
-        op, namespace, group, role_id = args[1], args[2], args[3], args[4]
-        if op == "add":
-            return admin.add_group_role(namespace, group, role_id)
-        if op == "remove":
-            return admin.remove_group_role(namespace, group, role_id)
-        return usage
-
-    return usage
 
 
 async def _resolve_term_target(mem, bot, scope, raw_target):
