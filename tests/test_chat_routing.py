@@ -125,6 +125,11 @@ class _PolicyManager:
     def should_respond_all(self, **_kwargs):
         return self.respond_all
 
+    def is_protected(self, **_kwargs):
+        # Chat routing tests focus on rewriting/routing decisions, not privacy
+        # encryption behavior. Default to unprotected.
+        return False
+
 
 class _Chat:
     def __init__(self, respond_all=False):
