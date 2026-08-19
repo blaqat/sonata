@@ -435,21 +435,24 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     ):
         return
 
-    # Pass referenced messages to AI
+    # Pass referenced messages to AI (leading $command takes priority)
     if message_reference_id is not None and VALID_USER:
         # Check if reference is pointing to a message sent by the bot
         # message_reference = await message.channel.fetch_message(
         #     message.reference.message_id
         # )
         if message_reference_id == self.user.id:
-            message.content = f"${AI} " + message.content
+            if not is_command:
+                message.content = f"${AI} " + message.content
             await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
             return
         #
         # await self.process_commands(message)
         # return
 
-    if VALID_USER and (sonata_exp.search(message.content) or respond_all):
+    if VALID_USER and not is_command and (
+        sonata_exp.search(message.content) or respond_all
+    ):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
 
