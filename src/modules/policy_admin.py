@@ -98,6 +98,26 @@ class PolicyAdmin:
 
     # ── Read operations ──────────────────────────────────────────────────
 
+    def list_actions(self, namespace):
+        ns = self.require_namespace(namespace)
+        defaults = self.api.list_known_actions(ns)
+        used = self.api.list_used_actions(ns)
+        lines = [f"Actions in `{ns}`:"]
+        if defaults:
+            for action, decision in sorted(defaults.items()):
+                effect = EFFECT_ALLOW if decision else EFFECT_DENY
+                lines.append(f"  {action} (default {effect})")
+        else:
+            lines.append(
+                f"  (no registered defaults; any `{ns}.*` action is valid)"
+            )
+        extra = [action for action in used if action not in defaults]
+        if extra:
+            lines.append("Also in rules:")
+            for action in extra:
+                lines.append(f"  {action}")
+        return "\n".join(lines)
+
     def show_rules(self, namespace, scope, target):
         ns = self.require_namespace(namespace)
         sc = self.validate_scope(scope)

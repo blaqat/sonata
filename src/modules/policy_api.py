@@ -316,6 +316,23 @@ class PolicyAPI:
         self._require_namespace(key)
         return sorted(self._rules[key][scope_key].keys())
 
+    def list_known_actions(self, namespace: str) -> dict[str, bool]:
+        """Return registered default_decisions for a namespace (action → default allow)."""
+        key = self._normalize_namespace(namespace)
+        ns = self._require_namespace(key)
+        return dict(ns.default_decisions)
+
+    def list_used_actions(self, namespace: str) -> list[str]:
+        """Return sorted unique action names currently present in rules."""
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+        seen: set[str] = set()
+        for scope in SCOPES:
+            for rules in self._rules[key][scope].values():
+                for rule in rules:
+                    seen.add(rule.action)
+        return sorted(seen)
+
     def evaluate(
         self,
         namespace: str,

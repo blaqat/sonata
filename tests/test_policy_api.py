@@ -550,6 +550,22 @@ class PolicyApiTests(unittest.TestCase):
         self.assertEqual([r.action for r in rules], ["core.feature.x"])
         self.assertEqual(admin.api.get_scope_rules("core", "group", "core:Mods"), [])
 
+    def test_list_actions_includes_defaults_and_extra_rules(self):
+        policy_admin_mod = _load_module(
+            "policy_admin", pathlib.Path("src/modules/policy_admin.py")
+        )
+        PolicyAdmin = policy_admin_mod.PolicyAdmin
+        sonata = FakeSonata()
+        ChannelPolicies(sonata)
+        admin = PolicyAdmin(sonata)
+        admin.set_rule("chat", "channel", "555", "chat.feature.custom", "allow")
+        listing = admin.list_actions("chat")
+        self.assertIn("chat.protected (default deny)", listing)
+        self.assertIn("chat.can_speak (default allow)", listing)
+        self.assertIn("chat.command.* (default allow)", listing)
+        self.assertIn("Also in rules:", listing)
+        self.assertIn("chat.feature.custom", listing)
+
     def test_legacy_channel_blobs_migrate_to_policy_namespaces(self):
         sonata = FakeSonata()
         sonata.config.set(

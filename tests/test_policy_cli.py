@@ -108,6 +108,25 @@ class PolicyCliDispatchTests(unittest.TestCase):
         self.assertEqual(seen["user"], "7")
         admin.add_group_member.assert_called_once_with("chat", "mods", "7")
 
+    def test_actions_lists_namespace_actions(self):
+        admin = MagicMock()
+        admin.list_actions.return_value = "Actions in `chat`:\n  chat.protected (default deny)"
+
+        async def resolve_target(scope, target):
+            return target
+
+        result = asyncio.run(
+            dispatch_policy_command(
+                admin,
+                "actions",
+                ["chat"],
+                "usage",
+                resolve_target=resolve_target,
+            )
+        )
+        self.assertIn("chat.protected", result)
+        admin.list_actions.assert_called_once_with("chat")
+
 
 if __name__ == "__main__":
     unittest.main()

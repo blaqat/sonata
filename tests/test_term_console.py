@@ -2,6 +2,7 @@ import asyncio
 import importlib.util
 import pathlib
 import sys
+import types
 import unittest
 
 
@@ -211,6 +212,19 @@ class TermConsoleChatFormattingTests(unittest.TestCase):
         self.assertIn("[bot]", line)
         self.assertIn("↪", line)
         self.assertIn("Bob", line)
+
+    def test_protected_channels_are_not_mirrored(self):
+        class _Chat:
+            def is_protected(self, _guild_id, channel_id):
+                return str(channel_id) == "99"
+
+        manager = types.SimpleNamespace(chat=_Chat())
+        self.assertFalse(
+            self.term_commands._should_mirror_chat_to_term_console(manager, 99)
+        )
+        self.assertTrue(
+            self.term_commands._should_mirror_chat_to_term_console(manager, 42)
+        )
 
 
 if __name__ == "__main__":

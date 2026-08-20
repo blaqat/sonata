@@ -44,6 +44,11 @@ async def dispatch_policy_command(
             ns_list = [format_namespace(n) for n in ns_list]
         return "Namespaces: " + ", ".join(ns_list)
 
+    if action == "actions":
+        if len(args) < 1:
+            return usage
+        return admin.list_actions(args[0])
+
     if action == "show":
         if len(args) < 3:
             return usage

@@ -459,6 +459,18 @@ def _is_channel_protected(manager, channel):
     return manager.chat.is_protected(guild_id, channel.id)
 
 
+def _should_mirror_chat_to_term_console(manager, chat_id):
+    """Skip web-term chat stream for protected channels."""
+    chat = getattr(manager, "chat", None)
+    is_protected = getattr(chat, "is_protected", None)
+    if not callable(is_protected):
+        return True
+    try:
+        return not bool(is_protected(None, chat_id))
+    except Exception:
+        return True
+
+
 @MANAGER.effect("chat", "set", prepend=False)
 def save_recent_message(_, chat_id, message_type, author, message, replying_to=None):
     """Save the recent message details to the terminal commands manager"""
@@ -475,6 +487,8 @@ def mirror_chat_to_term_console(
     _, chat_id, message_type, author, message, replying_to=None
 ):
     """Mirror chat activity into the term console output feed."""
+    if not _should_mirror_chat_to_term_console(MANAGER.MANAGER, chat_id):
+        return (chat_id, message_type, author, message, replying_to)
     line = format_term_console_chat_line(
         chat_id,
         message_type,
@@ -814,6 +828,7 @@ async def manage_policies(mem, bot, manager):
     """Manage policy rules across namespaces and scopes"""
     usage = (
         "policy namespaces\n"
+        "policy actions <namespace>\n"
         "policy show <namespace> <scope> <target>\n"
         "policy set <namespace> <scope> <target> <action> <allow|deny>\n"
         "policy remove <namespace> <scope> <target> <action>\n"
