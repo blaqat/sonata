@@ -233,8 +233,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         or not message.author.bot
     )
     IS_SONATA = message.author.bot and message.author.name == "sonata"
+    is_self = getattr(self, "user", None) is not None and message.author.id == self.user.id
 
-    if message.author.bot and message.author.name != "sonata" and not VALID_USER:
+    if message.author.bot and not is_self and message.author.name != "sonata" and not VALID_USER:
         # cprint(f"Ignoring: {message.author.id}: {message.content}", "red")
         return
 
@@ -304,6 +305,13 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         guild_id=message.guild.id,
         channel_id=message.channel.id,
     )
+
+    if is_self:
+        if not channel_protected:
+            mirror_own = Sonata.get("termcmd", "mirror_own_message", default=None)
+            if callable(mirror_own):
+                mirror_own(Sonata, message)
+        return
 
     _guild_name = message.guild.name
     _channel_name = message.channel.name

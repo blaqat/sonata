@@ -226,6 +226,27 @@ class TermConsoleChatFormattingTests(unittest.TestCase):
             self.term_commands._should_mirror_chat_to_term_console(manager, 42)
         )
 
+    def test_own_discord_message_respects_protection(self):
+        class _Chat:
+            def is_protected(self, _guild_id, channel_id):
+                return str(channel_id) == "99"
+
+        manager = types.SimpleNamespace(chat=_Chat())
+        protected = types.SimpleNamespace(
+            channel=types.SimpleNamespace(id=99),
+            author=types.SimpleNamespace(name="sonata"),
+            content="hidden",
+            reference=None,
+        )
+        open_channel = types.SimpleNamespace(
+            channel=types.SimpleNamespace(id=42),
+            author=types.SimpleNamespace(name="sonata"),
+            content="visible",
+            reference=None,
+        )
+        self.term_commands.mirror_own_discord_message(manager, protected)
+        self.term_commands.mirror_own_discord_message(manager, open_channel)
+
 
 if __name__ == "__main__":
     unittest.main()

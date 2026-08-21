@@ -471,6 +471,42 @@ def _should_mirror_chat_to_term_console(manager, chat_id):
         return True
 
 
+def _emit_chat_line_to_term_console(
+    chat_id, message_type, author, message, replying_to=None
+):
+    line = format_term_console_chat_line(
+        chat_id,
+        message_type,
+        author,
+        message,
+        replying_to=replying_to,
+    )
+    try:
+        loop = asyncio.get_running_loop()
+        loop.create_task(TERM_CONSOLE.emit_output(line, stream="chat"))
+    except RuntimeError:
+        pass
+    return line
+
+
+def mirror_own_discord_message(sonata, message):
+    """Log Sonata's own Discord messages into the web term chat stream."""
+    channel = getattr(message, "channel", None)
+    chat_id = getattr(channel, "id", None)
+    if chat_id is None:
+        return
+    if not _should_mirror_chat_to_term_console(sonata, chat_id):
+        return
+    author = getattr(message, "author", None)
+    _emit_chat_line_to_term_console(
+        chat_id,
+        "Bot",
+        author,
+        getattr(message, "content", "") or "",
+        getattr(message, "reference", None),
+    )
+
+
 @MANAGER.effect("chat", "set", prepend=False)
 def save_recent_message(_, chat_id, message_type, author, message, replying_to=None):
     """Save the recent message details to the terminal commands manager"""
@@ -487,20 +523,20 @@ def mirror_chat_to_term_console(
     _, chat_id, message_type, author, message, replying_to=None
 ):
     """Mirror chat activity into the term console output feed."""
+    # Bot Discord messages are mirrored from chat_hook (own-message path) so
+    # command replies like $policy show up. Skip Bot here to avoid doubling AI
+    # replies that both ctx_reply and chat.send.
+    if message_type == "Bot":
+        return (chat_id, message_type, author, message, replying_to)
     if not _should_mirror_chat_to_term_console(MANAGER.MANAGER, chat_id):
         return (chat_id, message_type, author, message, replying_to)
-    line = format_term_console_chat_line(
+    _emit_chat_line_to_term_console(
         chat_id,
         message_type,
         author,
         message,
-        replying_to=replying_to,
+        replying_to,
     )
-    try:
-        loop = asyncio.get_running_loop()
-        loop.create_task(TERM_CONSOLE.emit_output(line, stream="chat"))
-    except RuntimeError:
-        pass
     return (chat_id, message_type, author, message, replying_to)
 
 
@@ -776,6 +812,7 @@ MANAGER.update("emojis")
     },
     hook=term_handler,
     intercept_hook=intercept_reply,
+    mirror_own_message=mirror_own_discord_message,
 )
 def run_termcmd(M, name, client, manager):
     entry = _normalize_term_entry(M["value"][name])
