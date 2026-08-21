@@ -304,7 +304,7 @@ class PolicyAdmin:
         all_ns = self.sonata.config.get("policy_namespaces", {})
         all_ns[namespace] = data
         self.sonata.config.set(policy_namespaces=all_ns)
-        if self.sonata.has("beacon"):
+        if self.sonata.hasPlugin("beacon"):
             branch = self.sonata.beacon.branch("policies").branch("namespaces")
             branch.illuminate(namespace, data)
 
@@ -337,7 +337,7 @@ class PolicyAdmin:
     def load_namespace(self, namespace):
         """Load persisted generic namespace state into PolicyAPI."""
         data = None
-        if self.sonata.has("beacon"):
+        if self.sonata.hasPlugin("beacon"):
             branch = self.sonata.beacon.branch("policies").branch("namespaces")
             data = branch.discover(namespace)
 
@@ -390,7 +390,7 @@ class PolicyAdmin:
                 self.load_namespace(ns_name)
                 loaded.add(ns_name)
 
-        if self.sonata.has("beacon"):
+        if self.sonata.hasPlugin("beacon"):
             branch = self.sonata.beacon.branch("policies").branch("namespaces")
             # Beacon discover at folder level returns dict of subfolders
             try:

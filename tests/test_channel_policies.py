@@ -68,6 +68,9 @@ class FakeSonata:
     def has(self, name):
         return hasattr(self, name)
 
+    def hasPlugin(self, name):
+        return hasattr(self, name)
+
 
 class FakeChannel:
     def __init__(self, channel_id):

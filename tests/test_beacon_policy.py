@@ -213,6 +213,57 @@ class BeaconPolicyTests(unittest.TestCase):
         loaded = self.beacon.branch("chat").discover("value", encrypted=False)
         self.assertEqual(loaded, payload)
 
+    def test_recast_encrypts_existing_plaintext_after_path_rule(self):
+        payload = {"message": "hello"}
+        path = f"{self.beacon.home}/secret"
+        self.beacon.guide("secret", payload, encrypted=False)
+        with open(f"{path}.p", "rb") as handle:
+            self.assertEqual(pickle.loads(handle.read()), payload)
+
+        action = self.beacon._path_action(path)
+        self.beacon.policy_api.set_rule(
+            "beacon",
+            "guild",
+            self.beacon_module.GLOBAL_POLICY_SCOPE_ID,
+            action,
+            "allow",
+        )
+        self.beacon.recast("secret")
+
+        with open(f"{path}.p", "rb") as handle:
+            raw = handle.read()
+        with self.assertRaises(Exception):
+            pickle.loads(raw)
+        self.assertEqual(self.beacon.locate("secret", encrypted=False), payload)
+
+    def test_recast_decrypts_when_path_rule_is_removed(self):
+        payload = {"message": "bye"}
+        path = f"{self.beacon.home}/secret"
+        action = self.beacon._path_action(path)
+        self.beacon.policy_api.set_rule(
+            "beacon",
+            "guild",
+            self.beacon_module.GLOBAL_POLICY_SCOPE_ID,
+            action,
+            "allow",
+        )
+        self.beacon.guide("secret", payload, encrypted=False)
+        with open(f"{path}.p", "rb") as handle:
+            with self.assertRaises(Exception):
+                pickle.loads(handle.read())
+
+        self.beacon.policy_api.remove_rule(
+            "beacon",
+            "guild",
+            self.beacon_module.GLOBAL_POLICY_SCOPE_ID,
+            action,
+        )
+        self.beacon.recast("secret")
+
+        with open(f"{path}.p", "rb") as handle:
+            self.assertEqual(pickle.loads(handle.read()), payload)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -38,7 +38,6 @@ from modules.policy_effects import (
     beacon_chat_history_action,
     clear_beacon_chat_history_rule,
     ensure_beacon_namespace,
-    has_beacon,
     sync_chat_protected_effects,
 )
 
@@ -301,9 +300,6 @@ class ChannelPolicies:
                 "chat.command.*": True,
             },
         )
-
-    def _has_beacon(self):
-        return has_beacon(self.sonata)
 
     def _beacon_chat_history_action(self, channel_id):
         return beacon_chat_history_action(self.sonata, channel_id)
@@ -585,7 +581,7 @@ class ChannelPolicies:
         config_ns = self.sonata.config.get("policy_namespaces", {}) or {}
         if config_ns.get("chat"):
             return True
-        if self._has_beacon():
+        if self.sonata.hasPlugin("beacon"):
             try:
                 data = (
                     self.sonata.beacon.branch("policies")
@@ -603,7 +599,7 @@ class ChannelPolicies:
         beacon_guilds = {}
         beacon_users = {}
         beacon_groups = {}
-        if self._has_beacon():
+        if self.sonata.hasPlugin("beacon"):
             policies_branch = self.sonata.beacon.branch("policies")
             beacon_channels = policies_branch.discover("channels") or {}
             beacon_guilds = policies_branch.discover("guilds") or {}
@@ -635,7 +631,7 @@ class ChannelPolicies:
     def _clear_legacy_chat_stores(self):
         """Stop dual-write: clear legacy ChannelPolicy blob keys after migration."""
         self.sonata.config.set(channels={}, guilds={}, users={}, groups={})
-        if self._has_beacon():
+        if self.sonata.hasPlugin("beacon"):
             policies_branch = self.sonata.beacon.branch("policies")
             policies_branch.illuminate("channels", {})
             policies_branch.illuminate("guilds", {})

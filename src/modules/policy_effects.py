@@ -14,18 +14,8 @@ from modules.policy_api import EFFECT_ALLOW, get_or_create_policy_api
 GLOBAL_POLICY_SCOPE_ID = "__global__"
 
 
-def has_beacon(sonata) -> bool:
-    has_method = getattr(sonata, "has", None)
-    if callable(has_method):
-        try:
-            return bool(has_method("beacon"))
-        except Exception:
-            return hasattr(sonata, "beacon")
-    return hasattr(sonata, "beacon")
-
-
 def ensure_beacon_namespace(sonata, api=None):
-    if not has_beacon(sonata):
+    if not sonata.hasPlugin("beacon"):
         return None
     api = api or get_or_create_policy_api(sonata)
     if api.has_namespace("beacon"):
@@ -36,7 +26,7 @@ def ensure_beacon_namespace(sonata, api=None):
 
 
 def beacon_chat_history_action(sonata, channel_id) -> str | None:
-    if not has_beacon(sonata):
+    if not sonata.hasPlugin("beacon"):
         return None
     beacon_home = getattr(getattr(sonata, "beacon", None), "home", None)
     if not beacon_home:
@@ -100,3 +90,10 @@ def sync_chat_protected_effects(sonata, api=None, *, channel_ids=None) -> None:
                 action,
                 EFFECT_ALLOW,
             )
+
+    island = sonata.beacon.branch("chat").branch("value")
+    recast = getattr(island, "recast", None)
+    if not callable(recast):
+        return
+    for channel_id in channel_ids:
+        recast(f"i{channel_id}")

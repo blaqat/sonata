@@ -66,6 +66,9 @@ class FakeSonata:
     def has(self, name):
         return hasattr(self, name)
 
+    def hasPlugin(self, name):
+        return hasattr(self, name)
+
 
 class FakeChat:
     def __init__(self, policy_manager):

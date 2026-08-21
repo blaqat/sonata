@@ -1320,6 +1320,7 @@ async def main():
     cprint("Chat memory flashed", "yellow")
     Sonata.reload("chat", "value", module=True)
     cprint("Chat memory restored", "yellow")
+    Sonata.beacon.branch("chat").branch("value").recast()
     cprint(
         "Using Model: {0}\nMemory Reset: {1}\nGIF Search: {2}\nInjecting Emojis: {3}".format(
             _PLUGIN_EXTEND.get("chat", {}).get("auto"),

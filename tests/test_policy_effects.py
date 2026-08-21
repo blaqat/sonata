@@ -33,14 +33,22 @@ class FakeBranch:
         self.store = store
         self.path = path
         self.home = "Beacon/Home"
+        self.recast_names = store.setdefault("_recast_names", [])
 
     def branch(self, name):
         return type(self)(self.store, self.path + (name,))
 
+    def recast(self, name=None, **_kwargs):
+        self.recast_names.append(name)
+        return self
+
 
 class FakeSonata:
     def __init__(self):
+        self.memory = {}
+        self.sub_classes = {}
         self.beacon = FakeBranch({})
+        self.sub_classes["beacon"] = self.beacon
         self.policy_api = PolicyAPI()
         self.policy_api.register_namespace(
             "chat",
@@ -49,10 +57,32 @@ class FakeSonata:
         )
 
     def has(self, name):
-        return hasattr(self, name)
+        return name in self.memory
+
+    def hasPlugin(self, name):
+        return name in self.sub_classes
 
 
 class PolicyEffectsTests(unittest.TestCase):
+    def test_has_stays_memory_only(self):
+        sonata = FakeSonata()
+        self.assertFalse(sonata.has("beacon"))
+        self.assertTrue(sonata.hasPlugin("beacon"))
+
+    def test_has_plugin_false_without_plugin(self):
+        sonata = FakeSonata()
+        del sonata.sub_classes["beacon"]
+        del sonata.beacon
+        self.assertFalse(sonata.hasPlugin("beacon"))
+
+    def test_sync_recasts_channel_file_after_protect(self):
+        sonata = FakeSonata()
+        api = sonata.policy_api
+        api.set_rule("chat", "channel", "44", "chat.protected", "allow")
+
+        sync_chat_protected_effects(sonata, api)
+        self.assertIn("i44", sonata.beacon.recast_names)
+
     def test_sync_sets_and_clears_beacon_encrypt_rule(self):
         sonata = FakeSonata()
         api = sonata.policy_api
