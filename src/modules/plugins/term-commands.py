@@ -828,7 +828,7 @@ async def manage_policies(mem, bot, manager):
     """Manage policy rules across namespaces and scopes"""
     usage = (
         "policy namespaces\n"
-        "policy actions <namespace>\n"
+        "policy actions <namespace|prefix>\n"
         "policy show <namespace> <scope> <target>\n"
         "policy set <namespace> <scope> <target> <action> <allow|deny>\n"
         "policy remove <namespace> <scope> <target> <action>\n"

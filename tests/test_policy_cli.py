@@ -127,6 +127,25 @@ class PolicyCliDispatchTests(unittest.TestCase):
         self.assertIn("chat.protected", result)
         admin.list_actions.assert_called_once_with("chat")
 
+    def test_actions_accepts_prefix(self):
+        admin = MagicMock()
+        admin.list_actions.return_value = "Actions matching `chat.command`:"
+
+        async def resolve_target(scope, target):
+            return target
+
+        result = asyncio.run(
+            dispatch_policy_command(
+                admin,
+                "actions",
+                ["chat.command"],
+                "usage",
+                resolve_target=resolve_target,
+            )
+        )
+        self.assertIn("chat.command", result)
+        admin.list_actions.assert_called_once_with("chat.command")
+
 
 if __name__ == "__main__":
     unittest.main()

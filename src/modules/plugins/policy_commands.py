@@ -178,7 +178,7 @@ def _register_policy_command(bot, sonata):
         usage = (
             "Usage:\n"
             "`$policy namespaces`\n"
-            "`$policy actions <namespace>`\n"
+            "`$policy actions <namespace|prefix>`\n"
             "`$policy show <namespace> <scope> <target>`\n"
             "`$policy set <namespace> <scope> <target> <action> <allow|deny>`\n"
             "`$policy remove <namespace> <scope> <target> <action>`\n"

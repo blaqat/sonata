@@ -566,6 +566,21 @@ class PolicyApiTests(unittest.TestCase):
         self.assertIn("Also in rules:", listing)
         self.assertIn("chat.feature.custom", listing)
 
+    def test_list_actions_accepts_action_prefix(self):
+        policy_admin_mod = _load_module(
+            "policy_admin", pathlib.Path("src/modules/policy_admin.py")
+        )
+        PolicyAdmin = policy_admin_mod.PolicyAdmin
+        sonata = FakeSonata()
+        ChannelPolicies(sonata)
+        admin = PolicyAdmin(sonata)
+        admin.set_rule("chat", "channel", "555", "chat.command.help", "deny")
+        listing = admin.list_actions("chat.command")
+        self.assertIn("Actions matching `chat.command`:", listing)
+        self.assertIn("chat.command.* (default allow)", listing)
+        self.assertIn("chat.command.help", listing)
+        self.assertNotIn("chat.protected", listing)
+
     def test_legacy_channel_blobs_migrate_to_policy_namespaces(self):
         sonata = FakeSonata()
         sonata.config.set(

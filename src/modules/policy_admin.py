@@ -98,20 +98,43 @@ class PolicyAdmin:
 
     # ── Read operations ──────────────────────────────────────────────────
 
-    def list_actions(self, namespace):
-        ns = self.require_namespace(namespace)
+    def list_actions(self, query):
+        raw = str(query or "").strip().lower()
+        if not raw:
+            raise PolicyAdminError("Action query cannot be empty.")
+        ns_name, _, remainder = raw.partition(".")
+        ns = self.require_namespace(ns_name)
+        prefix = ns
+        if remainder:
+            prefix = f"{ns}.{remainder.rstrip('.*')}"
         defaults = self.api.list_known_actions(ns)
         used = self.api.list_used_actions(ns)
-        lines = [f"Actions in `{ns}`:"]
-        if defaults:
-            for action, decision in sorted(defaults.items()):
+        matched_defaults = {
+            action: decision
+            for action, decision in defaults.items()
+            if _action_matches_prefix(action, prefix)
+        }
+        extra = [
+            action
+            for action in used
+            if action not in matched_defaults and _action_matches_prefix(action, prefix)
+        ]
+        heading = f"Actions in `{ns}`:"
+        if prefix != ns:
+            heading = f"Actions matching `{prefix}`:"
+        lines = [heading]
+        if matched_defaults:
+            for action, decision in sorted(matched_defaults.items()):
                 effect = EFFECT_ALLOW if decision else EFFECT_DENY
                 lines.append(f"  {action} (default {effect})")
-        else:
+        elif prefix == ns:
             lines.append(
                 f"  (no registered defaults; any `{ns}.*` action is valid)"
             )
-        extra = [action for action in used if action not in defaults]
+        else:
+            lines.append(
+                f"  (no registered defaults; `{prefix}.*` actions are valid)"
+            )
         if extra:
             lines.append("Also in rules:")
             for action in extra:
@@ -377,6 +400,12 @@ class PolicyAdmin:
             for ns_name in all_data:
                 if ns_name not in loaded and self.api.has_namespace(ns_name):
                     self.load_namespace(ns_name)
+
+
+def _action_matches_prefix(action, prefix):
+    if action == prefix or action == f"{prefix}.*":
+        return True
+    return action.startswith(f"{prefix}.")
 
 
 def _parse_csv(value):
