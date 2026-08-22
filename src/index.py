@@ -38,6 +38,7 @@ from xai_sdk.chat import user as xai_user
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
 from modules.plugins import PLUGINS
 from modules.utils import (
+    classify_ai_error,
     get_full_name,
     get_trace,
     ordinal,
@@ -1128,6 +1129,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
                 AI=ai,
                 error_prompt=error_prompt,
                 save=False,
+                raise_on_error=True,
             )
             if intercept_reply is not None:
                 r = await intercept_reply(r, Sonata)
@@ -1135,7 +1137,8 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             Sonata.chat.send(channel.id, "Bot", Sonata.name, r, _ref)
         RESPONSE_FAILURES[(await get_channel(ctx)).id] = 0
     except Exception as e:
-        cprint(e, "red")
+        category, user_message = classify_ai_error(e)
+        cprint(f"AI question failed ({category}): {e}", "red")
         print(get_trace())
         chn = channel.id
         RESPONSE_FAILURES[chn] = RESPONSE_FAILURES.get(chn, 0) + 1
@@ -1153,9 +1156,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             f"""
 ### <@{settings.GOD}> i messed up ({ord_fails} time) :c
 
-```py
-{get_trace()}
-```""",
+{user_message}""",
         )
     finally:
         Sonata.config.set(auto=short)
