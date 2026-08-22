@@ -12,8 +12,10 @@ before running commands or AI flows: **can_speak**, per-command allow/deny (see
 ``command_policy_mode`` in ``channel_policies``), then **respond_all** for whether
 proactive replies are allowed. DMs are not gated by channel policy.
 
-Configure overrides via ``$channels`` (Discord) or ``channels`` (terminal); see
-``channel_policies`` module docstring.
+Configure overrides via ``$policy`` (Discord policy plugin) or ``policy``
+(terminal); see ``policy_admin`` / ``policy_cli``. ``$policy`` bypasses channel
+gating so admins can recover access from disabled channels. Durable chat rules
+live in ``policy_namespaces.chat``.
 """
 
 # TODO: Make  message class
@@ -231,8 +233,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         or not message.author.bot
     )
     IS_SONATA = message.author.bot and message.author.name == "sonata"
+    is_self = getattr(self, "user", None) is not None and message.author.id == self.user.id
 
-    if message.author.bot and message.author.name != "sonata" and not VALID_USER:
+    if message.author.bot and not is_self and message.author.name != "sonata" and not VALID_USER:
         # cprint(f"Ignoring: {message.author.id}: {message.content}", "red")
         return
 
@@ -256,13 +259,17 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
     role_ids = [str(role.id) for role in getattr(message.author, "roles", [])]
+
+    # $policy bypasses all chat policy gating so admins can recover access
+    is_policy_command = command_name == "policy"
+
     can_speak = policy_manager.can_speak(
         guild_id=message.guild.id,
         channel_id=message.channel.id,
         user_id=message.author.id,
         role_ids=role_ids,
     )
-    if not can_speak:
+    if not can_speak and not is_policy_command:
         if is_command:
             await message.reply(
                 "Sonata is disabled in this channel.",
@@ -271,7 +278,7 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         cprint(f"Sona blocked by channel policy in {message.channel.name}", "yellow")
         return
 
-    if is_command and not policy_manager.is_command_allowed(
+    if is_command and not is_policy_command and not policy_manager.is_command_allowed(
         guild_id=message.guild.id,
         channel_id=message.channel.id,
         user_id=message.author.id,
@@ -294,31 +301,43 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         user_id=message.author.id,
         role_ids=role_ids,
     )
+    channel_protected = policy_manager.is_protected(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+    )
+
+    if is_self:
+        if not channel_protected:
+            mirror_own = Sonata.get("termcmd", "mirror_own_message", default=None)
+            if callable(mirror_own):
+                mirror_own(Sonata, message)
+        return
 
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     message_reference = None
 
-    if _guild_name != self.current_guild:
-        cprint("\n" + _guild_name.lower(), "purple", "_")
-        self.current_guild = _guild_name
+    if not channel_protected:
+        if _guild_name != self.current_guild:
+            cprint("\n" + _guild_name.lower(), "purple", "_")
+            self.current_guild = _guild_name
 
-    if _channel_name != self.current_channel:
-        cprint("#" + _channel_name, "green", end=" ")
-        print(f"({message.channel.id})")
-        self.current_channel = _channel_name
+        if _channel_name != self.current_channel:
+            cprint("#" + _channel_name, "green", end=" ")
+            print(f"({message.channel.id})")
+            self.current_channel = _channel_name
 
-    print(
-        "  {0}: {1}".format(
-            cstr(str=get_full_name(message), style=message.author.color),
-            CENSOR
-            and censor_message(
-                message.content.replace("\n", "\n\t"),
-                BANNED_WORDS,
+        print(
+            "  {0}: {1}".format(
+                cstr(str=get_full_name(message), style=message.author.color),
+                CENSOR
+                and censor_message(
+                    message.content.replace("\n", "\n\t"),
+                    BANNED_WORDS,
+                )
+                or message.content.replace("\n", "\n\t"),
             )
-            or message.content.replace("\n", "\n\t"),
         )
-    )
 
     memory_text = message.author.name + (
         f" (Nickname {_name})" if _name != message.author.name else ""
@@ -571,6 +590,11 @@ def chat(sona: AI_Manager):
     policy_manager = ChannelPolicies(sona)
     policy_manager.init()
 
+    # Load persisted generic namespace state (core, beacon, etc.) after chat init
+    from modules.policy_admin import get_or_create_policy_admin
+    policy_admin = get_or_create_policy_admin(sona)
+    policy_admin.load_all_namespaces()
+
     # TODO: Make way to translate history into proper chat log format for each AI
     # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645361
     #
@@ -741,6 +765,15 @@ def chat(sona: AI_Manager):
 
         def set_channel_flag(self, channel_id, key, value):
             return policy_manager.set_channel_flag(channel_id, key, value)
+
+        def is_protected(self, guild_id, channel_id, user_id=None, role_ids=None, group_ids=None):
+            return policy_manager.is_protected(
+                guild_id,
+                channel_id,
+                user_id=user_id,
+                role_ids=role_ids,
+                group_ids=group_ids,
+            )
 
         def allow_command(self, channel_id, command):
             return policy_manager.allow_command(channel_id, command)

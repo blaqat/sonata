@@ -36,12 +36,6 @@ from xai_sdk.chat import system as xai_system
 from xai_sdk.chat import user as xai_user
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
-from modules.channel_policies import (
-    parse_bool,
-    format_channel_policy,
-    has_manage_guild_permission,
-    resolve_channel_in_guild,
-)
 from modules.plugins import PLUGINS
 from modules.utils import (
     get_full_name,
@@ -997,6 +991,23 @@ async def ctx_reply(ctx, r, reply=True):
         await ctx.send(r[:2000])
 
 
+async def ctx_reply_chunks(ctx, text, reply=True):
+    """Send a potentially long reply as successive Discord messages."""
+    remaining = str(text or "")
+    if not remaining:
+        return
+    first = True
+    while remaining:
+        chunk = remaining[:2000]
+        if len(remaining) > 2000:
+            split_at = chunk.rfind("\n")
+            if split_at > 1000:
+                chunk = chunk[:split_at]
+        await ctx_reply(ctx, chunk, reply=reply and first)
+        remaining = remaining[len(chunk) :].lstrip("\n")
+        first = False
+
+
 async def get_channel(ctx):
     """
     Returns the channel from the context, handling both message and interaction contexts.
@@ -1012,128 +1023,6 @@ async def get_channel(ctx):
     except Exception as e:
         cprint(f"Error getting channel: {e}", "red")
         raise e
-
-
-def _resolve_text_channel(ctx, raw_channel):
-    channel, error = resolve_channel_in_guild(
-        getattr(ctx, "guild", None), raw_channel
-    )
-    if error:
-        return None, error
-    if channel is None or not isinstance(channel, discord.TextChannel):
-        return None, "Only text channels are supported."
-    return channel, None
-
-
-@sonata.command(name="channels", description="Manage per-channel chat permissions.")
-async def channels(ctx, action="", *args):
-    action = action.lower().strip()
-    if not has_manage_guild_permission(ctx):
-        return await ctx_reply(
-            ctx, "You need `Manage Server` permission to use this command."
-        )
-
-    usage = (
-        "Usage:\n"
-        "`$channels list`\n"
-        "`$channels show <channel_id|<#channel_id>>`\n"
-        "`$channels set <channel> <can_speak|respond_all> <true|false>`\n"
-        "`$channels allow <channel> <command>`\n"
-        "`$channels deny <channel> <command>`\n"
-        "`$channels blacklist <add|remove> <channel>`\n"
-        "`$channels remove <channel>`"
-    )
-
-    if action in {"", "help"}:
-        return await ctx_reply(ctx, usage)
-
-    if action == "list":
-        channel_map = Sonata.chat.policy_manager.get_channels()
-        if not channel_map:
-            return await ctx_reply(ctx, "No channel overrides are configured.")
-
-        lines = []
-        for channel_id in sorted(channel_map.keys()):
-            lines.append(format_channel_policy(channel_id, channel_map[channel_id]))
-        return await ctx_reply(ctx, "\n".join(lines[:30]))
-
-    if action == "show":
-        if len(args) < 1:
-            return await ctx_reply(ctx, usage)
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-        policy = Sonata.chat.policy_manager.get_channel_policy(channel.id)
-        return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-    if action == "remove":
-        if len(args) < 1:
-            return await ctx_reply(ctx, usage)
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-        removed = Sonata.chat.policy_manager.remove_channel_policy(channel.id)
-        if removed is None:
-            return await ctx_reply(ctx, f"No override existed for `{channel.id}`.")
-        return await ctx_reply(ctx, f"Removed override for `{channel.id}`.")
-
-    if action in {"set", "allow", "deny", "blacklist"}:
-        if action == "blacklist":
-            if len(args) < 2:
-                return await ctx_reply(ctx, usage)
-            sub_action = args[0].lower().strip()
-            channel_arg = args[1]
-            channel, error = _resolve_text_channel(ctx, channel_arg)
-            if error:
-                return await ctx_reply(ctx, error)
-
-            if sub_action == "add":
-                policy = Sonata.chat.policy_manager.blacklist_add(channel.id)
-                return await ctx_reply(
-                    ctx,
-                    f"Blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
-                )
-            if sub_action == "remove":
-                policy = Sonata.chat.policy_manager.blacklist_remove(channel.id)
-                return await ctx_reply(
-                    ctx,
-                    f"Un-blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
-                )
-            return await ctx_reply(ctx, usage)
-
-        if len(args) < 2:
-            return await ctx_reply(ctx, usage)
-
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-
-        if action == "set":
-            if len(args) < 3:
-                return await ctx_reply(ctx, usage)
-            field = args[1].lower().strip()
-            if field not in {"can_speak", "respond_all"}:
-                return await ctx_reply(
-                    ctx, "Field must be `can_speak` or `respond_all`."
-                )
-            try:
-                value = parse_bool(args[2])
-            except ValueError:
-                return await ctx_reply(ctx, "Value must be true/false.")
-            policy = Sonata.chat.policy_manager.set_channel_flag(channel.id, field, value)
-            return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-        command_name = args[1].lower().strip().lstrip("$")
-        if not command_name:
-            return await ctx_reply(ctx, "Command cannot be empty.")
-
-        if action == "allow":
-            policy = Sonata.chat.policy_manager.allow_command(channel.id, command_name)
-        else:
-            policy = Sonata.chat.policy_manager.deny_command(channel.id, command_name)
-        return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-    await ctx_reply(ctx, usage)
 
 
 # TODO: Refactor emoji archiving to a separate util file
@@ -1431,6 +1320,7 @@ async def main():
     cprint("Chat memory flashed", "yellow")
     Sonata.reload("chat", "value", module=True)
     cprint("Chat memory restored", "yellow")
+    Sonata.beacon.branch("chat").branch("value").recast()
     cprint(
         "Using Model: {0}\nMemory Reset: {1}\nGIF Search: {2}\nInjecting Emojis: {3}".format(
             _PLUGIN_EXTEND.get("chat", {}).get("auto"),

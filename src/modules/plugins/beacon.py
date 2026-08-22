@@ -258,6 +258,66 @@ def beacon(sonata: AI_Manager):
                 )
                 return
 
+        def _load_either(
+            self,
+            name: str,
+            encrypted: bool = False,
+            encrypted_path: str | None = None,
+        ):
+            """Read a file as pickle, whether it is currently ciphertext or plaintext."""
+            try:
+                with open(f"{self.home}/{name}.p", "rb") as handle:
+                    raw = handle.read()
+            except OSError:
+                return None
+
+            should_encrypt = self._resolve_encryption(
+                encrypted,
+                encrypted_path or f"{self.home}/{name}",
+            )
+            if should_encrypt:
+                try:
+                    return pickle.loads(self._get_fernet().decrypt(raw))
+                except Exception:
+                    try:
+                        return pickle.loads(raw)
+                    except Exception:
+                        return None
+            try:
+                return pickle.loads(raw)
+            except Exception:
+                try:
+                    return pickle.loads(self._get_fernet().decrypt(raw))
+                except Exception:
+                    return None
+
+        def recast(
+            self,
+            name: str | None = None,
+            encrypted: bool = False,
+            encrypted_path: str | None = None,
+        ):
+            """Re-write a file (or every file here) so current encrypt policy applies now."""
+            if name is None:
+                for file in self.scan():
+                    path = f"{self.home}/{file}"
+                    if os.path.isdir(path):
+                        self.branch(file).recast(encrypted=encrypted)
+                    else:
+                        self.recast(file.split(".")[0], encrypted=encrypted)
+                return self
+
+            path = encrypted_path or f"{self.home}/{name}"
+            data = self._load_either(name, encrypted=encrypted, encrypted_path=path)
+            if data is None:
+                return self
+            return self.guide(
+                name,
+                data,
+                encrypted=encrypted,
+                encrypted_path=path,
+            )
+
         def discover(
             self,
             module_name: str,

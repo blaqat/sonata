@@ -1085,3 +1085,11 @@ class AI_Manager:
     def has(self, key):
         """Check if a memory key exists."""
         return key in self.memory
+
+    def hasPlugin(self, name):
+        """Check if a registered plugin exists."""
+        try:
+            plugins = object.__getattribute__(self, "sub_classes")
+        except AttributeError:
+            plugins = {}
+        return name in plugins

@@ -125,6 +125,11 @@ class _PolicyManager:
     def should_respond_all(self, **_kwargs):
         return self.respond_all
 
+    def is_protected(self, **_kwargs):
+        # Chat routing tests focus on rewriting/routing decisions, not privacy
+        # encryption behavior. Default to unprotected.
+        return False
+
 
 class _Chat:
     def __init__(self, respond_all=False):
@@ -183,6 +188,7 @@ class ChatHookRoutingTests(unittest.IsolatedAsyncioTestCase):
                 response_map={"alice": [1, "obsolete response"]},
             ),
             chat=_Chat(respond_all),
+            get=lambda *_args, **_kwargs: None,
         )
         bot = _Bot()
         message = _Message(content, reference)
@@ -251,6 +257,42 @@ class ChatHookRoutingTests(unittest.IsolatedAsyncioTestCase):
         _, bot, _ = await self._run_hook("hey sonata what is up")
 
         self.assertEqual(bot.processed[0][0], "$c hey  what is up")
+
+    async def test_own_bot_message_is_mirrored_and_not_processed(self):
+        mirrored = []
+        sonata, bot, message = await self._run_hook("Set `chat.protected` → `allow`")
+        bot.processed.clear()
+        message.author.id = bot.user.id
+        message.author.bot = True
+        message.author.name = "mideration team"
+        sonata.get = (
+            lambda key, val="value", default=None, inner=True: (
+                (lambda _s, msg: mirrored.append(msg.content))
+                if key == "termcmd" and val == "mirror_own_message"
+                else default
+            )
+        )
+        await self.chat_module.chat_hook(sonata, bot, message)
+        self.assertEqual(bot.processed, [])
+        self.assertEqual(mirrored, ["Set `chat.protected` → `allow`"])
+
+    async def test_own_bot_message_skips_mirror_when_protected(self):
+        mirrored = []
+        sonata, bot, message = await self._run_hook("secret")
+        bot.processed.clear()
+        sonata.chat.policy_manager.is_protected = lambda **_kwargs: True
+        message.author.id = bot.user.id
+        message.author.bot = True
+        sonata.get = (
+            lambda key, val="value", default=None, inner=True: (
+                (lambda _s, msg: mirrored.append(msg.content))
+                if key == "termcmd" and val == "mirror_own_message"
+                else default
+            )
+        )
+        await self.chat_module.chat_hook(sonata, bot, message)
+        self.assertEqual(bot.processed, [])
+        self.assertEqual(mirrored, [])
 
 
 def _load_ai_question():

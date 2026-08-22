@@ -20,8 +20,8 @@ occurred, the result is ``True``; otherwise ``default`` or ``default_decisions``
 ``set_group_rule`` sets allow/deny for actions on that group.
 
 Obtain the process-wide instance with ``get_or_create_policy_api(sonata)``. The chat
-plugin's ``ChannelPolicies`` registers the ``chat`` namespace and mirrors persisted
-policies into this API.
+plugin's ``ChannelPolicies`` registers the ``chat`` namespace; durable chat rules are
+persisted under ``policy_namespaces.chat`` like other namespaces.
 """
 
 from dataclasses import dataclass, field
@@ -308,6 +308,30 @@ class PolicyAPI:
         scope_id_key = self._normalize_scope_id(scope_id)
         self._require_namespace(key)
         return list(self._rules[key][scope_key].get(scope_id_key, []))
+
+    def list_scope_ids(self, namespace: str, scope: str) -> list[str]:
+        """Return sorted scope ids that currently have rules in ``namespace``/``scope``."""
+        key = self._normalize_namespace(namespace)
+        scope_key = self._normalize_scope(scope)
+        self._require_namespace(key)
+        return sorted(self._rules[key][scope_key].keys())
+
+    def list_known_actions(self, namespace: str) -> dict[str, bool]:
+        """Return registered default_decisions for a namespace (action → default allow)."""
+        key = self._normalize_namespace(namespace)
+        ns = self._require_namespace(key)
+        return dict(ns.default_decisions)
+
+    def list_used_actions(self, namespace: str) -> list[str]:
+        """Return sorted unique action names currently present in rules."""
+        key = self._normalize_namespace(namespace)
+        self._require_namespace(key)
+        seen: set[str] = set()
+        for scope in SCOPES:
+            for rules in self._rules[key][scope].values():
+                for rule in rules:
+                    seen.add(rule.action)
+        return sorted(seen)
 
     def evaluate(
         self,
