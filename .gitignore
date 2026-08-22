@@ -12,3 +12,7 @@ beacon-mainland/
 
 # Claude Code local worktrees (do not commit)
 .claude/worktrees/
+
+# Cursor browser preview
+.t3/
+t3.json
