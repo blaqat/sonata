@@ -18,15 +18,14 @@ from typing import Any
 from modules.plugins import PLUGINS_DICT
 
 _DEFAULT_AI_MODELS: dict[str, str] = {
-    "dall_e": "dall-e-3",
+    "dall_e": "gpt-image-2",
     "assistant": "gpt-4o",
-    "grok_beta": "grok-beta",
-    "grok": "grok-4-1-fast-non-reasoning",
-    "openai": "gpt-5.4-mini",
+    "grok": "grok-4.6",
+    "openai": "gpt-5.6-terra",
     "claude": "claude-sonnet-4-6",
     "perplexity": "sonar",
-    "gemini": "gemini-2.5-flash",
-    "imagen": "imagen-4.0-fast-generate-001",
+    "gemini": "gemini-3.6-flash",
+    "imagen": "gemini-3.1-flash-image",
 }
 
 
@@ -57,7 +56,6 @@ class AIModels:
 
     dall_e: str | None = None
     assistant: str | None = None
-    grok_beta: str | None = None
     grok: str | None = None
     openai: str | None = None
     claude: str | None = None
