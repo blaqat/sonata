@@ -129,7 +129,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     if not target:
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": "❌ URL cannot be empty",
         }
@@ -139,7 +138,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     except ValueError as exc:
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": f"❌ Invalid URL: {exc}",
         }
@@ -149,7 +147,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     if not account_id or not api_token:
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": "❌ Cloudflare Browser Rendering is not configured",
         }
@@ -183,14 +180,12 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     except requests.Timeout:
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": "❌ Cloudflare markdown extraction timed out",
         }
     except requests.RequestException as exc:
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": f"❌ Cloudflare request failed: {str(exc)}",
         }
@@ -211,7 +206,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
         detail = detail or f"HTTP {response.status_code}"
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": f"❌ Cloudflare markdown extraction failed: {detail}",
         }
@@ -219,7 +213,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     if not isinstance(payload, dict) or not payload.get("success"):
         return {
             "result": [],
-            "attempts": [],
             "status": "error",
             "message": "❌ Cloudflare markdown extraction returned an invalid response",
         }
@@ -228,7 +221,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     if not isinstance(markdown, str) or not markdown.strip():
         return {
             "result": [],
-            "attempts": [],
             "status": "not_found",
             "message": "❌ No readable page content returned",
         }
@@ -246,7 +238,6 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
                 "truncated": truncated,
             }
         ],
-        "attempts": [],
         "status": "found",
         "message": f"📄 Read page context for {normalized_url}",
     }
