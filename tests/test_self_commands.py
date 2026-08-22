@@ -176,6 +176,12 @@ self_commands = load_self_commands_module()
 
 
 class SelfCommandHelpersTests(unittest.TestCase):
+    def setUp(self):
+        # Tests mutate the shared module-level settings stub; restore per test.
+        for attr in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN"):
+            original = getattr(self_commands.settings, attr)
+            self.addCleanup(setattr, self_commands.settings, attr, original)
+
     def test_normalize_url_adds_https(self):
         self.assertEqual(
             self_commands.normalize_url("example.com/docs"),
@@ -209,13 +215,90 @@ class SelfCommandHelpersTests(unittest.TestCase):
             result = self_commands.cloudflare_markdown_read("example.com")
 
         post.assert_called_once()
+        self.assertEqual(post.call_args.kwargs["params"], {"browser": "kitesurf"})
         self.assertEqual(result["status"], "found")
         payload = result["result"][0]
-        self.assertEqual(payload["backend"], "cloudflare_markdown")
+        self.assertEqual(payload["backend"], "browser_run")
+        self.assertEqual(payload["engine"], "kitesurf")
         self.assertEqual(payload["url"], "https://example.com")
         self.assertEqual(payload["title"], "Example Title")
         self.assertTrue(payload["truncated"])
         self.assertIn("...[truncated]", payload["content"])
+
+    def test_cloudflare_read_falls_back_to_chromium_after_empty_extract(self):
+        self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"
+        self_commands.settings.CLOUDFLARE_API_TOKEN = "token"
+        empty_response = mock.Mock()
+        empty_response.ok = True
+        empty_response.json.return_value = {"success": True, "result": ""}
+        good_response = mock.Mock()
+        good_response.ok = True
+        good_response.json.return_value = {
+            "success": True,
+            "result": "# Fallback Title\n\nbody",
+        }
+
+        with mock.patch.object(
+            self_commands.requests, "post", side_effect=[empty_response, good_response]
+        ) as post:
+            result = self_commands.cloudflare_markdown_read("https://example.com")
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].kwargs["params"], {"browser": "kitesurf"})
+        self.assertIsNone(post.call_args_list[1].kwargs["params"])
+        self.assertEqual(result["status"], "found")
+        payload = result["result"][0]
+        self.assertEqual(payload["engine"], "chromium")
+        self.assertEqual(payload["title"], "Fallback Title")
+        self.assertIn("chromium", result["message"])
+
+    def test_cloudflare_read_hard_page_hosts_skip_kitesurf(self):
+        self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"
+        self_commands.settings.CLOUDFLARE_API_TOKEN = "token"
+        config = self_commands.MANAGER.MANAGER.config.setdefault("read", {})
+        original_hosts = config.get("hard_page_hosts")
+        config["hard_page_hosts"] = ["example.com"]
+        good_response = mock.Mock()
+        good_response.ok = True
+        good_response.json.return_value = {"success": True, "result": "# Hard\n\nbody"}
+        try:
+            with mock.patch.object(
+                self_commands.requests, "post", return_value=good_response
+            ) as post:
+                result = self_commands.cloudflare_markdown_read("https://www.example.com/login")
+        finally:
+            if original_hosts is None:
+                config.pop("hard_page_hosts", None)
+            else:
+                config["hard_page_hosts"] = original_hosts
+
+        post.assert_called_once()
+        self.assertIsNone(post.call_args.kwargs["params"])
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["result"][0]["engine"], "chromium")
+
+    def test_cloudflare_read_reports_all_engine_failures(self):
+        self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"
+        self_commands.settings.CLOUDFLARE_API_TOKEN = "token"
+
+        def failing_post(*_args, **_kwargs):
+            response = mock.Mock()
+            response.ok = False
+            response.status_code = 401
+            response.text = "unauthorized"
+            response.json.return_value = {
+                "success": False,
+                "errors": [{"message": "Authentication error"}],
+            }
+            return response
+
+        with mock.patch.object(self_commands.requests, "post", side_effect=failing_post) as post:
+            result = self_commands.cloudflare_markdown_read("https://example.com")
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("kitesurf: Authentication error", result["message"])
+        self.assertIn("chromium: Authentication error", result["message"])
 
     def test_cloudflare_read_surfaces_api_errors(self):
         self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"

@@ -120,9 +120,69 @@ def _truncate_markdown(markdown: str, limit: int) -> tuple[str, bool]:
     return trimmed + "\n\n...[truncated]", True
 
 
+def _read_engine_plan(config: Dict[str, Any], url: str) -> list[str]:
+    """Ordered engines to try for a read: default first, then fallback."""
+    default_engine = str(config.get("default_engine") or "kitesurf").strip().lower()
+    fallback_engine = str(config.get("fallback_engine") or "chromium").strip().lower()
+
+    engines = [default_engine]
+    if fallback_engine and fallback_engine not in engines:
+        engines.append(fallback_engine)
+
+    host = parse.urlsplit(url).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    hard_hosts = [
+        str(pattern).strip().lower().rstrip(".")
+        for pattern in config.get("hard_page_hosts", [])
+        if str(pattern).strip()
+    ]
+    if any(host == h or host.endswith(f".{h}") for h in hard_hosts):
+        # Known bot-challenge/auth-heavy pages skip the default engine entirely.
+        engines.remove(fallback_engine)
+        engines.insert(0, fallback_engine)
+    return engines
+
+
+def _markdown_request(
+    account_id: str,
+    api_token: str,
+    url: str,
+    engine: str,
+    config: Dict[str, Any],
+) -> "requests.Response":
+    """POST one Browser Run /markdown request for the given engine."""
+    endpoint = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{account_id}/browser-rendering/markdown"
+    )
+    # Chromium is the platform default, so it is requested by omitting the param.
+    params = {"browser": engine} if engine and engine != "chromium" else None
+    body = {
+        "url": url,
+        "gotoOptions": {
+            "timeout": config.get("goto_timeout_ms", 30000),
+            "waitUntil": config.get("wait_until", "networkidle2"),
+        },
+    }
+    return requests.post(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        },
+        params=params,
+        json=body,
+        timeout=config.get("timeout", 45),
+    )
+
+
 def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     """
-    Fetch a webpage through Cloudflare Browser Rendering /markdown.
+    Fetch a webpage through Cloudflare Browser Run /markdown.
+
+    Defaults to the Kitesurf engine and falls back to Chromium once when
+    Kitesurf fails or returns an empty extract.
     Returns structured data for self-command and agent usage.
     """
     target = " ".join(target_parts).strip()
@@ -151,95 +211,78 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
             "message": "❌ Cloudflare Browser Rendering is not configured",
         }
 
-    endpoint = (
-        f"https://api.cloudflare.com/client/v4/accounts/"
-        f"{account_id}/browser-rendering/markdown"
-    )
     config = MANAGER.MANAGER.config.get("read", {})
     max_chars = config.get("max_chars", 8000)
-    timeout = config.get("timeout", 45)
-    goto_timeout = config.get("goto_timeout_ms", 30000)
-    body = {
-        "url": normalized_url,
-        "gotoOptions": {
-            "timeout": goto_timeout,
-            "waitUntil": config.get("wait_until", "networkidle2"),
-        },
-    }
+    failures: list[str] = []
+    last_was_empty = False
 
-    try:
-        response = requests.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {api_token}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-            timeout=timeout,
-        )
-    except requests.Timeout:
-        return {
-            "result": [],
-            "status": "error",
-            "message": "❌ Cloudflare markdown extraction timed out",
-        }
-    except requests.RequestException as exc:
-        return {
-            "result": [],
-            "status": "error",
-            "message": f"❌ Cloudflare request failed: {str(exc)}",
-        }
+    for engine in _read_engine_plan(config, normalized_url):
+        try:
+            response = _markdown_request(
+                account_id, api_token, normalized_url, engine, config
+            )
+        except requests.Timeout:
+            failures.append(f"{engine}: timed out")
+            last_was_empty = False
+            continue
+        except requests.RequestException as exc:
+            failures.append(f"{engine}: {exc}")
+            last_was_empty = False
+            continue
 
-    try:
-        payload = response.json()
-    except ValueError:
-        payload = None
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
 
-    if not response.ok:
-        error_bits = []
-        if isinstance(payload, dict):
-            for err in payload.get("errors", []):
-                msg = err.get("message")
-                if msg:
-                    error_bits.append(msg)
-        detail = "; ".join(error_bits) if error_bits else response.text.strip()
-        detail = detail or f"HTTP {response.status_code}"
-        return {
-            "result": [],
-            "status": "error",
-            "message": f"❌ Cloudflare markdown extraction failed: {detail}",
-        }
+        if not response.ok:
+            error_bits = []
+            if isinstance(payload, dict):
+                for err in payload.get("errors", []):
+                    msg = err.get("message")
+                    if msg:
+                        error_bits.append(msg)
+            detail = "; ".join(error_bits) if error_bits else response.text.strip()
+            detail = detail or f"HTTP {response.status_code}"
+            failures.append(f"{engine}: {detail}")
+            last_was_empty = False
+            continue
 
-    if not isinstance(payload, dict) or not payload.get("success"):
-        return {
-            "result": [],
-            "status": "error",
-            "message": "❌ Cloudflare markdown extraction returned an invalid response",
-        }
+        if not isinstance(payload, dict) or not payload.get("success"):
+            failures.append(f"{engine}: invalid response")
+            last_was_empty = False
+            continue
 
-    markdown = payload.get("result", "")
-    if not isinstance(markdown, str) or not markdown.strip():
+        markdown = payload.get("result", "")
+        if not isinstance(markdown, str) or not markdown.strip():
+            failures.append(f"{engine}: no readable content")
+            last_was_empty = True
+            continue
+
+        content, truncated = _truncate_markdown(markdown.strip(), max_chars)
+        title = _extract_markdown_title(markdown) or parse.urlsplit(normalized_url).netloc
+
         return {
-            "result": [],
-            "status": "not_found",
-            "message": "❌ No readable page content returned",
+            "result": [
+                {
+                    "backend": "browser_run",
+                    "engine": engine,
+                    "url": normalized_url,
+                    "title": title,
+                    "content": content,
+                    "truncated": truncated,
+                }
+            ],
+            "status": "found",
+            "message": f"📄 Read page context for {normalized_url} via {engine}",
         }
 
-    content, truncated = _truncate_markdown(markdown.strip(), max_chars)
-    title = _extract_markdown_title(markdown) or parse.urlsplit(normalized_url).netloc
-
+    status = "not_found" if last_was_empty else "error"
+    summary = "; ".join(failures) or "no extraction was attempted"
     return {
-        "result": [
-            {
-                "backend": "cloudflare_markdown",
-                "url": normalized_url,
-                "title": title,
-                "content": content,
-                "truncated": truncated,
-            }
-        ],
-        "status": "found",
-        "message": f"📄 Read page context for {normalized_url}",
+        "result": [],
+        "status": status,
+        "message": f"❌ Cloudflare Browser Run extraction failed ({summary})",
     }
 
 
