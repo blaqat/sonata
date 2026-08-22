@@ -85,6 +85,244 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
+_CHALLENGE_MARKERS = (
+    "just a moment",
+    "attention required",
+    "checking your browser",
+    "enable javascript and cookies",
+    "please wait while we verify",
+    "cf-browser-verification",
+)
+
+
+def normalize_url(target: str) -> str:
+    """Normalize and validate a URL for remote fetches."""
+    target = target.strip()
+    if not target:
+        raise ValueError("URL cannot be empty")
+
+    parsed = parse.urlsplit(target)
+    if target.startswith("//"):
+        target = f"https:{target}"
+        parsed = parse.urlsplit(target)
+    elif not parsed.scheme:
+        target = f"https://{target}"
+        parsed = parse.urlsplit(target)
+
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("URL must use http or https")
+
+    if not parsed.netloc:
+        raise ValueError("URL is missing a host")
+
+    return parse.urlunsplit(parsed)
+
+
+def _extract_markdown_title(markdown: str) -> Optional[str]:
+    for line in markdown.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return stripped.lstrip("#").strip() or None
+    return None
+
+
+def _positive_char_limit(value: Any, default: int = 8000) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return default
+    return limit if limit >= 0 else default
+
+
+def _truncate_markdown(markdown: str, limit: int) -> tuple[str, bool]:
+    if limit < 0:
+        limit = 0
+    if len(markdown) <= limit:
+        return markdown, False
+    trimmed = markdown[:limit].rstrip()
+    return trimmed + "\n\n...[truncated]", True
+
+
+def _is_unusable_extract(markdown: str) -> bool:
+    """True when markdown is empty or a bot-challenge/interstitial page."""
+    text = markdown.strip()
+    if not text:
+        return True
+
+    lowered = text.lower()
+    title = (_extract_markdown_title(markdown) or "").lower()
+    if any(marker in title for marker in _CHALLENGE_MARKERS):
+        return True
+    # Challenge pages are short (e.g. YAML `title: "Just a moment..."`).
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS) and len(text) < 800
+
+
+def _read_engine_plan(config: Dict[str, Any], url: str) -> list[str]:
+    """Ordered engines to try for a read: default first, then fallback."""
+    default_engine = str(config.get("default_engine") or "kitesurf").strip().lower()
+    fallback_engine = str(config.get("fallback_engine") or "chromium").strip().lower()
+
+    engines = [default_engine]
+    if fallback_engine and fallback_engine not in engines:
+        engines.append(fallback_engine)
+
+    host = (parse.urlsplit(url).hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    hard_hosts = [
+        str(pattern).strip().lower().rstrip(".")
+        for pattern in config.get("hard_page_hosts", [])
+        if str(pattern).strip()
+    ]
+    if any(host == h or host.endswith(f".{h}") for h in hard_hosts):
+        # Known bot-challenge/auth-heavy pages skip the default engine entirely.
+        engines.remove(fallback_engine)
+        engines.insert(0, fallback_engine)
+    return engines
+
+
+def _markdown_request(
+    account_id: str,
+    api_token: str,
+    url: str,
+    engine: str,
+    config: Dict[str, Any],
+) -> "requests.Response":
+    """POST one Browser Run /markdown request for the given engine."""
+    endpoint = (
+        f"https://api.cloudflare.com/client/v4/accounts/"
+        f"{account_id}/browser-rendering/markdown"
+    )
+    # Chromium is the platform default, so it is requested by omitting the param.
+    params = {"browser": engine} if engine and engine != "chromium" else None
+    body = {
+        "url": url,
+        "gotoOptions": {
+            "timeout": config.get("goto_timeout_ms", 30000),
+            "waitUntil": config.get("wait_until", "networkidle2"),
+        },
+    }
+    return requests.post(
+        endpoint,
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        },
+        params=params,
+        json=body,
+        timeout=config.get("timeout", 45),
+    )
+
+
+def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
+    """
+    Fetch a webpage through Cloudflare Browser Run /markdown.
+
+    Defaults to the Kitesurf engine and falls back to Chromium once when
+    Kitesurf fails, returns an empty extract, or returns a challenge page.
+    Returns structured data for self-command and agent usage.
+    """
+    target = " ".join(target_parts).strip()
+    if not target:
+        return {
+            "result": [],
+            "status": "error",
+            "message": "❌ URL cannot be empty",
+        }
+
+    try:
+        normalized_url = normalize_url(target)
+    except ValueError as exc:
+        return {
+            "result": [],
+            "status": "error",
+            "message": f"❌ Invalid URL: {exc}",
+        }
+
+    account_id = settings.CLOUDFLARE_ACCOUNT_ID
+    api_token = settings.CLOUDFLARE_API_TOKEN
+    if not account_id or not api_token:
+        return {
+            "result": [],
+            "status": "error",
+            "message": "❌ Cloudflare Browser Rendering is not configured",
+        }
+
+    config = MANAGER.MANAGER.config.get("read", {})
+    max_chars = _positive_char_limit(config.get("max_chars", 8000))
+    failures: list[str] = []
+    last_was_empty = False
+
+    for engine in _read_engine_plan(config, normalized_url):
+        try:
+            response = _markdown_request(
+                account_id, api_token, normalized_url, engine, config
+            )
+        except requests.Timeout:
+            failures.append(f"{engine}: timed out")
+            last_was_empty = False
+            continue
+        except requests.RequestException as exc:
+            failures.append(f"{engine}: {exc}")
+            last_was_empty = False
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if not response.ok:
+            error_bits = []
+            if isinstance(payload, dict):
+                for err in payload.get("errors", []):
+                    msg = err.get("message")
+                    if msg:
+                        error_bits.append(msg)
+            detail = "; ".join(error_bits) if error_bits else response.text.strip()
+            detail = detail or f"HTTP {response.status_code}"
+            failures.append(f"{engine}: {detail}")
+            last_was_empty = False
+            continue
+
+        if not isinstance(payload, dict) or not payload.get("success"):
+            failures.append(f"{engine}: invalid response")
+            last_was_empty = False
+            continue
+
+        markdown = payload.get("result", "")
+        if not isinstance(markdown, str) or _is_unusable_extract(markdown):
+            failures.append(f"{engine}: no readable content")
+            last_was_empty = True
+            continue
+
+        content, truncated = _truncate_markdown(markdown.strip(), max_chars)
+        title = _extract_markdown_title(markdown) or parse.urlsplit(normalized_url).netloc
+
+        return {
+            "result": [
+                {
+                    "backend": "browser_run",
+                    "engine": engine,
+                    "url": normalized_url,
+                    "title": title,
+                    "content": content,
+                    "truncated": truncated,
+                }
+            ],
+            "status": "found",
+            "message": f"📄 Read page context for {normalized_url} via {engine}",
+        }
+
+    status = "not_found" if last_was_empty else "error"
+    summary = "; ".join(failures) or "no extraction was attempted"
+    return {
+        "result": [],
+        "status": status,
+        "message": f"❌ Cloudflare Browser Run extraction failed ({summary})",
+    }
+
+
 def perplexity_search(*search_term: str) -> Dict[str, Any]:
     """
     Perform a web search using Perplexity AI.
@@ -444,6 +682,16 @@ def imagine(*prompt):
         "title": prompt,
         "link": response,
     }
+
+
+@MANAGER.command(
+    "read",
+    "$read <url>",
+    "Read a URL to get context for links users post in chat.",
+    "Use this when someone posts a link and you need the page context not just search results. Return the extracted content details and use the URL exactly.",
+)
+def read_url(*target: str) -> Dict[str, Any]:
+    return cloudflare_markdown_read(*target)
 
 
 @MANAGER.command(
