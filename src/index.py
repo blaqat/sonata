@@ -19,9 +19,8 @@ import base64
 import os
 import re
 import sys
+import json
 from io import BytesIO
-from random import randint
-
 import anthropic
 import discord
 import google.generativeai as genai
@@ -37,12 +36,6 @@ from xai_sdk.chat import system as xai_system
 from xai_sdk.chat import user as xai_user
 
 from modules.AI_manager import AI_Error, AI_Manager, PromptManager
-from modules.channel_policies import (
-    parse_bool,
-    format_channel_policy,
-    has_manage_guild_permission,
-    resolve_channel_in_guild,
-)
 from modules.plugins import PLUGINS
 from modules.utils import (
     get_full_name,
@@ -59,34 +52,30 @@ from modules.utils import (
 from modules.utils import (
     get_reference_chain as get_chain,
 )
+from sonata_config import load_config, rand_runtime, resolve_ai_model
 
-"""
-Test Configuration
-"""
-# TODO: Move configuration to a separate file
-RANDOM_CONFIG = False
-AUTO_MODEL = "c"  # g, o, c, a, m, x
-PROMPT_RESET = False
-VC_RECORDING = False
-VC_SPEAKING = True
-GIF_SEARCH = "random"  # tenor, giphy, google, random
-EMOJIS = False
-AGENT = False  # Removes ability to run single commands other than agent
-IGNORE_LIST = []
+RUNTIME, _PLUGIN_EXTEND = load_config()
 
 
-def rand_config():
-    global AUTO_MODEL, PROMPT_RESET, VC_RECORDING, VC_SPEAKING, GIF_SEARCH, EMOJIS, AGENT
-    models = ["g", "o", "c", "a", "m", "x"]
-    gif_searches = ["tenor", "giphy", "google", "random"]
-    AUTO_MODEL = models[randint(0, len(models) - 1)]
-    PROMPT_RESET = bool(randint(0, 1))
-    VC_RECORDING = bool(randint(0, 1))
-    VC_SPEAKING = bool(randint(0, 1))
-    GIF_SEARCH = gif_searches[randint(0, len(gif_searches) - 1)]
-    EMOJIS = bool(randint(0, 1))
-    AGENT = bool(randint(0, 1))
+def _ai_model(key: str, builtin_default: str) -> str:
+    return resolve_ai_model(RUNTIME, key, builtin_default)
 
+
+def _normalize_image_inputs(config):
+    images = config.get("images")
+    if not images or images is None:
+        return None
+
+    if isinstance(images, str):
+        images = [images]
+
+
+    valid_images = filter(
+        lambda image: isinstance(image, str) and re.match(r"^https?://", image),
+        images
+    )
+
+    return list(valid_images) or None
 
 nest_asyncio.apply()
 
@@ -172,36 +161,10 @@ def extend(Sonata: AI_Manager):
     Extends the Sonata AI_Manager with additional plugins and configurations.
     """
     # Add funny responses with a small chance of being triggered
-    # TODO: Move config to configuration
     Sonata.extend(
         sonata,
         PLUGINS(openai_assistant=False),
-        chat={
-            "summarize": True,
-            "max_chats": 30,
-            "view_replies": True,
-            "auto": AUTO_MODEL,
-            "ignore": [name.lower() for name in IGNORE_LIST],
-            "response_map": {
-                "subi": (
-                    0.005,
-                    "i dont know but can you play piano for me? <a:kittypleading:1213940324658057236>",
-                ),
-                "log": (0.005, "BWAAAAAAAA BWAAAAAA BWAAAAAAAAAAAAA"),
-                "blaqat": (0.005, "yes master"),
-                "ans": (0.01, "youre the robot why dont u tell me hmmm?"),
-            },
-            "bot_whitelist": [
-                "BluBot",
-                1311742291521835048,
-                746799398994051162,
-            ],
-            "censor": False,
-        },
-        self_commands={"gif_search": GIF_SEARCH, "agent": AGENT},
-        term_commands={
-            "inject_emojis": EMOJIS,
-        },
+        **_PLUGIN_EXTEND,
     )
 
 
@@ -215,7 +178,7 @@ def extend(Sonata: AI_Manager):
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="dall-e-3",
+    model=_ai_model("dall_e", "dall-e-3"),
     # model="dall-e-2",
     # model = "gpt-image-1"
 )
@@ -238,11 +201,11 @@ def DallE(client, prompt, model, config):
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, k: True,
-    model="gpt-4o",
+    model=_ai_model("assistant", "gpt-4o"),
 )
 def Assistant(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
+    i = _normalize_image_inputs(config)
     if i:
         if model != "gpt-4o":
             model = "gpt-4-vision-preview"
@@ -272,7 +235,7 @@ def Assistant(client, prompt, model, config):
     setup=lambda S, key: setattr(
         S, "client", openai.OpenAI(api_key=key, base_url="https://api.x.ai/v1")
     ),
-    model="grok-beta",
+    model=_ai_model("grok_beta", "grok-beta"),
 )
 def GrokBeta(client, prompt, model, config):
     content = [{"content": prompt, "role": "user"}]
@@ -306,7 +269,7 @@ def GrokBeta(client, prompt, model, config):
     key=settings.X_AI,
     setup=lambda S, key: setattr(S, "client", XAIClient(api_key=key)),
     # model="grok-4-1-fast-reasoning"
-    model="grok-4-1-fast-non-reasoning",
+    model=_ai_model("grok", "grok-4-1-fast-non-reasoning"),
 )
 def Grok(client: XAIClient, prompt, model, config):
     chat = client.chat.create(
@@ -321,7 +284,7 @@ def Grok(client: XAIClient, prompt, model, config):
 
     content = [prompt]
 
-    if images := config.get("images", False):
+    if images := _normalize_image_inputs(config):
         for url in images:
             if url is True:
                 continue
@@ -338,12 +301,12 @@ def Grok(client: XAIClient, prompt, model, config):
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model="gpt-5.4-mini",
+    model=_ai_model("openai", "gpt-5.4-mini"),
     # model="gpt-5.2-2025-12-11",
 )
 def OpenAI(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    images = config.get("images", False)
+    images = _normalize_image_inputs(config)
 
     if images:
         images = [
@@ -374,13 +337,13 @@ def OpenAI(client, prompt, model, config):
     None,
     key=settings.ANTHROPIC_AI,
     setup=lambda S, key: setattr(S, "client", anthropic.Anthropic(api_key=key)),
-    model="claude-sonnet-4-6",
+    model=_ai_model("claude", "claude-sonnet-4-6"),
     # model="claude-haiku-4-5",
     default=True,
 )
 def Claude(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
-    i = config.get("images", False)
+    i = _normalize_image_inputs(config)
     instructions = (
         [
             {
@@ -468,7 +431,7 @@ def Claude(client, prompt, model, config):
             api_key=key, base_url="https://api.perplexity.ai"
         ).chat.completions,
     ),
-    model="sonar",
+    model=_ai_model("perplexity", "sonar"),
 )
 def Perplexity(client, prompt, model, config):
     content = [{"type": "text", "text": prompt}]
@@ -497,7 +460,7 @@ def Perplexity(client, prompt, model, config):
     setup=lambda _, key: genai.configure(api_key=key),
     # model="gemini-2.0-flash-exp",
     # model="gemini-2.5-pro-exp-03-25",
-    model="gemini-2.5-flash",
+    model=_ai_model("gemini", "gemini-2.5-flash"),
     # model = "gemini-2.5-pro"
 )
 def Gemini(client, prompt, model, config):
@@ -521,7 +484,7 @@ def Gemini(client, prompt, model, config):
         },
     ]
     content = prompt
-    images = config.get("images", False)
+    images = _normalize_image_inputs(config)
     if images:
         # model = "gemini-1.5-flash"
         images = [Image.open(BytesIO(requests.get(u).content)) for u in images if u is not True]
@@ -574,7 +537,7 @@ def Gemini(client, prompt, model, config):
     key=settings.GOOGLE_AI,
     setup=lambda S, key: setattr(S, "client", google_genai.Client(api_key=key)),
     # model="imagen-4.0-generate-001",
-    model="imagen-4.0-fast-generate-001",
+    model=_ai_model("imagen", "imagen-4.0-fast-generate-001"),
     # model="imagen-3.0-capability-001",
 )
 def NanoBanana(client, prompt, model, config):
@@ -618,6 +581,24 @@ class SonataClient(commands.Bot):
     async def on_ready(self) -> None:
         cprint("Logged on as {0}!".format(self.user), "purple")
         self.loop.create_task(Sonata.get("termcmd", "hook")(Sonata, self))
+        cursor_hook = Sonata.get("cursor", "hook")
+        if callable(cursor_hook):
+            self.loop.create_task(cursor_hook(Sonata, self))
+
+    async def close(self) -> None:
+        """Idempotent shutdown: run Cursor cleanup before py-cord close.
+
+        py-cord does not dispatch ``on_close``, so plugin cleanup must be
+        invoked from this override — never via atexit for async work.
+        """
+        from modules.cursor_shutdown import close_with_cursor_cleanup
+
+        await close_with_cursor_cleanup(
+            self,
+            sonata=Sonata,
+            log_error=lambda msg: cprint(msg, "red"),
+            super_close=super().close,
+        )
 
     async def on_message(self: commands.Bot, message: discord.Message) -> None:
         if message.guild is None:
@@ -631,10 +612,6 @@ sonata = SonataClient(command_prefix="$", intents=INTENTS)
 
 
 extend(Sonata)
-
-# HACK: This is a hack to DESTROY SONATAS MEMORY
-if PROMPT_RESET:
-    reset_instructions()
 
 # TODO: Move all speaking related things to a separate module
 # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645198
@@ -805,7 +782,7 @@ async def on_voice_state_update(member, before, after):
             print(f"Sonata has joined the voice channel: {after.channel.name}")
             # Start recording audio
             vc = member.guild.voice_client
-            if VC_RECORDING:
+            if RUNTIME.vc_recording:
                 await start_recording(vc, after.channel)
             else:
                 cprint("VC Recording is disabled", "red")
@@ -821,7 +798,7 @@ async def on_voice_state_update(member, before, after):
                 f"Sonata has moved from {before.channel.name} to {after.channel.name}"
             )
             vc = member.guild.voice_client
-            if VC_RECORDING:
+            if RUNTIME.vc_recording:
                 await start_recording(vc, after.channel)
             else:
                 cprint("VC Recording is disabled", "red")
@@ -905,7 +882,7 @@ async def voice(ctx, *voice):
     """
     Changes the voice used for TTS in voice channels.
     """
-    if not VC_SPEAKING:
+    if not RUNTIME.vc_speaking:
         return await ctx.send("soz voice speaking is disabled")
     VALID_OPTIONS = [
         "alloy",
@@ -942,7 +919,7 @@ async def talk(ctx, *message):
     Joins the user's voice channel (if not already connected) and speaks the provided message using TTS.
     """
     global CURRENT_VC
-    if not VC_SPEAKING:
+    if not RUNTIME.vc_speaking:
         return await ctx.send("soz voice speaking is disabled")
 
     if ctx.guild.voice_client is not None:
@@ -1014,6 +991,23 @@ async def ctx_reply(ctx, r, reply=True):
         await ctx.send(r[:2000])
 
 
+async def ctx_reply_chunks(ctx, text, reply=True):
+    """Send a potentially long reply as successive Discord messages."""
+    remaining = str(text or "")
+    if not remaining:
+        return
+    first = True
+    while remaining:
+        chunk = remaining[:2000]
+        if len(remaining) > 2000:
+            split_at = chunk.rfind("\n")
+            if split_at > 1000:
+                chunk = chunk[:split_at]
+        await ctx_reply(ctx, chunk, reply=reply and first)
+        remaining = remaining[len(chunk) :].lstrip("\n")
+        first = False
+
+
 async def get_channel(ctx):
     """
     Returns the channel from the context, handling both message and interaction contexts.
@@ -1029,128 +1023,6 @@ async def get_channel(ctx):
     except Exception as e:
         cprint(f"Error getting channel: {e}", "red")
         raise e
-
-
-def _resolve_text_channel(ctx, raw_channel):
-    channel, error = resolve_channel_in_guild(
-        getattr(ctx, "guild", None), raw_channel
-    )
-    if error:
-        return None, error
-    if channel is None or not isinstance(channel, discord.TextChannel):
-        return None, "Only text channels are supported."
-    return channel, None
-
-
-@sonata.command(name="channels", description="Manage per-channel chat permissions.")
-async def channels(ctx, action="", *args):
-    action = action.lower().strip()
-    if not has_manage_guild_permission(ctx):
-        return await ctx_reply(
-            ctx, "You need `Manage Server` permission to use this command."
-        )
-
-    usage = (
-        "Usage:\n"
-        "`$channels list`\n"
-        "`$channels show <channel_id|<#channel_id>>`\n"
-        "`$channels set <channel> <can_speak|respond_all> <true|false>`\n"
-        "`$channels allow <channel> <command>`\n"
-        "`$channels deny <channel> <command>`\n"
-        "`$channels blacklist <add|remove> <channel>`\n"
-        "`$channels remove <channel>`"
-    )
-
-    if action in {"", "help"}:
-        return await ctx_reply(ctx, usage)
-
-    if action == "list":
-        channel_map = Sonata.chat.policy_manager.get_channels()
-        if not channel_map:
-            return await ctx_reply(ctx, "No channel overrides are configured.")
-
-        lines = []
-        for channel_id in sorted(channel_map.keys()):
-            lines.append(format_channel_policy(channel_id, channel_map[channel_id]))
-        return await ctx_reply(ctx, "\n".join(lines[:30]))
-
-    if action == "show":
-        if len(args) < 1:
-            return await ctx_reply(ctx, usage)
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-        policy = Sonata.chat.policy_manager.get_channel_policy(channel.id)
-        return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-    if action == "remove":
-        if len(args) < 1:
-            return await ctx_reply(ctx, usage)
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-        removed = Sonata.chat.policy_manager.remove_channel_policy(channel.id)
-        if removed is None:
-            return await ctx_reply(ctx, f"No override existed for `{channel.id}`.")
-        return await ctx_reply(ctx, f"Removed override for `{channel.id}`.")
-
-    if action in {"set", "allow", "deny", "blacklist"}:
-        if action == "blacklist":
-            if len(args) < 2:
-                return await ctx_reply(ctx, usage)
-            sub_action = args[0].lower().strip()
-            channel_arg = args[1]
-            channel, error = _resolve_text_channel(ctx, channel_arg)
-            if error:
-                return await ctx_reply(ctx, error)
-
-            if sub_action == "add":
-                policy = Sonata.chat.policy_manager.blacklist_add(channel.id)
-                return await ctx_reply(
-                    ctx,
-                    f"Blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
-                )
-            if sub_action == "remove":
-                policy = Sonata.chat.policy_manager.blacklist_remove(channel.id)
-                return await ctx_reply(
-                    ctx,
-                    f"Un-blacklisted `{channel.id}`.\n{format_channel_policy(channel.id, policy)}",
-                )
-            return await ctx_reply(ctx, usage)
-
-        if len(args) < 2:
-            return await ctx_reply(ctx, usage)
-
-        channel, error = _resolve_text_channel(ctx, args[0])
-        if error:
-            return await ctx_reply(ctx, error)
-
-        if action == "set":
-            if len(args) < 3:
-                return await ctx_reply(ctx, usage)
-            field = args[1].lower().strip()
-            if field not in {"can_speak", "respond_all"}:
-                return await ctx_reply(
-                    ctx, "Field must be `can_speak` or `respond_all`."
-                )
-            try:
-                value = parse_bool(args[2])
-            except ValueError:
-                return await ctx_reply(ctx, "Value must be true/false.")
-            policy = Sonata.chat.policy_manager.set_channel_flag(channel.id, field, value)
-            return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-        command_name = args[1].lower().strip().lstrip("$")
-        if not command_name:
-            return await ctx_reply(ctx, "Command cannot be empty.")
-
-        if action == "allow":
-            policy = Sonata.chat.policy_manager.allow_command(channel.id, command_name)
-        else:
-            policy = Sonata.chat.policy_manager.deny_command(channel.id, command_name)
-        return await ctx_reply(ctx, format_channel_policy(channel.id, policy))
-
-    await ctx_reply(ctx, usage)
 
 
 # TODO: Refactor emoji archiving to a separate util file
@@ -1287,11 +1159,6 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
     channel = await get_channel(ctx)
     try:
         message = " ".join(message)
-        if message is None or message == "":
-            message = "0"
-        respond_or_chat = message[-1] == "1"
-        message = message[:-1]
-        # respond_or_chat = False
 
         name = get_full_name(ctx)
         _ref = None
@@ -1313,9 +1180,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             )
             if intercept_reply is not None:
                 r = await intercept_reply(r, Sonata)
-                await ctx_reply(ctx, r, not respond_or_chat)
-            else:
-                await ctx_reply(ctx, r, not respond_or_chat)
+            await ctx_reply(ctx, r)
             Sonata.chat.send(channel.id, "Bot", Sonata.name, r, _ref)
         RESPONSE_FAILURES[(await get_channel(ctx)).id] = 0
     except Exception as e:
@@ -1420,18 +1285,49 @@ async def restart_bot(ctx):
     restart()
 
 
+@sonata.command(name="config", description="Display the current config.")
+async def config(ctx):
+    """
+    Command to display the current config.
+    Only runnable by <@{settings.GOD}>.
+    """
+    if ctx.author.id != int(settings.GOD):
+        print(f"Command config run by {ctx.author.id} not {settings.GOD}")
+        return 
+    s = f"""
+### Runtime
+```json
+{json.dumps(RUNTIME, default=vars, sort_keys=True)}
+```
+
+### Plugins
+```json
+{json.dumps(_PLUGIN_EXTEND, sort_keys=True)}
+```
+"""
+    await ctx_reply(ctx, s)
+
+
 async def main():
     # TODO: Make other run modes like "flash", "view", "absorb"
     # to handle different pre/post memory scenerios
-    if RANDOM_CONFIG:
-        rand_config()
+    if RUNTIME.random_config:
+        rand_runtime(RUNTIME, _PLUGIN_EXTEND)
+    if RUNTIME.prompt_reset:
+        reset_instructions()
     cprint("Initlializing...", "yellow")
     Sonata.beacon.branch("chat").flash()
     cprint("Chat memory flashed", "yellow")
     Sonata.reload("chat", "value", module=True)
     cprint("Chat memory restored", "yellow")
+    Sonata.beacon.branch("chat").branch("value").recast()
     cprint(
-        f"Using Model: {AUTO_MODEL}\nMemory Reset: {PROMPT_RESET}\nGIF Search: {GIF_SEARCH}\nInjecting Emojis: {EMOJIS}",
+        "Using Model: {0}\nMemory Reset: {1}\nGIF Search: {2}\nInjecting Emojis: {3}".format(
+            _PLUGIN_EXTEND.get("chat", {}).get("auto"),
+            RUNTIME.prompt_reset,
+            _PLUGIN_EXTEND.get("self_commands", {}).get("gif_search"),
+            _PLUGIN_EXTEND.get("term_commands", {}).get("inject_emojis"),
+        ),
         "purple",
     )
     await sonata.start(settings.BOT_TOKEN)

@@ -2,16 +2,16 @@
 description: Improve an existing ticket's quality.
 ---
 
-/refine [TICKET_CODE]
+/refine [SONA-{n}]
 
-1. Fetch the specified ticket
+1. Fetch the specified Notion ticket
 
 2. Review and enhance:
    - Acceptance criteria (make more specific/testable)
 
-   - Estimation (validate or adjust)
+   - Points (validate or adjust)
 
-   - Tags (add missing ones)
+   - Type / Milestones / Priority (add missing ones)
 
    - Description (add context, edge cases, dependencies)
 

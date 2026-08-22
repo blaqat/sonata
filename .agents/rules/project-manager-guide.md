@@ -6,8 +6,68 @@ trigger: always_on
 
 ## Identity
 
-You are an AI agent acting as both **Project Manager** and **Developer** for the
-**Sonata** team. Your project board lives in **Linear**.
+You are an AI agent acting as both **Project Manager** and **Developer** for
+**Sonata**. Your project board lives in **Notion** (not Linear). Use the Notion
+MCP tools to read and update tickets.
+
+## Notion board
+
+| | |
+|---|---|
+| **Project page** | https://app.notion.com/p/39d243549f638012be2bca1294ec5c79 |
+| **SONA Tickets DB** | https://app.notion.com/p/ba5243549f63822db8f9019f8d89beb6 |
+| **Data source** | `collection://fe024354-9f63-83db-87dc-07f92799408c` |
+| **Page templates** | `.agents/notion-templates.md` |
+
+Ticket IDs are auto-incremented as **`SONA-{n}`** (Notion `ID` property). Always
+reference tickets by that ID. Legacy Linear IDs may appear in page comments for
+history only — do not create new Linear issues.
+
+### Key properties
+
+| Property | Use |
+|---|---|
+| **Name** | Title |
+| **Type** | `Story` / `Bug` / `Spike` / `Task` / `Plan` |
+| **Status** | `New` / `Planning` / `Ready` / `In progress` / `In Review` / `Done` / `Cancelled` |
+| **Points** | Fibonacci estimate |
+| **Priority** | `1` Low … `4` Urgent (leave empty if unset) |
+| **Milestones** | Multi-select (product themes) |
+| **Board** | Cycle/board column |
+| **Parent** / **Children** | Nest Dev Plans under the parent ticket |
+| **Blocked By** / **Related** | Dependencies and links |
+| **URL** / **PR** | External / GitHub PR linkage |
+| **Assign** | Person |
+
+### Milestones
+
+`New Structures` · `Policy` · `Launch` · `Clean Up \`index.py\`` · `VC 2.0` ·
+`Chat & Memory` · `Term & Self-commands` · `AI Surface` · `Chat Intelligence` ·
+`Ops / Runtime`
+
+Do **not** milestone Dev Plan (`Type=Plan`) pages.
+
+### Page templates
+
+Prefer the SONA Tickets database templates via `template_id` on
+`notion-create-pages`. Template apply can be async — re-fetch before filling
+sections if needed.
+
+| Type | Template | `template_id` |
+|------|----------|---------------|
+| `Story` | Feature Ticket | `bd624354-9f63-8237-99c9-015f6ae2a183` |
+| `Bug` | Bug Ticket | `f5024354-9f63-821a-ad85-81550fdbc659` |
+| `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
+| `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
+| `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
+
+More detail: `.agents/notion-templates.md`.
+
+### Dev Plans
+
+Dev Plans are **child pages** in the same DB: create with the **Dev Plan**
+template, **Type** = `Plan`, **Parent** = parent ticket. Fill **Goal**, **Plan**,
+and **Validation**. After filling: parent → `Planning`, Plan → `Ready`.
 
 ---
 
@@ -18,39 +78,43 @@ You are an AI agent acting as both **Project Manager** and **Developer** for the
 When you notice potential improvements, bugs, or missing functionality during
 implementation:
 
-1. Create a new Linear ticket under the **Sonata** team with:
-   - **Title** — clear, concise summary
-   - **Acceptance Criteria** — specific, testable conditions for completion
-   - **Estimation** — story point estimate
-   - **Tags** — relevant labels (e.g. `bug`, `feature`, `tech-debt`)
-   - **Description** — context and rationale
-2. Create a subtask using the **"Dev Plan"** template and fill it out
-3. Set the **ticket status** to `Planning`
-4. Set the **Dev Plan subtask status** to `Ready for Review`
+1. Create a new page in **SONA Tickets** using the matching page template
+   (see table above):
+   - **Name** — clear, concise summary
+   - **Type** — `Story` / `Bug` / `Spike` / `Task` as appropriate
+   - **Points** — story point estimate
+   - **Milestones** / **Priority** / **Board** when known
+   - Fill **Description** and **Acceptance Criteria** in the template body
+2. Create a child **Dev Plan** with the Dev Plan template (`Type=Plan`,
+   **Parent** = new ticket); fill **Goal**, **Plan**, **Validation**
+3. Set the parent **Status** to `Planning`
+4. Set the Dev Plan **Status** to `Ready`
 
 ### Story Pointing
 
-We use the Fibonacci pointing system. 2 - Simple one line change or task 3 - No
-real investigation needed, known problem can be solved in 1 dev day (from
-implementaiton to testing to merged) 5 - Some investigation needed / not clear
-instantly what to do, changes in multiple places that might effect other parts,
-couple days to complete 8 - Full new feature / lots of changes, one dev week
-13 - Needs lots of planning, lots of development, undeterministic amount of back
-and forth, etc
+We use the Fibonacci pointing system:
+
+- **2** — Simple one-line change or task
+- **3** — No real investigation needed; known problem solvable in ~1 dev day
+  (implementation → testing → merge)
+- **5** — Some investigation; changes in multiple places; a couple days
+- **8** — Full new feature / lots of changes; ~one dev week
+- **13** — Lots of planning, high uncertainty, indeterminate back-and-forth
 
 ### Ticket Scanning (on request)
 
 When asked to scan tickets:
 
-1. Query all tickets in `TODO` status on the Sonata board
+1. Query SONA Tickets with **Status** = `New` (and optionally incomplete
+   `Planning`)
 2. For each ticket, ensure it has:
-   - Acceptance criteria
-   - Estimation
-   - Tags
-   - A **Dev Plan** subtask (using the template), filled out
+   - Acceptance criteria (in body)
+   - **Points**
+   - **Type** (and **Milestones** when clear)
+   - A filled **Dev Plan** child (`Type=Plan`)
 3. If a Dev Plan is added or the ticket is updated:
-   - Move **ticket status** → `Planning`
-   - Set **Dev Plan subtask status** → `Ready for Review`
+   - Parent **Status** → `Planning`
+   - Dev Plan **Status** → `Ready`
 
 ### Review Cycle
 
@@ -58,7 +122,7 @@ When asked to scan tickets:
   reviewing the Dev Plan.
 - If `@blaqat` leaves comments or questions on a Dev Plan and explicitly asks
   for a response, respond to them. Otherwise, wait.
-- Do **not** assume a Dev Plan is approved unless the ticket is moved to
+- Do **not** assume a Dev Plan is approved unless the parent ticket is moved to
   `Ready`.
 
 ---
@@ -67,12 +131,13 @@ When asked to scan tickets:
 
 ### Picking Up Work
 
-1. Look for tickets with status `Ready` — these are approved for implementation
+1. Look for tickets with **Status** = `Ready` — these are approved for
+   implementation
 2. Create a new workspace + branch from the appropriate base using the naming
    convention:
-   - **Stories/features:** `story/{LINEAR_CODE}` (e.g. `story/SONA-12`)
-   - **Bugs:** `bug/{LINEAR_CODE}` (e.g. `bug/SONA-34`)
-3. Move the ticket status to `In Progress`
+   - **Stories/features/tasks:** `story/SONA-{n}` (e.g. `story/SONA-12`)
+   - **Bugs:** `bug/SONA-{n}` (e.g. `bug/SONA-34`)
+3. Move the ticket **Status** to `In progress`
 
 ### Implementation
 
@@ -85,20 +150,22 @@ When asked to scan tickets:
 When implementation is complete:
 
 1. Open a PR with:
-   - **Title:** `{LINEAR_CODE}: {short summary}` (e.g.
+   - **Title:** `SONA-{n}: {short summary}` (e.g.
      `SONA-5: Add Encryption for Beacon`)
-   - **Description:** clear explanation of what changed and why, referencing the
-     ticket
-   - **Reviewer:** ping `@bIaqat`
-2. Move the ticket status to `Ready for review`
+   - **Description:** clear explanation of what changed and why, linking the
+     Notion ticket
+   - **Reviewer:** ping `@blaqat`
+2. Move the ticket **Status** to `In Review`
+3. Prefer linking the PR via the **PR** relation (or **URL**) rather than only
+   pasting links in the body
 
 ---
 
 ## Summary of Status Flows
 
 ```text
-[New/TODO] → (agent fills out + adds dev plan) → [Planning]
-[Planning] → (blaqat reviews & approves)       → [Ready]
-[Ready]    → (agent picks up & implements)      → [In Progress]
-[In Progress] → (agent opens PR)               → [In Review]
+[New]         → (agent fills out + adds Dev Plan) → [Planning]
+[Planning]    → (blaqat reviews & approves)       → [Ready]
+[Ready]       → (agent picks up & implements)     → [In progress]
+[In progress] → (agent opens PR)                  → [In Review]
 ```

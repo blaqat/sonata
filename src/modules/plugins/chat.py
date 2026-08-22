@@ -4,6 +4,18 @@ Chat
 This plugin is responsible for handling chat messages and processing them through the AI model.
 In addition, it provides a way to store and retrieve chat logs for summarization and other purposes.
 Also, it provides a way to send messages to a specific channel or user.
+
+**Chat policy (guild text channels)**
+
+``chat_hook`` consults ``Sonata.chat.policy_manager`` (a ``ChannelPolicies`` instance)
+before running commands or AI flows: **can_speak**, per-command allow/deny (see
+``command_policy_mode`` in ``channel_policies``), then **respond_all** for whether
+proactive replies are allowed. DMs are not gated by channel policy.
+
+Configure overrides via ``$policy`` (Discord policy plugin) or ``policy``
+(terminal); see ``policy_admin`` / ``policy_cli``. ``$policy`` bypasses channel
+gating so admins can recover access from disabled channels. Durable chat rules
+live in ``policy_namespaces.chat``.
 """
 
 # TODO: Make  message class
@@ -25,11 +37,8 @@ from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
     ChannelPolicies,
-    ChannelPolicy,
     get_channel_policy,
-    is_command_allowed,
     get_command_name,
-    should_respond_to_message,
 )
 from modules.utils import (
     censor_message,
@@ -42,10 +51,9 @@ from modules.utils import (
     has_inside,
     get_reference_message as get_ref,
     get_reference_chain as get_ref_chain,
-    tenor_get_dl_url,
+    gif_provider_get_dl_url,
     get_trace,
 )
-import random
 import re
 from zoneinfo import ZoneInfo
 
@@ -58,7 +66,6 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
         "auto": "o",
         "view_replies": True,
         "ignore": [],
-        "response_map": {},  # {userName: (response, random chance)}
         "bot_whitelist": [],
         "censor": True,
     },
@@ -133,12 +140,15 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
             return await self.process_commands(message)
 
         # Check for message references (replies)
-        _ref = (
-            message.reference
-            and await message.channel.fetch_message(message.reference.message_id)
-            or None
-        )
-        _ref = _ref and (_ref.author.name, _ref.content) or None
+        _ref = None
+        if message.reference and getattr(message.reference, "message_id", None):
+            try:
+                fetched = await message.channel.fetch_message(
+                    message.reference.message_id
+                )
+                _ref = (fetched.author.name, fetched.content)
+            except Exception:
+                _ref = None
         if not USE_REPLY_REF:
             _ref = None
 
@@ -164,12 +174,23 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
         urls = re.findall(r"http\S+", message.content)
         for url in urls:
             if has_inside(url, image_types):
+                original_url = url
                 if "tenor.com" in url:
-                    url = tenor_get_dl_url(
-                        url, settings.TENOR_G, "tinywebppreview_transparent"
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.TENOR_G,
+                        "tinywebppreview_transparent",
+                        api_host="tenor.googleapis.com",
+                    )
+                elif "klipy.com" in url:
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.KLIPY,
+                        "tinywebppreview_transparent",
+                        api_host="api.klipy.com",
                     )
                 attachments.append(url)
-                message.content = message.content.replace(url, "")
+                message.content = message.content.replace(original_url, "")
             else:
                 not_grabbed.append(url)
 
@@ -200,12 +221,11 @@ async def dm_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
 
 
 async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> None:
-    """Handle messages sent in guild channels"""
+    """Handle messages sent in guild channels; enforces chat policy then command routing."""
     AI = Sonata.config.get("auto")
     CENSOR = Sonata.config.get("censor", True)
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
-    RESPONSES = Sonata.config.get("response_map", {})
     BOT_WHITELIST = Sonata.config.get("bot_whitelist", [])
     VALID_USER = (
         message.author.bot
@@ -213,8 +233,9 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         or not message.author.bot
     )
     IS_SONATA = message.author.bot and message.author.name == "sonata"
+    is_self = getattr(self, "user", None) is not None and message.author.id == self.user.id
 
-    if message.author.bot and message.author.name != "sonata" and not VALID_USER:
+    if message.author.bot and not is_self and message.author.name != "sonata" and not VALID_USER:
         # cprint(f"Ignoring: {message.author.id}: {message.content}", "red")
         return
 
@@ -234,12 +255,21 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     if message.guild == None:  # Ignore DMS
         return
 
-    channel_policy: ChannelPolicy = Sonata.chat.policy_manager.get_channel_policy(
-        message.channel.id
-    )
+    policy_manager = Sonata.chat.policy_manager
     command_name = get_command_name(message.content)
     is_command = bool(command_name)
-    if not channel_policy.can_speak:
+    role_ids = [str(role.id) for role in getattr(message.author, "roles", [])]
+
+    # $policy bypasses all chat policy gating so admins can recover access
+    is_policy_command = command_name == "policy"
+
+    can_speak = policy_manager.can_speak(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+        role_ids=role_ids,
+    )
+    if not can_speak and not is_policy_command:
         if is_command:
             await message.reply(
                 "Sonata is disabled in this channel.",
@@ -248,7 +278,13 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         cprint(f"Sona blocked by channel policy in {message.channel.name}", "yellow")
         return
 
-    if is_command and not is_command_allowed(channel_policy, command_name):
+    if is_command and not is_policy_command and not policy_manager.is_command_allowed(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+        command=command_name,
+        role_ids=role_ids,
+    ):
         await message.reply(
             f"`{command_name}` is not allowed in this channel.",
             mention_author=False,
@@ -259,30 +295,49 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         )
         return
 
+    respond_all = policy_manager.should_respond_all(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        user_id=message.author.id,
+        role_ids=role_ids,
+    )
+    channel_protected = policy_manager.is_protected(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+    )
+
+    if is_self:
+        if not channel_protected:
+            mirror_own = Sonata.get("termcmd", "mirror_own_message", default=None)
+            if callable(mirror_own):
+                mirror_own(Sonata, message)
+        return
+
     _guild_name = message.guild.name
     _channel_name = message.channel.name
     message_reference = None
 
-    if _guild_name != self.current_guild:
-        cprint("\n" + _guild_name.lower(), "purple", "_")
-        self.current_guild = _guild_name
+    if not channel_protected:
+        if _guild_name != self.current_guild:
+            cprint("\n" + _guild_name.lower(), "purple", "_")
+            self.current_guild = _guild_name
 
-    if _channel_name != self.current_channel:
-        cprint("#" + _channel_name, "green", end=" ")
-        print(f"({message.channel.id})")
-        self.current_channel = _channel_name
+        if _channel_name != self.current_channel:
+            cprint("#" + _channel_name, "green", end=" ")
+            print(f"({message.channel.id})")
+            self.current_channel = _channel_name
 
-    print(
-        "  {0}: {1}".format(
-            cstr(str=get_full_name(message), style=message.author.color),
-            CENSOR
-            and censor_message(
-                message.content.replace("\n", "\n\t"),
-                BANNED_WORDS,
+        print(
+            "  {0}: {1}".format(
+                cstr(str=get_full_name(message), style=message.author.color),
+                CENSOR
+                and censor_message(
+                    message.content.replace("\n", "\n\t"),
+                    BANNED_WORDS,
+                )
+                or message.content.replace("\n", "\n\t"),
             )
-            or message.content.replace("\n", "\n\t"),
         )
-    )
 
     memory_text = message.author.name + (
         f" (Nickname {_name})" if _name != message.author.name else ""
@@ -334,12 +389,23 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
         urls = re.findall(r"http\S+", message.content)
         for url in urls:
             if has_inside(url, image_types):
+                original_url = url
                 if "tenor.com" in url:
-                    url = tenor_get_dl_url(
-                        url, settings.TENOR_G, "tinywebppreview_transparent"
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.TENOR_G,
+                        "tinywebppreview_transparent",
+                        api_host="tenor.googleapis.com",
+                    )
+                elif "klipy.com" in url:
+                    url = gif_provider_get_dl_url(
+                        url,
+                        settings.KLIPY,
+                        "tinywebppreview_transparent",
+                        api_host="api.klipy.com",
                     )
                 attachments.append(url)
-                message.content = message.content.replace(url, "")
+                message.content = message.content.replace(original_url, "")
             else:
                 not_grabbed.append(url)
 
@@ -369,57 +435,34 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
             message.channel.id, "User", get_full_name(message), message.content
         )
 
-    if not should_respond_to_message(
-        channel_policy,
-        is_command=is_command,
-        is_reply_to_sonata=message_reference_id == self.user.id,
-        called_sonata=called_sonata,
+    if not (
+        respond_all
+        or is_command
+        or message_reference_id == self.user.id
+        or called_sonata
     ):
         return
 
-    # Pass referenced messages to AI
+    # Pass referenced messages to AI (leading $command takes priority)
     if message_reference_id is not None and VALID_USER:
         # Check if reference is pointing to a message sent by the bot
         # message_reference = await message.channel.fetch_message(
         #     message.reference.message_id
         # )
         if message_reference_id == self.user.id:
-            if (
-                message.author.name in RESPONSES
-                or message.author.nick
-                and message.author.nick in RESPONSES
-            ):
-                chance, response = RESPONSES.get(
-                    message.author.name, RESPONSES.get(message.author.nick)
-                )
-                if random.random() < chance:
-                    await message.reply(response, mention_author=False)
-                    Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
-                    message.content += "1"
-            else:
-                message.content += "0"
-            message.content = f"${AI} " + message.content
+            if not is_command:
+                message.content = f"${AI} " + message.content
             await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
             return
         #
         # await self.process_commands(message)
         # return
 
-    if VALID_USER and (
-        sonata_exp.search(message.content) or channel_policy.respond_all
+    if VALID_USER and not is_command and (
+        sonata_exp.search(message.content) or respond_all
     ):
         message.content = sonata_exp.sub("", message.content).strip()
         message.content = f"${AI} {message.content}"
-        if _name in RESPONSES:
-            chance, response = RESPONSES.get(
-                message.author.name, RESPONSES.get(message.author.nick)
-            )
-            if random.random() < chance:
-                await message.reply(response, mention_author=False)
-                Sonata.chat.send(message.channel.id, "Bot", "sonata", response)
-                message.content += "1"
-        else:
-            message.content += "0"
 
     await self.process_commands(message, bot_whitelist=BOT_WHITELIST)
 
@@ -538,11 +581,19 @@ BANNED_WORDS = {
 @MANAGER.builder
 def chat(sona: AI_Manager):
     """
-    Chat plugin for handling messages and interactions
+    Chat plugin for handling messages and interactions.
+
+    ``policy_manager`` is ``ChannelPolicies`` (``channel_policies``): use for
+    programmatic policy updates; ``init`` runs at build time.
     """
     prompt_manager = sona.prompt_manager
     policy_manager = ChannelPolicies(sona)
     policy_manager.init()
+
+    # Load persisted generic namespace state (core, beacon, etc.) after chat init
+    from modules.policy_admin import get_or_create_policy_admin
+    policy_admin = get_or_create_policy_admin(sona)
+    policy_admin.load_all_namespaces()
 
     # TODO: Make way to translate history into proper chat log format for each AI
     # https://github.com/users/bIaqat/projects/1/views/1?pane=issue&itemId=65645361
@@ -715,6 +766,15 @@ def chat(sona: AI_Manager):
         def set_channel_flag(self, channel_id, key, value):
             return policy_manager.set_channel_flag(channel_id, key, value)
 
+        def is_protected(self, guild_id, channel_id, user_id=None, role_ids=None, group_ids=None):
+            return policy_manager.is_protected(
+                guild_id,
+                channel_id,
+                user_id=user_id,
+                role_ids=role_ids,
+                group_ids=group_ids,
+            )
+
         def allow_command(self, channel_id, command):
             return policy_manager.allow_command(channel_id, command)
 
@@ -732,9 +792,7 @@ def chat(sona: AI_Manager):
 
 
 def Summarize(M, id, config):
-    config[
-        "instructions"
-    ] = f"""Summarize the chat log in as little tokens as possible.
+    config["instructions"] = f"""Summarize the chat log in as little tokens as possible.
 Use the following guidelines:
 - Mention people by name, not nickname.
 - Don't just copy and paste the chat log. Summarize/paraphrase it.
@@ -765,8 +823,8 @@ Use the following guidelines:
     r=lambda M, chat_id: setter(M["value"], chat_id, copy.deepcopy(M["default_value"])),
     request=lambda _, *args, **kwargs: PROMPT_MANAGER.send(*args, **kwargs),
     summarize=Summarize,
-    validate=lambda M, id: not get_channel_policy(MANAGER.MANAGER.config, id).get(
-        "can_speak", True
+    validate=lambda M, id: (
+        not get_channel_policy(MANAGER.MANAGER.config, id).get("can_speak", True)
     ),
     blacklist=lambda M, id: M["black_list"].add(id),
     hook=chat_hook,

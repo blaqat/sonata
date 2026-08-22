@@ -2,9 +2,9 @@
 description: Re-evaluate a ticket/Dev Plan after @blaqat addresses previous feedback.
 ---
 
-/rereview [TICKET_CODE]
+/rereview [SONA-{n}]
 
-1. Fetch the specified ticket, Dev Plan subtask, and all previous review
+1. Fetch the specified Notion ticket, Dev Plan child, and all previous review
    comments left by the agent
 
 2. Read @blaqat's responses to each prior comment
@@ -24,8 +24,8 @@ description: Re-evaluate a ticket/Dev Plan after @blaqat addresses previous feed
    - Needs revision — outstanding issues still unresolved or new concerns found
 
 6. Update Dev Plan status:
-   - If good to go or minor feedback → Done
-   - If needs revision → TODO
+   - If good to go or minor feedback → `Done`
+   - If needs revision → `New`
 
 Response guidelines:
 

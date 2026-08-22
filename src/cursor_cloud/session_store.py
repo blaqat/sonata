@@ -1,0 +1,336 @@
+"""Owned session persistence protocols and in-memory implementation."""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any, Protocol
+
+from .errors import OwnershipError, ValidationError
+from .models import (
+    AgentSession,
+    PendingDecision,
+    RunStatus,
+    ScopeKey,
+    utcnow,
+)
+
+
+class SessionStore(Protocol):
+    async def get_active(self, scope: ScopeKey) -> AgentSession | None: ...
+
+    async def list_sessions(self, scope: ScopeKey) -> list[AgentSession]: ...
+
+    async def get_session(self, scope: ScopeKey, agent_id: str) -> AgentSession | None: ...
+
+    async def upsert(self, session: AgentSession) -> AgentSession: ...
+
+    async def set_active(self, scope: ScopeKey, agent_id: str) -> AgentSession: ...
+
+    async def touch_activity(self, scope: ScopeKey, agent_id: str | None = None) -> None: ...
+
+    async def save_decision(self, decision: PendingDecision) -> PendingDecision: ...
+
+    async def get_decision(self, decision_id: str) -> PendingDecision | None: ...
+
+    async def find_open_decision(
+        self, scope: ScopeKey, kind: str
+    ) -> PendingDecision | None: ...
+
+    async def reserve_decision(
+        self, decision: PendingDecision
+    ) -> PendingDecision | None: ...
+
+    async def save_pending_payload(self, decision_id: str, payload: dict[str, Any]) -> None: ...
+
+    async def get_pending_payload(self, decision_id: str) -> dict[str, Any] | None: ...
+
+    async def pop_pending_payload(self, decision_id: str) -> dict[str, Any] | None: ...
+
+    async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None: ...
+
+    async def get_model_pref(self, scope: ScopeKey) -> str | None: ...
+
+    async def all_sessions(self) -> list[AgentSession]: ...
+
+    async def find_thread_session(self, thread_id: str) -> AgentSession | None: ...
+
+    def lock_for(self, scope: ScopeKey) -> asyncio.Lock: ...
+
+
+class MemorySessionStore:
+    """In-memory store used by tests and as a base for Beacon adapters."""
+
+    def __init__(self, *, max_recent: int = 20):
+        self.max_recent = max_recent
+        self._sessions: dict[str, dict[str, AgentSession]] = {}
+        self._active: dict[str, str] = {}
+        self._decisions: dict[str, PendingDecision] = {}
+        self._pending: dict[str, dict[str, Any]] = {}
+        self._model_prefs: dict[str, str] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._global_lock = asyncio.Lock()
+
+    def lock_for(self, scope: ScopeKey) -> asyncio.Lock:
+        key = scope.as_str()
+        if key not in self._locks:
+            self._locks[key] = asyncio.Lock()
+        return self._locks[key]
+
+    def _bucket(self, scope: ScopeKey) -> dict[str, AgentSession]:
+        return self._sessions.setdefault(scope.as_str(), {})
+
+    async def get_active(self, scope: ScopeKey) -> AgentSession | None:
+        agent_id = self._active.get(scope.as_str())
+        if not agent_id:
+            return None
+        session = self._bucket(scope).get(agent_id)
+        if session is None:
+            return None
+        if session.owner_id != scope.user_id:
+            return None
+        return session
+
+    async def list_sessions(self, scope: ScopeKey) -> list[AgentSession]:
+        items = [
+            s
+            for s in self._bucket(scope).values()
+            if s.owner_id == scope.user_id and s.scope.as_str() == scope.as_str()
+        ]
+        items.sort(key=lambda s: s.updated_at, reverse=True)
+        return items[: self.max_recent]
+
+    async def get_session(self, scope: ScopeKey, agent_id: str) -> AgentSession | None:
+        session = self._bucket(scope).get(agent_id)
+        if session is None:
+            return None
+        if session.owner_id != scope.user_id or session.scope.as_str() != scope.as_str():
+            raise OwnershipError()
+        return session
+
+    async def upsert(self, session: AgentSession) -> AgentSession:
+        session.updated_at = utcnow()
+        bucket = self._bucket(session.scope)
+        bucket[session.agent_id] = session
+        # Bound history per scope.
+        if len(bucket) > self.max_recent:
+            ordered = sorted(bucket.values(), key=lambda s: s.updated_at, reverse=True)
+            keep = {s.agent_id for s in ordered[: self.max_recent]}
+            for agent_id in list(bucket):
+                if agent_id not in keep:
+                    del bucket[agent_id]
+        if session.active:
+            self._active[session.scope.as_str()] = session.agent_id
+            for other in bucket.values():
+                other.active = other.agent_id == session.agent_id
+        return session
+
+    async def set_active(self, scope: ScopeKey, agent_id: str) -> AgentSession:
+        session = await self.get_session(scope, agent_id)
+        if session is None:
+            raise OwnershipError()
+        for other in self._bucket(scope).values():
+            other.active = other.agent_id == agent_id
+        session.active = True
+        session.updated_at = utcnow()
+        self._active[scope.as_str()] = agent_id
+        return session
+
+    async def touch_activity(self, scope: ScopeKey, agent_id: str | None = None) -> None:
+        target_id = agent_id or self._active.get(scope.as_str())
+        if not target_id:
+            return
+        session = self._bucket(scope).get(target_id)
+        if session is None:
+            return
+        session.last_meaningful_activity_at = utcnow()
+        session.updated_at = utcnow()
+
+    async def save_decision(self, decision: PendingDecision) -> PendingDecision:
+        self._decisions[decision.decision_id] = decision
+        return decision
+
+    async def get_decision(self, decision_id: str) -> PendingDecision | None:
+        return self._decisions.get(decision_id)
+
+    def _is_open_decision(self, decision: PendingDecision, *, now=None) -> bool:
+        now = now or utcnow()
+        if decision.consumed:
+            return False
+        expires = decision.expires_at
+        if expires is not None and now >= expires:
+            return False
+        return True
+
+    async def find_open_decision(
+        self, scope: ScopeKey, kind: str
+    ) -> PendingDecision | None:
+        key = scope.as_str()
+        kind_s = str(kind)
+        now = utcnow()
+        for decision in self._decisions.values():
+            if decision.scope.as_str() != key:
+                continue
+            if decision.kind != kind_s:
+                continue
+            if self._is_open_decision(decision, now=now):
+                return decision
+        return None
+
+    async def reserve_decision(
+        self, decision: PendingDecision
+    ) -> PendingDecision | None:
+        """CAS: at most one outstanding decision per (scope, kind)."""
+        existing = await self.find_open_decision(decision.scope, decision.kind)
+        if existing is not None:
+            return None
+        self._decisions[decision.decision_id] = decision
+        return decision
+
+    async def save_pending_payload(
+        self, decision_id: str, payload: dict[str, Any]
+    ) -> None:
+        # Keyed per decision — never replace the whole map.
+        self._pending[str(decision_id)] = dict(payload)
+
+    async def get_pending_payload(self, decision_id: str) -> dict[str, Any] | None:
+        raw = self._pending.get(str(decision_id))
+        return dict(raw) if raw is not None else None
+
+    async def pop_pending_payload(self, decision_id: str) -> dict[str, Any] | None:
+        raw = self._pending.pop(str(decision_id), None)
+        return dict(raw) if raw is not None else None
+
+    async def set_model_pref(self, scope: ScopeKey, model_id: str) -> None:
+        active = await self.get_active(scope)
+        if active is not None:
+            active.preferred_model = str(model_id)
+            await self.upsert(active)
+        else:
+            self._model_prefs[scope.as_str()] = str(model_id)
+
+    async def get_model_pref(self, scope: ScopeKey) -> str | None:
+        active = await self.get_active(scope)
+        if active is not None and active.preferred_model:
+            return active.preferred_model
+        return self._model_prefs.get(scope.as_str())
+
+    async def all_sessions(self) -> list[AgentSession]:
+        out: list[AgentSession] = []
+        for bucket in self._sessions.values():
+            out.extend(bucket.values())
+        return out
+
+    async def find_thread_session(self, thread_id: str) -> AgentSession | None:
+        """Return the immutable thread-bound session for a Discord thread id."""
+        needle = str(thread_id)
+        found: AgentSession | None = None
+        for session in await self.all_sessions():
+            if not session.thread_bound:
+                continue
+            if session.scope.channel_id != needle:
+                continue
+            if found is not None and found.agent_id != session.agent_id:
+                # Defensive: prefer active binding if duplicates ever exist.
+                if session.active and not found.active:
+                    found = session
+                continue
+            found = session
+        return found
+
+    def export_state(self) -> dict[str, Any]:
+        return {
+            "sessions": {
+                scope: {aid: s.to_dict() for aid, s in bucket.items()}
+                for scope, bucket in self._sessions.items()
+            },
+            "active": dict(self._active),
+            "decisions": {k: v.to_dict() for k, v in self._decisions.items()},
+            "pending": {k: dict(v) for k, v in self._pending.items()},
+            "model_prefs": dict(self._model_prefs),
+        }
+
+    def import_state(self, data: dict[str, Any]) -> None:
+        self._sessions.clear()
+        self._active = {
+            str(k): str(v) for k, v in (data.get("active") or {}).items()
+        }
+        for scope_key, bucket in (data.get("sessions") or {}).items():
+            parsed: dict[str, AgentSession] = {}
+            for agent_id, raw in (bucket or {}).items():
+                session = AgentSession.from_dict(raw)
+                parsed[str(agent_id)] = session
+            self._sessions[str(scope_key)] = parsed
+
+        decisions: dict[str, PendingDecision] = {}
+        # Unified bucket (Phase 5+).
+        for k, v in (data.get("decisions") or {}).items():
+            decisions[str(k)] = PendingDecision.from_dict(v)
+        # Legacy idle/model buckets — keep old Beacon blobs loadable.
+        for k, v in (data.get("idle") or {}).items():
+            raw = dict(v or {})
+            raw.setdefault("kind", "idle")
+            decisions[str(k)] = PendingDecision.from_dict(raw)
+        for k, v in (data.get("model") or {}).items():
+            raw = dict(v or {})
+            raw.setdefault("kind", "model")
+            decisions[str(k)] = PendingDecision.from_dict(raw)
+        self._decisions = decisions
+
+        self._pending = {
+            str(k): dict(v) for k, v in (data.get("pending") or {}).items()
+        }
+        self._model_prefs = {
+            str(k): str(v) for k, v in (data.get("model_prefs") or {}).items()
+        }
+
+
+def session_is_idle(
+    session: AgentSession,
+    *,
+    idle_minutes: int,
+    now=None,
+) -> bool:
+    now = now or utcnow()
+    last = session.last_meaningful_activity_at
+    delta = (now - last).total_seconds()
+    return delta >= idle_minutes * 60
+
+
+def ensure_owned(session: AgentSession | None, scope: ScopeKey) -> AgentSession:
+    if session is None:
+        raise OwnershipError()
+    if session.owner_id != scope.user_id or session.scope.as_str() != scope.as_str():
+        raise OwnershipError()
+    return session
+
+
+def validate_agent_id(agent_id: str) -> str:
+    text = str(agent_id or "").strip()
+    if not text or len(text) > 128:
+        raise ValidationError(
+            "Invalid agent id",
+            user_message="Provide a valid owned agent id.",
+        )
+    return text
+
+
+MEANINGFUL_STREAM_EVENTS = frozenset(
+    {"status", "assistant", "thinking", "tool_call", "result"}
+)
+
+
+def is_meaningful_stream_event(event_name: str) -> bool:
+    return event_name in MEANINGFUL_STREAM_EVENTS
+
+
+ACTIVE_RUN_STATUSES = frozenset(
+    {RunStatus.QUEUED, RunStatus.CREATING, RunStatus.RUNNING}
+)
+
+
+def run_is_busy(status: RunStatus | str | None) -> bool:
+    if status is None:
+        return False
+    if not isinstance(status, RunStatus):
+        status = RunStatus.from_api(str(status))
+    return bool(status.is_active)
