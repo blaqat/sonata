@@ -31,36 +31,151 @@ Relations (duals — set one side, the other updates):
 
 - On the **Test Request**: **Testing** → the feature/bug tickets under test
 - On each of those tickets: **Tested By** → the Test Request
-- On the **Test Request**: **PR** → the TR GitHub PR (the same PR when combining)
+- On the **Test Request**: **PR** → the TR GitHub PR
+
+**Manually link the PR** via the **PR** relation after creating the TR PR. The
+TR's SONA number won't match the PR title (which uses feature IDs), so the PR
+won't auto-link.
 
 Do **not** use **Parent** for Test Requests (Parent is `limit: 1` and is for
 Dev Plans). Do **not** create a Dev Plan child.
 
 Pass `template_id` on create. Template apply is async — do **not** send
-`content` in the same create. Fetch the page, then copy/fill the existing
-blocks.
+`content` in the same create. Fetch the page, then fill the existing blocks.
 
-### Template body to copy
+---
 
-Duplicate the whole callout once per scenario. Fill Scenario / Steps /
-Expected from each selected ticket's acceptance criteria. Leave **Result**
-for the tester.
+## Writing Scenarios — QA Usability First
+
+Scenarios are **strict step-by-step scripts** a QA tester follows to verify
+behavior. Optimize for **testing usability**: easy to read, easy to copy
+commands, easy to check off steps, easy to compare expected vs actual.
+
+### Page Structure
 
 ```
-### Test Script
+## Environment Setup
+- Setup requirement 1 (config files, env vars, preconditions)
+- Setup requirement 2
+
+## Test Script
 ---
-<callout icon="/icons/script_yellow.svg">
-	#### Scenario #: Quick Scenario Description
-	#### Steps
-	- [ ]
-	#### Expected
-	-
-	### Result
-	- (Filled out by tester) {color="blue"}
+<callout>
+  #NN - Scenario 1: Short Description
+  ...
+</callout>
+
+<callout>
+  #NN - Scenario 2: Short Description
+  ...
 </callout>
 ```
 
-Minimum one scenario per selected ticket. Number them `Scenario 1`, `Scenario 2`, …
+**Environment Setup** comes BEFORE the Test Script. Put all preconditions,
+config file checks, required state, or one-time setup here — not inside
+individual scenarios.
+
+### Scenario Callout Structure
+
+Each scenario is a yellow callout (`icon="/icons/script_yellow.svg"`):
+
+```
+<callout icon="/icons/script_yellow.svg">
+#### #NN - Scenario X: Short Description
+
+#### Steps
+- [ ] Step description (what the tester does)
+
+\`\`\`
+exact command or input to copy-paste
+\`\`\`
+
+- [ ] Next step description
+
+\`\`\`
+next command
+\`\`\`
+
+#### Expected
+- One expected outcome per bullet
+- Another expected outcome
+- Keep bullets atomic — don't combine multiple checks
+
+#### Result
+- (Filled out by tester) {color="blue"}
+</callout>
+```
+
+### Scenario Rules
+
+1. **One testable flow per scenario** — not one scenario per ticket. A ticket
+   may need multiple scenarios (e.g. Scenario 1: happy path, Scenario 2: error
+   case). Or one scenario may cover multiple tickets if they share a flow.
+
+2. **Title format**: `#NN - Scenario X: Description` where `NN` is the SONA
+   ticket number the scenario relates to (e.g. `#37 - Scenario 1:`).
+
+3. **Steps are checkboxes + code blocks**:
+   - Checkbox with a description of what to do
+   - Immediately followed by a **code block** with the exact command/input
+   - Tester copies from the code block, checks the box when done
+   - No code block needed if the step is purely observational
+
+4. **Expected has multiple bullets** — one assertion per bullet:
+   - Bad: `- Command completes without errors and returns a URL`
+   - Good:
+     - `- Command completes without errors`
+     - `- Returns a URL`
+
+5. **Result stays blue placeholder** — tester fills this in.
+
+### Example: Good Scenario
+
+```
+<callout icon="/icons/script_yellow.svg">
+#### #37 - Scenario 2: Image Generation Self Command Posts Image
+
+#### Steps
+- [ ] Run `$imagine` with a simple prompt and wait for the returned image link
+
+\`\`\`
+Sonata, generate an image of a cow jumping over a milk shaped moon
+\`\`\`
+
+#### Expected
+- `$imagine` generates an image via `gpt-image-2`
+- Returns an uploaded image URL
+- The image is posted in the chat
+
+#### Result
+- (Filled out by tester) {color="blue"}
+</callout>
+```
+
+### Example: Bad Scenario (don't do this)
+
+```
+<callout>
+#### Scenario 1: AI commands use current default models (SONA-37)
+
+#### Steps
+- [ ] Run each registered AI command path (g, o, c, x, a) once and note any
+      model-not-found errors
+- [ ] Check sonata.config.json overrides against _DEFAULT_AI_MODELS in
+      src/sonata_config.py (expect gpt-image-2, grok-4.6, gpt-5.6-terra,
+      gemini-3.6-flash, gemini-3.1-flash-image)
+- [ ] Run $imagine with a simple prompt and wait for the returned image link
+
+#### Expected
+- Every AI command path completes without model-not-found errors; $imagine
+  generates an image via gpt-image-2 and returns an uploaded image URL
+</callout>
+```
+
+Problems: no code blocks, steps are too vague, expected combines multiple
+assertions, ticket ID is at the end instead of as `#NN -` prefix.
+
+---
 
 ## Git
 
@@ -112,10 +227,11 @@ Test Request through Planning / In progress / In Review.
 2. List open feature PRs as `SONA-{n} {Title}` (skip drafts, skip `TR:` PRs)
 3. User confirms which PRs to include
 4. Check for an in-flight TR → combine or wait (see above)
-5. Create the ticket from the Test Request template; fill scenarios; set
-   **Testing** / **Tested By**
+5. Create the ticket from the Test Request template; fill scenarios per the
+   rules above; set **Testing** / **Tested By**
 6. If not waiting: squash-merge the selected PRs into `testing`, open or
-   update the `TR:` PR, link **PR**, move the TR → `Ready`
+   update the `TR:` PR, **manually link the PR** via the PR relation, move
+   the TR → `Ready`
 7. Output the TR ticket link, `SONA-{n}`, selected features, and PR URL
 
 ## Completion (when a TR is done)
