@@ -32,6 +32,7 @@ page comments for history only — do not create new Linear issues.
 | **Board** | Cycle/board column (`Backlog`, `C-2601`…, `Sprint 1`) |
 | **Parent** / **Children** | Nest Dev Plans under the parent ticket |
 | **Blocked By** / **Related** | Dependencies and links |
+| **Testing** / **Tested By** | Dual: TR **Testing** → tickets under test; those tickets **Tested By** → the TR |
 | **URL** | External links (e.g. GitHub PR URL if needed) |
 | **PR** | Relation to synced GitHub PRs (prefer this over stuffing PR URLs in the body) |
 | **Assign** | Person |
@@ -45,6 +46,7 @@ page comments for history only — do not create new Linear issues.
 | Spike / investigation | `Spike` |
 | Small discrete work | `Task` |
 | Implementation plan (child of a ticket) | `Plan` |
+| QA / Test Request | `Task` via the **Test Request** template — **only if the user confirms** |
 
 ### Milestones
 
@@ -67,9 +69,12 @@ sections if needed.
 | `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
 | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
 | `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
+| `Task` | Test Request | `3c424354-9f63-8060-aaca-c259a8d45cff` |
 
 Ticket templates: **Description**, **Acceptance Criteria**. Dev Plan: **Goal**,
-**Plan**, **Validation**. More detail: `.agents/notion-templates.md`.
+**Plan**, **Validation**. Test Request: **Test Script** callouts; Type stays
+`Task`; Name is `TR: SONA-{n}, …`; **only if the user confirms**. More detail:
+`.agents/notion-templates.md`.
 
 ### Dev Plans
 
@@ -87,7 +92,8 @@ Dev Plans are **child pages** in the same DB:
 When noticing potential improvements, bugs, or missing functionality during implementation:
 
 1. Create a new page in **SONA Tickets** using the matching **page template**
-   (see table above):
+   (see table above). **Never** use the Test Request template here — only if
+   the user confirms they want one, via `test-request`.
    - **Name**: clear, concise summary
    - **Type**: `Story` / `Bug` / `Spike` / `Task` as appropriate
    - **Points**: story point estimate
@@ -113,18 +119,21 @@ Use Fibonacci pointing:
 When asked to scan tickets:
 
 1. Query SONA Tickets with **Status** = `New` (and optionally incomplete `Planning`).
-2. For each ticket, ensure it has:
+2. **Skip Test Request tickets** (Name starts with `TR:` and/or
+   **Testing** is set). Do not add a Dev Plan or move them to `Planning`.
+3. For each other ticket, ensure it has:
    - Acceptance criteria (in body)
    - **Points**
    - **Type** (and **Milestones** when clear)
    - A filled Dev Plan child (`Type=Plan`)
-3. If a Dev Plan is added or the ticket is updated:
+4. If a Dev Plan is added or the ticket is updated:
    - Parent → `Planning`
    - Dev Plan → `Ready`
 
 ### Review Cycle
 
-- Do **not** move tickets to `Ready`. That is done by `@blaqat` after reviewing the Dev Plan.
+- Do **not** move implementation tickets to `Ready`. That is done by `@blaqat` after reviewing the Dev Plan.
+- Test Request tickets may move to `Ready` only via the `test-request` skill (branches on `testing`, ticket filled, `TR:` PR open).
 - If `@blaqat` leaves comments or questions on a Dev Plan and explicitly asks for a response, respond. Otherwise, wait.
 - Do **not** assume a Dev Plan is approved unless the parent ticket is moved to `Ready`.
 
@@ -132,8 +141,9 @@ When asked to scan tickets:
 
 ### Picking Up Work
 
-1. Look for tickets with **Status** = `Ready`.
-2. Create a branch from the appropriate base using:
+1. Look for tickets with **Status** = `Ready`. Skip Test Request tickets
+   (Name starts with `TR:`) — those are QA, not implementation.
+2. Create a branch from **`testing`** using:
    - Stories/features/tasks: `story/SONA-{n}` (e.g. `story/SONA-12`)
    - Bugs: `bug/SONA-{n}` (e.g. `bug/SONA-34`)
 3. Move the ticket **Status** to `In progress`.
@@ -146,14 +156,40 @@ When asked to scan tickets:
 
 ### Pull Requests
 
+The PR target for feature work is **`testing`**, not `master`. `testing` is
+the QA integration branch so multiple features can be tested together.
+
 When implementation is complete:
 
-1. Open a PR with:
+1. Open a PR **against `testing`** with:
    - Title: `SONA-{n}: {short summary}` (e.g. `SONA-5: Add Encryption for Beacon`)
    - Description: what changed and why, linking the Notion ticket
    - Reviewer: ping `@blaqat`
 2. Move the ticket **Status** to `In Review`.
 3. Prefer linking the PR via the **PR** relation (or **URL**) rather than only pasting links in the body.
+
+**Squash-merge** every feature PR into `testing`. Squash commit message:
+
+```
+SONA-{n}: {Title}
+
+- relevant change
+- relevant change
+```
+
+Do not merge feature PRs to `master`. `master` only receives work through a
+Test Request PR (`TR: SONA-{n}, …`) after QA. See the `test-request` skill.
+
+### Test Requests
+
+QA is tracked with the **Test Request** template. Use the `test-request` skill.
+Never create one unless the user confirms.
+
+- Status stays `New` while a previous TR is in-flight and the user chose wait
+- Status → `Ready` only after selected branches are squash-merged into
+  `testing`, the ticket is filled, and the `TR:` PR is open (or the new TR
+  was combined onto an existing TR PR)
+- When a TR completes, queue the next `New` Test Request (ask if several)
 
 ## Summary of Status Flows
 
@@ -161,5 +197,10 @@ When implementation is complete:
 [New]         -> (agent fills out + adds Dev Plan) -> [Planning]
 [Planning]    -> (blaqat reviews & approves)       -> [Ready]
 [Ready]       -> (agent picks up & implements)     -> [In progress]
-[In progress] -> (agent opens PR)                  -> [In Review]
+[In progress] -> (agent opens PR against testing)  -> [In Review]
+
+Test Request:
+[New]  -> (wait for previous TR, or not yet queued)
+[Ready] -> (testing has the merges, ticket filled, TR PR open — QA)
+[Done]  -> (QA finished / TR PR merged to master; queue next New TR)
 ```

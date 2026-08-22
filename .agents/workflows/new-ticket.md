@@ -15,6 +15,11 @@ description: Create a new ticket from scratch.
    | `Bug` | Bug Ticket | `f5024354-9f63-821a-ad85-81550fdbc659` |
    | `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
    | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
+   | `Task` | Test Request | `3c424354-9f63-8060-aaca-c259a8d45cff` |
+
+   **Never** use Test Request unless the user confirms they want one — then
+   use the `test-request` skill instead (Type stays `Task`; Name is
+   `TR: SONA-{n}, …`).
 
 3. Fill **Description** and **Acceptance Criteria** (re-fetch if template
    sections aren't there yet)

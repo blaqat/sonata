@@ -13,6 +13,13 @@ Prefer these database templates when creating tickets and Dev Plans.
 | `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
 | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
 | `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
+| `Task` | Test Request | `3c424354-9f63-8060-aaca-c259a8d45cff` |
+
+**Test Request** stays **Type = `Task`**. Always create it with the Test
+Request template, never a blank Task or Task Ticket. Ticket **Name** is
+`TR: SONA-{n}, …`. **Only if the user confirms they want one** — use the
+`test-request` skill. Do not create from scan, new-ticket, or proactive
+ticket creation.
 
 ## Template body sections
 
@@ -20,6 +27,7 @@ Prefer these database templates when creating tickets and Dev Plans.
 |----------|----------|
 | Feature / Bug / Spike / Task | **Description**, **Acceptance Criteria** |
 | Dev Plan | **Goal**, **Plan**, **Validation** |
+| Test Request | **Test Script** scenario callouts (Scenario / Steps / Expected / Result) |
 
 ## MCP usage
 

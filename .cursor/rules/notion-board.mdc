@@ -21,9 +21,12 @@ Tracking lives in **Notion**, not Linear. Full workflow: `AGENTS.md` and
 | `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
 | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
 | `Plan` | Dev Plan | `65724354-9f63-8382-8898-810fd27b31e7` |
+| `Task` | Test Request | `3c424354-9f63-8060-aaca-c259a8d45cff` |
 
 - Details: `.agents/notion-templates.md`
 - IDs: `SONA-{n}` (Notion auto-increment `ID`)
 - Statuses: `New` → `Planning` → `Ready` → `In progress` → `In Review` → `Done`
 - Dev Plans: child pages with `Type=Plan` + `Parent` relation
+- Feature PRs target **`testing`** (squash-merge as `SONA-{n}: Title` + bullets). `master` only via a `TR:` PR after QA.
+- Test Request template: only if the user confirms. Use the `test-request` skill.
 - Use Notion MCP for create/query/update; do not create Linear issues

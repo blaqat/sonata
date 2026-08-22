@@ -19,6 +19,11 @@ description: Create a new ticket from scratch. Use this when you identify a bug,
    | `Bug` | Bug Ticket | `f5024354-9f63-821a-ad85-81550fdbc659` |
    | `Spike` | Spike Ticket | `fad24354-9f63-839c-aa6d-01f45e181907` |
    | `Task` | Task Ticket | `71824354-9f63-8334-8649-01a2c41e7e0b` |
+   | `Task` | Test Request | `3c424354-9f63-8060-aaca-c259a8d45cff` |
+
+   **Never** use the Test Request template unless the user explicitly confirms
+   they want one. If they do, stop and use the `test-request` skill instead
+   (Type stays `Task`; ticket Name is `TR: SONA-{n}, …`).
 
    - `properties`: Name, Type, Status (`New`), Points, Milestones (when clear)
 

@@ -15,7 +15,10 @@ description: Get a snapshot of the current board state.
 
    - Tickets in `In progress` (actively being worked)
 
-   - Tickets in `In Review` (PRs open)
+   - Tickets in `In Review` (PRs open against `testing`)
 
-3. Flag any blockers or stale tickets (e.g. In progress for 3+ days with no
+3. Separately report Test Request tickets (`New` queued vs `Ready` in QA)
+   and whether a `TR:` PR is open
+
+4. Flag any blockers or stale tickets (e.g. In progress for 3+ days with no
    commits)
