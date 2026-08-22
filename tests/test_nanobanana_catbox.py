@@ -8,17 +8,17 @@ import requests
 
 
 def _load_catbox_helper():
-    """Load _upload_to_catbox without pulling the full bot import graph."""
+    """Load upload_to_catbox without pulling the full utils import graph."""
     repo_root = pathlib.Path(__file__).resolve().parents[1]
     src_root = repo_root / "src"
     if str(src_root) not in sys.path:
         sys.path.insert(0, str(src_root))
 
-    module_path = src_root / "index.py"
+    module_path = src_root / "modules" / "utils.py"
     source = module_path.read_text(encoding="utf-8")
 
     start = source.index("_catbox_logger = logging.getLogger")
-    end = source.index("\n\n@MANAGER.register_ai(", start)
+    end = source.index("\n\nclass Map:")
 
     snippet = source[start:end]
 
@@ -26,7 +26,6 @@ def _load_catbox_helper():
     module.logging = __import__("logging")
     module.requests = requests
     module.time = types.SimpleNamespace(sleep=mock.Mock())
-    module.AI_Error = type("AI_Error", (Exception,), {})
     exec(compile(snippet, str(module_path), "exec"), module.__dict__)  # noqa: S102
     return module
 
@@ -47,7 +46,7 @@ class NanoBananaCatboxUploadTests(unittest.TestCase):
             "post",
             return_value=self._response(text="https://files.catbox.moe/abc.jpg\n"),
         ) as post:
-            url = self.mod._upload_to_catbox(b"image-bytes")
+            url = self.mod.upload_to_catbox(b"image-bytes")
 
         self.assertEqual(url, "https://files.catbox.moe/abc.jpg")
         post.assert_called_once()
@@ -67,7 +66,7 @@ class NanoBananaCatboxUploadTests(unittest.TestCase):
             self._response(text="https://files.catbox.moe/fixed.jpg"),
         ]
         with mock.patch.object(self.mod.requests, "post", side_effect=responses) as post:
-            url = self.mod._upload_to_catbox(b"image-bytes")
+            url = self.mod.upload_to_catbox(b"image-bytes")
 
         self.assertEqual(url, "https://files.catbox.moe/fixed.jpg")
         self.assertEqual(post.call_count, 3)
@@ -84,9 +83,9 @@ class NanoBananaCatboxUploadTests(unittest.TestCase):
                 return_value=self._response(status_code=403, text=long_body),
             ) as post,
             mock.patch.object(self.mod._catbox_logger, "warning") as warning,
-            self.assertRaises(self.mod.AI_Error) as ctx,
+            self.assertRaises(self.mod.CatboxUploadError) as ctx,
         ):
-            self.mod._upload_to_catbox(b"image-bytes")
+            self.mod.upload_to_catbox(b"image-bytes")
 
         self.assertEqual(post.call_count, 3)
         message = str(ctx.exception)
@@ -104,7 +103,7 @@ class NanoBananaCatboxUploadTests(unittest.TestCase):
                 self._response(text="https://files.catbox.moe/back.jpg"),
             ],
         ) as post:
-            url = self.mod._upload_to_catbox(b"image-bytes")
+            url = self.mod.upload_to_catbox(b"image-bytes")
 
         self.assertEqual(url, "https://files.catbox.moe/back.jpg")
         self.assertEqual(post.call_count, 2)
@@ -115,8 +114,8 @@ class NanoBananaCatboxUploadTests(unittest.TestCase):
             self.mod.requests,
             "post",
             side_effect=requests.Timeout("timed out"),
-        ), self.assertRaises(self.mod.AI_Error) as ctx:
-            self.mod._upload_to_catbox(b"image-bytes", attempts=3)
+        ), self.assertRaises(self.mod.CatboxUploadError) as ctx:
+            self.mod.upload_to_catbox(b"image-bytes", attempts=3)
 
         self.assertIn("request error", str(ctx.exception))
 

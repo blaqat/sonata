@@ -16,12 +16,10 @@ _____________________________________________________
 from __init__ import apply_patches
 import asyncio
 import base64
-import logging
 import os
 import re
 import sys
 import json
-import time
 from io import BytesIO
 import anthropic
 import discord
@@ -44,6 +42,7 @@ from modules.utils import (
     get_trace,
     ordinal,
     settings,
+    upload_to_catbox,
 )
 from modules.utils import (
     async_cprint as cprint,
@@ -531,48 +530,6 @@ def Gemini(client, prompt, model, config):
             )
         else:
             raise AI_Error(str(e))
-
-
-_catbox_logger = logging.getLogger("sonata.catbox")
-
-_CATBOX_UA = (
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-)
-
-
-def _upload_to_catbox(image_bytes: bytes, attempts: int = 3) -> str:
-    """Upload image bytes to catbox.moe and return the hosted file URL.
-
-    The deployed host's egress is the flaky link in this path (catbox
-    rejects or stalls datacenter traffic occasionally), so use a browser
-    User-Agent, bounded timeouts, and short retries. Full response details
-    go to the logs; the raised error stays concise for chat.
-    """
-    url = "https://catbox.moe/user/api.php"
-    headers = {"User-Agent": _CATBOX_UA, "Accept": "text/plain"}
-    detail = "no response from catbox"
-    for attempt in range(1, attempts + 1):
-        try:
-            response = requests.post(
-                url,
-                files={
-                    "reqtype": (None, "fileupload"),
-                    "fileToUpload": ("image.jpg", image_bytes),
-                },
-                headers=headers,
-                timeout=(10, 30),
-            )
-        except requests.RequestException as exc:
-            detail = f"request error: {exc}"
-        else:
-            if response.status_code == 200 and response.text.startswith("http"):
-                return response.text.strip()
-            detail = f"HTTP {response.status_code}: {response.text[:200]}"
-        if attempt < attempts:
-            time.sleep(attempt)
-    _catbox_logger.warning("catbox upload failed after %d attempts: %s", attempts, detail)
-    raise AI_Error(f"Failed to upload image to catbox ({detail[:120]})")
 
 
 @MANAGER.register_ai(
