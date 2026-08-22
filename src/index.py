@@ -191,19 +191,7 @@ def DallE(client, prompt, model, config):
         n=config.get("num_images", 1),
     )
     image_bytes = base64.b64decode(result.data[0].b64_json)
-
-    # Upload to catbox.moe
-    url = "https://catbox.moe/user/api.php"
-    files = {
-        "reqtype": (None, "fileupload"),
-        "fileToUpload": ("image.png", image_bytes),
-    }
-    response = requests.post(url, files=files)
-
-    if response.status_code == 200 and response.text.startswith("http"):
-        return response.text
-    else:
-        raise AI_Error(f"Failed to upload image to catbox: {response.text}")
+    return upload_to_catbox(image_bytes)
 
 
 @MANAGER.register_ai(
@@ -237,41 +225,6 @@ def Assistant(client, prompt, model, config):
             reply += "\n" + c.text.value if c.type == "text" else f":{c.source.url}:"
 
     return reply
-
-
-@MANAGER.register_ai(
-    None,
-    key=settings.X_AI,
-    setup=lambda S, key: setattr(
-        S, "client", openai.OpenAI(api_key=key, base_url="https://api.x.ai/v1")
-    ),
-    model=_ai_model("grok_beta", "grok-4.3"),
-)
-def GrokBeta(client, prompt, model, config):
-    content = [{"content": prompt, "role": "user"}]
-
-    if config["instructions"]:
-        content.insert(
-            0,
-            {
-                "role": "system",
-                "content": config["instructions"],
-            },
-        )
-
-    return (
-        client.chat.completions.create(
-            # client.beta.prompt_caching.messages.create(
-            model=model,
-            # system=config["instructions"],
-            # system=instructions,
-            max_tokens=config.get("max_tokens", 1250),
-            temperature=config.get("temp") or config.get("temperature") or 0,
-            messages=content,
-        )
-        .choices[0]
-        .message.content
-    )
 
 
 @MANAGER.register_ai(
@@ -1246,19 +1199,6 @@ async def grok_ai_question(ctx, *message):
         *message,
         ai="Grok",
         short="x",
-        error_prompt=lambda r, name: PROMPT_MANAGER.get(
-            "ExplainBlockReasoning", r, name
-        ),
-    )
-
-
-@sonata.command(name="xb", description="Ask a question using GrokBeta")
-async def grok_beta_ai_question(ctx, *message):
-    await ai_question(
-        ctx,
-        *message,
-        ai="GrokBeta",
-        short="xb",
         error_prompt=lambda r, name: PROMPT_MANAGER.get(
             "ExplainBlockReasoning", r, name
         ),

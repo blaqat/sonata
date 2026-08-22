@@ -20,7 +20,6 @@ from modules.plugins import PLUGINS_DICT
 _DEFAULT_AI_MODELS: dict[str, str] = {
     "dall_e": "gpt-image-2",
     "assistant": "gpt-4o",
-    "grok_beta": "grok-4.3",
     "grok": "grok-4.6",
     "openai": "gpt-5.6-terra",
     "claude": "claude-sonnet-4-6",
@@ -57,7 +56,6 @@ class AIModels:
 
     dall_e: str | None = None
     assistant: str | None = None
-    grok_beta: str | None = None
     grok: str | None = None
     openai: str | None = None
     claude: str | None = None
