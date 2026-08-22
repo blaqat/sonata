@@ -42,6 +42,7 @@ from modules.utils import (
     get_trace,
     ordinal,
     settings,
+    upload_to_catbox,
 )
 from modules.utils import (
     async_cprint as cprint,
@@ -551,19 +552,7 @@ def NanoBanana(client, prompt, model, config):
         ),
     )
     image_bytes = result.generated_images[0].image.image_bytes
-
-    # Upload to catbox.moe
-    url = "https://catbox.moe/user/api.php"
-    files = {
-        "reqtype": (None, "fileupload"),
-        "fileToUpload": ("image.jpg", image_bytes),
-    }
-    response = requests.post(url, files=files)
-
-    if response.status_code == 200 and response.text.startswith("http"):
-        return response.text
-    else:
-        raise AI_Error(f"Failed to upload image to catbox: {response.text}")
+    return _upload_to_catbox(image_bytes)
 
 
 # -------------------------------------------------------------------
