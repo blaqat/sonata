@@ -179,22 +179,31 @@ def extend(Sonata: AI_Manager):
     default=False,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model=_ai_model("dall_e", "dall-e-3"),
+    model=_ai_model("dall_e", "gpt-image-2"),
     # model="dall-e-2",
     # model = "gpt-image-1"
 )
 def DallE(client, prompt, model, config):
-    return (
-        client.generate(
-            model=model,
-            prompt=prompt,
-            # quality=config.get("quality", "auto"),
-            quality=config.get("quality", "standard"),
-            n=config.get("num_images", 1),
-        )
-        .data[0]
-        .url
+    result = client.generate(
+        model=model,
+        prompt=prompt,
+        quality=config.get("quality", "medium"),
+        n=config.get("num_images", 1),
     )
+    image_bytes = base64.b64decode(result.data[0].b64_json)
+
+    # Upload to catbox.moe
+    url = "https://catbox.moe/user/api.php"
+    files = {
+        "reqtype": (None, "fileupload"),
+        "fileToUpload": ("image.png", image_bytes),
+    }
+    response = requests.post(url, files=files)
+
+    if response.status_code == 200 and response.text.startswith("http"):
+        return response.text
+    else:
+        raise AI_Error(f"Failed to upload image to catbox: {response.text}")
 
 
 @MANAGER.register_ai(
@@ -236,7 +245,7 @@ def Assistant(client, prompt, model, config):
     setup=lambda S, key: setattr(
         S, "client", openai.OpenAI(api_key=key, base_url="https://api.x.ai/v1")
     ),
-    model=_ai_model("grok_beta", "grok-beta"),
+    model=_ai_model("grok_beta", "grok-4.3"),
 )
 def GrokBeta(client, prompt, model, config):
     content = [{"content": prompt, "role": "user"}]
@@ -270,7 +279,7 @@ def GrokBeta(client, prompt, model, config):
     key=settings.X_AI,
     setup=lambda S, key: setattr(S, "client", XAIClient(api_key=key)),
     # model="grok-4-1-fast-reasoning"
-    model=_ai_model("grok", "grok-4-1-fast-non-reasoning"),
+    model=_ai_model("grok", "grok-4.6"),
 )
 def Grok(client: XAIClient, prompt, model, config):
     chat = client.chat.create(
@@ -302,7 +311,7 @@ def Grok(client: XAIClient, prompt, model, config):
     client=openai.chat.completions,
     key=settings.OPEN_AI,
     setup=lambda _, key: setattr(openai, "api_key", key),
-    model=_ai_model("openai", "gpt-5.4-mini"),
+    model=_ai_model("openai", "gpt-5.6-terra"),
     # model="gpt-5.2-2025-12-11",
 )
 def OpenAI(client, prompt, model, config):
@@ -461,7 +470,7 @@ def Perplexity(client, prompt, model, config):
     setup=lambda _, key: genai.configure(api_key=key),
     # model="gemini-2.0-flash-exp",
     # model="gemini-2.5-pro-exp-03-25",
-    model=_ai_model("gemini", "gemini-2.5-flash"),
+    model=_ai_model("gemini", "gemini-3.6-flash"),
     # model = "gemini-2.5-pro"
 )
 def Gemini(client, prompt, model, config):
@@ -538,21 +547,21 @@ def Gemini(client, prompt, model, config):
     key=settings.GOOGLE_AI,
     setup=lambda S, key: setattr(S, "client", google_genai.Client(api_key=key)),
     # model="imagen-4.0-generate-001",
-    model=_ai_model("imagen", "imagen-4.0-fast-generate-001"),
+    model=_ai_model("imagen", "gemini-3.1-flash-image"),
     # model="imagen-3.0-capability-001",
 )
 def NanoBanana(client, prompt, model, config):
-    result = client.models.generate_images(
+    result = client.models.generate_content(
         model=model,
-        prompt=prompt,
-        config=dict(
-            number_of_images=config.get("num_images", 1),
-            output_mime_type="image/jpeg",
-            aspect_ratio="1:1",
-        ),
+        contents=prompt,
+        config=dict(response_modalities=["TEXT", "IMAGE"]),
     )
-    image_bytes = result.generated_images[0].image.image_bytes
-    return _upload_to_catbox(image_bytes)
+    image_bytes = next(
+        part.inline_data.data
+        for part in result.candidates[0].content.parts
+        if part.inline_data is not None
+    )
+    return upload_to_catbox(image_bytes)
 
 
 # -------------------------------------------------------------------
