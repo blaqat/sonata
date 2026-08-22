@@ -36,5 +36,11 @@ Never create a Test Request unless the user confirms they want one.
    titled `TR: SONA-{n}, SONA-{n}` with a task list of TR ticket links.
    **Manually link the PR** via the PR relation. Status → `Ready`.
 
-7. When a TR completes: mark `Done`, fast-forward `testing` to `master`,
+7. When the user says testing is complete: review Result notes against the
+   original ACs **before** marking `Done`. Do not file a ticket per comment.
+   Quick in-AC misses → patch `testing`. Follow-up **Story** for new work
+   outside the ACs. Follow-up **Bug** only if it does not undermine the ACs,
+   is a crash, or is a large fix. Details: `test-request` skill.
+
+8. When a TR closes: mark `Done`, fast-forward `testing` to `master`,
    then queue the next `New` Test Request (ask if there are several).

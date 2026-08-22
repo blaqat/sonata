@@ -234,9 +234,48 @@ Test Request through Planning / In progress / In Review.
    the TR → `Ready`
 7. Output the TR ticket link, `SONA-{n}`, selected features, and PR URL
 
+## After QA (when the user says testing is complete)
+
+Review the tester's **Result** notes and page comments **before** marking the
+TR `Done` or merging. Compare each note to the **original tickets' ACs**.
+
+Do **not** file a ticket for every comment.
+
+### Fix on `testing` (no new ticket)
+
+Quick patches that still belong to the work under test:
+
+- Small miss that is **in** the original AC (the feature almost shipped)
+- Small cleanup that is not worth tracking
+
+Commit on `testing` and push if the user needs to re-run a failed scenario.
+Live-test the **exact** failing input when you can. A mocked unit test is not
+the same as the QA URL or command.
+
+### Follow-up Story
+
+New product work **outside** the original ACs. Example (SONA-146): Catbox no
+longer embeds → post images as Discord attachments; persist `$read` into chat
+memory like Prism. Those were not SONA-37 / SONA-52 ACs.
+
+### Follow-up Bug
+
+File a Bug only when a new ticket is the right container:
+
+- The issue does **not** undermine the point of the original ACs (leftover
+  edge case; the feature still did its job), **or**
+- It is a crash, **or**
+- The fix is large (do not sneak a big patch onto the TR)
+
+If a bug **does** undermine the ACs but the fix is small, patch `testing`
+instead of opening a ticket.
+
+If the split is unclear, say so and ask. Do not default to creating tickets.
+
 ## Completion (when a TR is done)
 
-When the user says a TR is complete, or its `TR:` PR is merged to `master`:
+When the user says a TR is complete **and** comments are reviewed (or its
+`TR:` PR is merged to `master`):
 
 1. Mark that Test Request `Done`
 2. Fast-forward `testing` to `master` so the next queue starts clean

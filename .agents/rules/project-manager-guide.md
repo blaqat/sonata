@@ -189,7 +189,9 @@ Never create one unless the user confirms.
 - Status stays `New` while a previous TR is in-flight and the user chose wait
 - Status → `Ready` only after selected branches are squash-merged into
   `testing`, the ticket is filled, and the `TR:` PR is open (or combined)
-- When a TR completes, queue the next `New` Test Request (ask if several)
+- When a TR completes, review QA comments against the original ACs first
+  (see `test-request` skill: After QA). Then queue the next `New` Test
+  Request (ask if several)
 
 ---
 
