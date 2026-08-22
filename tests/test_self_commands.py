@@ -188,9 +188,21 @@ class SelfCommandHelpersTests(unittest.TestCase):
             "https://example.com/docs",
         )
 
+    def test_normalize_url_preserves_protocol_relative(self):
+        self.assertEqual(
+            self_commands.normalize_url("//cdn.example.com/image"),
+            "https://cdn.example.com/image",
+        )
+
     def test_normalize_url_rejects_non_http_scheme(self):
         with self.assertRaises(ValueError):
             self_commands.normalize_url("ftp://example.com/file")
+
+    def test_truncate_markdown_rejects_negative_limit(self):
+        content, truncated = self_commands._truncate_markdown("hello world", -3)
+        self.assertTrue(truncated)
+        self.assertIn("...[truncated]", content)
+        self.assertNotIn("hello world", content)
 
     def test_read_command_description_mentions_posted_links(self):
         command = self_commands.MANAGER.get("command")["read"]
@@ -276,6 +288,64 @@ class SelfCommandHelpersTests(unittest.TestCase):
         self.assertIsNone(post.call_args.kwargs["params"])
         self.assertEqual(result["status"], "found")
         self.assertEqual(result["result"][0]["engine"], "chromium")
+
+    def test_cloudflare_read_hard_page_hosts_ignore_port(self):
+        self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"
+        self_commands.settings.CLOUDFLARE_API_TOKEN = "token"
+        config = self_commands.MANAGER.MANAGER.config.setdefault("read", {})
+        original_hosts = config.get("hard_page_hosts")
+        config["hard_page_hosts"] = ["example.com"]
+        good_response = mock.Mock()
+        good_response.ok = True
+        good_response.json.return_value = {"success": True, "result": "# Hard\n\nbody"}
+        try:
+            with mock.patch.object(
+                self_commands.requests, "post", return_value=good_response
+            ) as post:
+                result = self_commands.cloudflare_markdown_read(
+                    "https://www.example.com:443/login"
+                )
+        finally:
+            if original_hosts is None:
+                config.pop("hard_page_hosts", None)
+            else:
+                config["hard_page_hosts"] = original_hosts
+
+        post.assert_called_once()
+        self.assertIsNone(post.call_args.kwargs["params"])
+        self.assertEqual(result["result"][0]["engine"], "chromium")
+
+    def test_cloudflare_read_falls_back_after_challenge_extract(self):
+        self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"
+        self_commands.settings.CLOUDFLARE_API_TOKEN = "token"
+        challenge_response = mock.Mock()
+        challenge_response.ok = True
+        challenge_response.json.return_value = {
+            "success": True,
+            "result": '---\ntitle: "Just a moment..."\n---',
+        }
+        good_response = mock.Mock()
+        good_response.ok = True
+        good_response.json.return_value = {
+            "success": True,
+            "result": "# Real Title\n\narticle body",
+        }
+
+        with mock.patch.object(
+            self_commands.requests,
+            "post",
+            side_effect=[challenge_response, good_response],
+        ) as post:
+            result = self_commands.cloudflare_markdown_read(
+                "https://gizmodo.com/some-article"
+            )
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].kwargs["params"], {"browser": "kitesurf"})
+        self.assertIsNone(post.call_args_list[1].kwargs["params"])
+        self.assertEqual(result["status"], "found")
+        self.assertEqual(result["result"][0]["engine"], "chromium")
+        self.assertEqual(result["result"][0]["title"], "Real Title")
 
     def test_cloudflare_read_reports_all_engine_failures(self):
         self_commands.settings.CLOUDFLARE_ACCOUNT_ID = "acct"

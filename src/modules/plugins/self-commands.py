@@ -85,6 +85,16 @@ Helper Functions ---------------------------------------------------------------
 """
 
 
+_CHALLENGE_MARKERS = (
+    "just a moment",
+    "attention required",
+    "checking your browser",
+    "enable javascript and cookies",
+    "please wait while we verify",
+    "cf-browser-verification",
+)
+
+
 def normalize_url(target: str) -> str:
     """Normalize and validate a URL for remote fetches."""
     target = target.strip()
@@ -92,7 +102,10 @@ def normalize_url(target: str) -> str:
         raise ValueError("URL cannot be empty")
 
     parsed = parse.urlsplit(target)
-    if not parsed.scheme:
+    if target.startswith("//"):
+        target = f"https:{target}"
+        parsed = parse.urlsplit(target)
+    elif not parsed.scheme:
         target = f"https://{target}"
         parsed = parse.urlsplit(target)
 
@@ -113,11 +126,35 @@ def _extract_markdown_title(markdown: str) -> Optional[str]:
     return None
 
 
+def _positive_char_limit(value: Any, default: int = 8000) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return default
+    return limit if limit >= 0 else default
+
+
 def _truncate_markdown(markdown: str, limit: int) -> tuple[str, bool]:
+    if limit < 0:
+        limit = 0
     if len(markdown) <= limit:
         return markdown, False
     trimmed = markdown[:limit].rstrip()
     return trimmed + "\n\n...[truncated]", True
+
+
+def _is_unusable_extract(markdown: str) -> bool:
+    """True when markdown is empty or a bot-challenge/interstitial page."""
+    text = markdown.strip()
+    if not text:
+        return True
+
+    lowered = text.lower()
+    title = (_extract_markdown_title(markdown) or "").lower()
+    if any(marker in title for marker in _CHALLENGE_MARKERS):
+        return True
+    # Challenge pages are short (e.g. YAML `title: "Just a moment..."`).
+    return any(marker in lowered for marker in _CHALLENGE_MARKERS) and len(text) < 800
 
 
 def _read_engine_plan(config: Dict[str, Any], url: str) -> list[str]:
@@ -129,7 +166,7 @@ def _read_engine_plan(config: Dict[str, Any], url: str) -> list[str]:
     if fallback_engine and fallback_engine not in engines:
         engines.append(fallback_engine)
 
-    host = parse.urlsplit(url).netloc.lower()
+    host = (parse.urlsplit(url).hostname or "").lower()
     if host.startswith("www."):
         host = host[4:]
     hard_hosts = [
@@ -182,7 +219,7 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
     Fetch a webpage through Cloudflare Browser Run /markdown.
 
     Defaults to the Kitesurf engine and falls back to Chromium once when
-    Kitesurf fails or returns an empty extract.
+    Kitesurf fails, returns an empty extract, or returns a challenge page.
     Returns structured data for self-command and agent usage.
     """
     target = " ".join(target_parts).strip()
@@ -212,7 +249,7 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
         }
 
     config = MANAGER.MANAGER.config.get("read", {})
-    max_chars = config.get("max_chars", 8000)
+    max_chars = _positive_char_limit(config.get("max_chars", 8000))
     failures: list[str] = []
     last_was_empty = False
 
@@ -254,7 +291,7 @@ def cloudflare_markdown_read(*target_parts: str) -> Dict[str, Any]:
             continue
 
         markdown = payload.get("result", "")
-        if not isinstance(markdown, str) or not markdown.strip():
+        if not isinstance(markdown, str) or _is_unusable_extract(markdown):
             failures.append(f"{engine}: no readable content")
             last_was_empty = True
             continue
