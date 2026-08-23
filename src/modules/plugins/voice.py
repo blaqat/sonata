@@ -220,7 +220,10 @@ class VoiceService:
         finally:
             self.is_ready = True
 
-        await self.start_recording(sink.vc, channel)
+        # The recording callback can finish after its voice client disconnects.
+        # Do not schedule a new loop for a client that can no longer record.
+        if sink.vc.is_connected():
+            await self.start_recording(sink.vc, channel)
 
     async def start_recording(self, vc: discord.VoiceClient, channel: discord.TextChannel):
         try:

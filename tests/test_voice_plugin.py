@@ -244,6 +244,18 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
         )
         manager.chat.send.assert_called_once_with(99, "User", "Karma", "sonata hello")
 
+    async def test_voice_callback_does_not_restart_after_disconnect(self):
+        service, _ = self.service()
+        service.start_recording = mock.AsyncMock()
+        voice_client = FakeVoiceClient(connected=False)
+        sink = SimpleNamespace(vc=voice_client, audio_data={})
+        channel = SimpleNamespace(guild=SimpleNamespace())
+
+        await service.vc_callback(sink, channel)
+
+        service.start_recording.assert_not_awaited()
+        self.assertTrue(service.is_ready)
+
     async def test_join_only_recovers_disconnected_stale_clients(self):
         stale_client = FakeVoiceClient(connected=False)
         replacement = FakeVoiceClient()
