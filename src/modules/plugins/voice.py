@@ -91,6 +91,44 @@ class VoiceService:
     def recording_enabled(self) -> bool:
         return _runtime_flag(self.runtime, "vc_recording", False)
 
+    def _active_voice_client(self, guild):
+        """Return the connected voice client for this guild, if one exists."""
+        voice_client = getattr(guild, "voice_client", None)
+        if voice_client is not None and voice_client.is_connected():
+            self.current_vc = voice_client
+            return voice_client
+
+        # The service can receive commands from several guilds. Do not reuse a
+        # cached client unless Discord confirms it belongs to this live guild.
+        self.current_vc = None
+        return None
+
+    async def _connect_to_channel(self, guild, channel):
+        """Connect to a channel, recovering only a disconnected stale client."""
+        try:
+            voice_client = await channel.connect()
+        except discord.ClientException:
+            stale_client = getattr(guild, "voice_client", None)
+            if stale_client is None or stale_client.is_connected():
+                raise
+            await stale_client.disconnect(force=True)
+            voice_client = await channel.connect()
+
+        self.current_vc = voice_client
+        return voice_client
+
+    async def _get_or_connect_voice_client(self, ctx):
+        voice_client = self._active_voice_client(ctx.guild)
+        if voice_client is not None:
+            return voice_client
+
+        voice_state = getattr(ctx.author, "voice", None)
+        if voice_state is None:
+            await ctx.send("You are not in a voice channel.")
+            return None
+
+        return await self._connect_to_channel(ctx.guild, voice_state.channel)
+
     async def say(self, vc: discord.VoiceClient, message: str, opts: dict | None = None):
         """Synthesize and play a message while the bot is in a voice channel."""
         opts = opts or {}
@@ -159,7 +197,8 @@ class VoiceService:
                     continue
 
                 cprint(f"{name}: {words}", "cyan")
-                response = self.manager.chat.request(
+                response = await asyncio.to_thread(
+                    self.manager.chat.request,
                     channel_id,
                     command,
                     name,
@@ -171,7 +210,11 @@ class VoiceService:
                 response = f"{name}: {response}"
 
                 async with self.speaking_mutex:
-                    await self.say(sink.vc, response)
+                    await self.say(
+                        sink.vc,
+                        response,
+                        {"voice": self.manager.config.get("vc_voice", "nova")},
+                    )
         except Exception as exc:
             cprint(exc, "red")
         finally:
@@ -222,34 +265,21 @@ class VoiceService:
 
     async def respond(self, ctx):
         """Respond in the current voice channel using the chat context."""
-        response_instructions = VOICE_INSTRUCTIONS
+        if not self.speaking_enabled():
+            return await ctx.send("soz voice speaking is disabled")
 
-        if ctx.guild.voice_client is not None:
-            self.current_vc = ctx.guild.voice_client
+        vc = await self._get_or_connect_voice_client(ctx)
+        if vc is None:
+            return
 
-        if self.current_vc is None:
-            voice = ctx.author.voice
-            if voice is None:
-                return await ctx.send("You are not in a voice channel.")
-
-            try:
-                vc = await voice.channel.connect()
-            except Exception:
-                server = ctx.message.guild.voice_client
-                if server:
-                    await server.disconnect()
-                vc = await voice.channel.connect()
-            self.current_vc = vc
-        else:
-            vc = self.current_vc
-
-        response = self.manager.chat.request(
+        response = await asyncio.to_thread(
+            self.manager.chat.request,
             ctx.id,
             "Respond to the context based on the chat log",
             "System",
             None,
             AI="OpenAI",
-            instructions=response_instructions,
+            instructions=VOICE_INSTRUCTIONS,
         )
 
         async with self.speaking_mutex:
@@ -282,24 +312,9 @@ class VoiceService:
         if not self.speaking_enabled():
             return await ctx.send("soz voice speaking is disabled")
 
-        if ctx.guild.voice_client is not None:
-            self.current_vc = ctx.guild.voice_client
-
-        if self.current_vc is None:
-            voice = ctx.author.voice
-            if voice is None:
-                return await ctx.send("You are not in a voice channel.")
-
-            try:
-                vc = await voice.channel.connect()
-            except Exception:
-                server = ctx.message.guild.voice_client
-                if server:
-                    await server.disconnect()
-                vc = await voice.channel.connect()
-            self.current_vc = vc
-        else:
-            vc = self.current_vc
+        vc = await self._get_or_connect_voice_client(ctx)
+        if vc is None:
+            return
 
         message_text = " ".join(message)
         if message_text:
@@ -311,21 +326,28 @@ class VoiceService:
 
     async def join(self, ctx):
         """Join the author's voice channel."""
-        voice = ctx.author.voice
-        if voice is None:
+        voice_state = getattr(ctx.author, "voice", None)
+        if voice_state is None:
             return await ctx.reply("You are not in a voice channel.")
 
-        try:
-            await voice.channel.connect()
-        except Exception:
-            server = ctx.message.guild.voice_client
-            if server:
-                await server.disconnect()
-            await voice.channel.connect()
+        voice_client = self._active_voice_client(ctx.guild)
+        if voice_client is not None:
+            if voice_client.channel != voice_state.channel:
+                await voice_client.move_to(voice_state.channel)
+            self.current_vc = voice_client
+            return
+
+        await self._connect_to_channel(ctx.guild, voice_state.channel)
 
     async def leave(self, ctx):
         """Leave the current voice channel."""
-        await ctx.message.guild.voice_client.disconnect()
+        voice_client = getattr(ctx.message.guild, "voice_client", None)
+        if voice_client is None:
+            return
+
+        await voice_client.disconnect()
+        if self.current_vc is voice_client:
+            self.current_vc = None
 
     def register(self, bot) -> None:
         """Register voice commands and the voice-state listener exactly once."""
