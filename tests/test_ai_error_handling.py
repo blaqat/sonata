@@ -123,6 +123,18 @@ class ClassifyAIErrorTests(unittest.TestCase):
     def test_server_errors(self):
         self.assertEqual(self.classify(RuntimeError("500 Internal Server Error"))[0], "server_error")
 
+    def test_connection_error_with_http_5xx_is_server_error(self):
+        self.assertEqual(
+            self.classify(ConnectionError("503 Service Unavailable"))[0],
+            "server_error",
+        )
+
+    def test_connection_error_without_http_status_is_timeout(self):
+        self.assertEqual(
+            self.classify(ConnectionError("[Errno 54] Connection reset by peer"))[0],
+            "timeout",
+        )
+
     def test_unknown_errors_fall_back_to_internal(self):
         self.assertEqual(self.classify(ValueError("boom"))[0], "internal")
 

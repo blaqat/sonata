@@ -1258,6 +1258,19 @@ def classify_ai_error(error: BaseException) -> tuple[str, str]:
     ):
         category = "rate_limit"
     elif hit(
+        "internalservererror",
+        "serviceunavailableerror",
+        "500",
+        "502",
+        "503",
+        "529",
+        "internal server error",
+        "service unavailable",
+        "bad gateway",
+        "overloaded",
+    ):
+        category = "server_error"
+    elif hit(
         "timeouterror",
         "apitimeout",
         "connectionerror",
@@ -1298,19 +1311,6 @@ def classify_ai_error(error: BaseException) -> tuple[str, str]:
         "finish_reason",
     ):
         category = "blocked"
-    elif hit(
-        "internalservererror",
-        "serviceunavailableerror",
-        "500",
-        "502",
-        "503",
-        "529",
-        "internal server error",
-        "service unavailable",
-        "bad gateway",
-        "overloaded",
-    ):
-        category = "server_error"
     else:
         category = "internal"
 
