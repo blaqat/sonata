@@ -1242,6 +1242,8 @@ def classify_ai_error(error: BaseException) -> tuple[str, str]:
     text = f"{type(error).__name__} {error}".lower()
 
     def hit(*needles):
+        # True if any needle appears in the error message text or class names
+        # (including base classes, e.g. an SDK *TimeoutError subclass)
         return any(needle in haystack for needle in needles for haystack in [text] + names)
 
     if hit(
