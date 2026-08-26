@@ -108,9 +108,11 @@ class FakeChannel:
     def __init__(self, *connect_results):
         self.connect_results = list(connect_results)
         self.connect_calls = 0
+        self.connect_kwargs = {}
 
-    async def connect(self):
+    async def connect(self, **kwargs):
         self.connect_calls += 1
+        self.connect_kwargs = kwargs
         result = self.connect_results.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -219,6 +221,9 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
         await service.join(context)
 
         self.assertEqual(target.connect_calls, 1)
+        self.assertEqual(
+            target.connect_kwargs, {"timeout": voice_plugin.CONNECT_TIMEOUT}
+        )
         self.assertEqual(context.sent, ["I couldn't join your voice channel."])
 
     async def test_talk_replies_when_connection_times_out(self):
@@ -229,6 +234,9 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
         await service.talk(context, "hi")
 
         self.assertEqual(target.connect_calls, 1)
+        self.assertEqual(
+            target.connect_kwargs, {"timeout": voice_plugin.CONNECT_TIMEOUT}
+        )
         self.assertEqual(context.sent, ["I couldn't join your voice channel."])
 
     async def test_talk_ignores_cached_client_from_another_guild(self):
@@ -362,7 +370,7 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
         ) as sleep_mock:
             await service.start_recording(voice_client, SimpleNamespace())
 
-        self.assertEqual(sleep_mock.await_count, 30)
+        self.assertEqual(sleep_mock.await_count, 10)
         voice_client.start_recording.assert_not_called()
 
     async def test_start_recording_proceeds_without_waiting_when_connected(self):
