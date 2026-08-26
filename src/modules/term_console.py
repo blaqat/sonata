@@ -1838,10 +1838,12 @@ def _html_page(base_path: str) -> str:
     async function saveConfig() {
       if (!configView) { setConfigStatus('Config not loaded yet.', 'error'); return; }
       const updates = {};
+      const inFlightConfigUpdates = {};
       const errors = [];
       for (const field of configView.fields) {
         if (!(field.path in pendingConfigUpdates)) continue;
         let raw = pendingConfigUpdates[field.path];
+        inFlightConfigUpdates[field.path] = raw;
         if (field.type === 'int') {
           const parsed = Number(raw);
           if (String(raw).trim() === '' || raw == null || !Number.isInteger(parsed)) {
@@ -1861,7 +1863,9 @@ def _html_page(base_path: str) -> str:
           method: 'PATCH',
           body: JSON.stringify({ updates }),
         });
-        for (const path of submittedPaths) delete pendingConfigUpdates[path];
+        for (const path of submittedPaths) {
+          if (JSON.stringify(pendingConfigUpdates[path]) === JSON.stringify(inFlightConfigUpdates[path])) delete pendingConfigUpdates[path];
+        }
         if (configView) {
           configView.values = result.values || configView.values;
           configView.recent_mutations = result.recent_mutations || configView.recent_mutations;
