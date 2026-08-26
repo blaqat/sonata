@@ -1625,7 +1625,7 @@ def _html_page(base_path: str) -> str:
         connectEvents();
         syncUi();
         setMessage(state.is_controller ? 'Connected and in control.' : 'Connected, but another session currently owns control.');
-        if (settingsOpen || configView) { loadConfig(); }
+        if (settingsOpen) { loadConfig(); }
       } catch (err) {
         resetClientState(err.message === 'Authentication required.' ? '' : err.message);
         throw err;
