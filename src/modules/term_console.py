@@ -469,6 +469,18 @@ class TermConsoleServer:
                 json.dumps(self.console.snapshot_for(session_id)).encode(),
             )
 
+        if method == "GET" and route == "/api/config":
+            from sonata_config import get_runtime_config
+
+            return (
+                200,
+                {"Content-Type": "application/json"},
+                json.dumps(get_runtime_config(), default=str).encode(),
+            )
+
+        if method == "PATCH" and route == "/api/config":
+            return await self._handle_config_update(session_id, request)
+
         if method == "GET" and route == "/api/events":
             return await self._handle_events(session_id, writer)
 
@@ -568,6 +580,49 @@ class TermConsoleServer:
             )
 
         return 404, {"Content-Type": "text/plain; charset=utf-8"}, b"Not Found"
+
+    async def _handle_config_update(self, session_id: str, request: dict[str, Any]):
+        from sonata_config import ConfigUpdateError, update_runtime_config
+
+        payload = _json_body(request)
+        updates = payload.get("updates")
+        actor = f"web:{session_id[:6]}"
+        try:
+            result = update_runtime_config(
+                updates if isinstance(updates, dict) else {}, actor=actor
+            )
+        except ConfigUpdateError as exc:
+            self._log(f"config rejected {actor}: {exc.errors}", "red")
+            return (
+                400,
+                {"Content-Type": "application/json"},
+                json.dumps(
+                    {
+                        "ok": False,
+                        "message": "Invalid config update.",
+                        "errors": exc.errors,
+                    }
+                ).encode(),
+            )
+        except Exception as exc:  # persistence or live-apply failure
+            self._log(f"config failed {actor}: {exc}", "red")
+            return (
+                500,
+                {"Content-Type": "application/json"},
+                json.dumps({"ok": False, "message": f"Config update failed: {exc}"}).encode(),
+            )
+
+        self._log(f"config updated {actor}: {', '.join(result['applied'])}")
+        message = "Config saved."
+        if result["restart_required"]:
+            message += (
+                " Restart required for: " + ", ".join(result["restart_required"]) + "."
+            )
+        return (
+            200,
+            {"Content-Type": "application/json"},
+            json.dumps({"ok": True, "message": message, **result}).encode(),
+        )
 
     async def _handle_events(self, session_id: str, writer):
         listener_id, queue = self.console.subscribe()
@@ -777,7 +832,7 @@ def _html_page(base_path: str) -> str:
     .status-pill.warn { background: var(--danger); }
     .toolbar {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 10px;
       padding: 14px 18px;
       border-bottom: 3px solid var(--line);
@@ -804,7 +859,7 @@ def _html_page(base_path: str) -> str:
       gap: 14px;
       min-height: 72vh;
     }
-    .hidden { display: none; }
+    .hidden { display: none !important; }
     .hint {
       color: var(--muted);
       font-size: 12px;
@@ -910,6 +965,205 @@ def _html_page(base_path: str) -> str:
       opacity: 0.55;
       cursor: default;
     }
+    .config-scrim {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(36, 21, 18, 0.28);
+      backdrop-filter: blur(2px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 240ms ease;
+    }
+    .config-scrim.open { opacity: 1; pointer-events: auto; }
+    .cfg-sheet {
+      position: fixed;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 50;
+      width: min(430px, 100%);
+      display: flex;
+      flex-direction: column;
+      background: var(--panel);
+      border-left: 3px solid var(--line);
+      box-shadow: -8px 0 24px rgba(36, 21, 18, 0.18);
+      transform: translateX(calc(100% + 12px));
+      visibility: hidden;
+      transition:
+        transform 320ms cubic-bezier(0.32, 0.72, 0.28, 1),
+        visibility 0s linear 320ms;
+    }
+    .cfg-sheet.open {
+      transform: translateX(0);
+      visibility: visible;
+      transition-delay: 0s;
+    }
+    .cfg-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 13px 16px;
+      border-bottom: 3px solid var(--line);
+      background: #fff6ef;
+    }
+    .cfg-title {
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+    }
+    .cfg-close {
+      appearance: none;
+      border: 3px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      box-shadow: 3px 3px 0 var(--line);
+      font: inherit;
+      font-size: 16px;
+      font-weight: 900;
+      line-height: 1;
+      width: 38px;
+      height: 38px;
+      cursor: pointer;
+    }
+    .cfg-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 4px 18px 20px;
+    }
+    .cfg-section { padding: 16px 0 4px; }
+    .cfg-section + .cfg-section { border-top: 2px dashed rgba(36, 21, 18, 0.16); }
+    .cfg-section h4 {
+      margin: 0 0 6px;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--muted);
+    }
+    .field-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 4px 12px;
+      padding: 7px 0;
+    }
+    .field-row.wide { grid-template-columns: 1fr; }
+    .label-wrap { display: flex; align-items: center; gap: 8px; min-width: 0; }
+    .field-label { font-size: 12.5px; font-weight: 800; }
+    .badge-restart {
+      flex: none;
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      background: var(--yellow);
+      padding: 1px 7px;
+      font-size: 9px;
+      font-weight: 900;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .field-desc {
+      grid-column: 1 / -1;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      margin-top: -1px;
+    }
+    .cfg-input, .cfg-select {
+      border: 2px solid var(--line);
+      border-radius: 12px;
+      background: #fffdf9;
+      color: var(--text);
+      font: inherit;
+      font-size: 12px;
+      padding: 7px 10px;
+      max-width: 100%;
+    }
+    .field-row .cfg-select { max-width: 170px; justify-self: end; }
+    .field-row .cfg-input.num { width: 88px; justify-self: end; text-align: right; }
+    .switch { position: relative; display: inline-block; width: 46px; height: 27px; flex: none; }
+    .switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+    .switch .track {
+      position: absolute;
+      inset: 0;
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      background: #eadfd6;
+      transition: background 180ms ease;
+      pointer-events: none;
+    }
+    .switch .track::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 17px;
+      height: 17px;
+      border-radius: 50%;
+      background: #fffdf9;
+      border: 2px solid var(--line);
+      transition: transform 180ms cubic-bezier(0.3, 0.7, 0.3, 1);
+    }
+    .switch input:checked + .track { background: var(--purple); }
+    .switch input:checked + .track::after { transform: translateX(19px); }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      box-shadow: 2px 2px 0 var(--line);
+      padding: 3px 10px;
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .chip button {
+      appearance: none;
+      border: none;
+      background: none;
+      cursor: pointer;
+      font-weight: 900;
+      color: #bb314a;
+      padding: 0;
+      font-size: 12px;
+    }
+    .whitelist-add { display: flex; gap: 8px; margin-top: 6px; }
+    .whitelist-add .cfg-input { flex: 1; }
+    .whitelist-add .toolbtn { padding: 7px 14px; font-size: 12px; }
+    .cfg-foot {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px calc(12px + env(safe-area-inset-bottom));
+      border-top: 3px solid var(--line);
+      background: rgba(255, 249, 245, 0.86);
+      backdrop-filter: blur(14px) saturate(160%);
+    }
+    .save-status {
+      flex: 1;
+      min-width: 0;
+      min-height: 16px;
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--muted);
+    }
+    .save-status.ok { color: #1d7a3f; }
+    .save-status.error { color: #bb314a; }
+    .cfg-save { min-width: 108px; padding: 11px 14px; }
+    @media (max-width: 560px) {
+      .toolbar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .cfg-sheet { width: 100%; border-left: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .config-scrim { transition: opacity 200ms ease; }
+      .cfg-sheet { transform: none; transition: visibility 0s; }
+      .cfg-sheet:not(.open) { display: none; }
+      .switch .track, .switch .track::after { transition: none; }
+    }
     @media (max-width: 820px) {
       .topbar {
         flex-direction: column;
@@ -941,6 +1195,7 @@ def _html_page(base_path: str) -> str:
       <div class="toolbar hidden" id="actionBar">
         <button class="toolbtn accent" id="takeoverBtn" type="button">Take Over</button>
         <button class="toolbtn" id="logoutBtn" type="button">Sign Out</button>
+        <button class="toolbtn" id="settingsBtn" type="button">Config</button>
         <button class="toolbtn danger" id="clearBtn" type="button">Clear</button>
       </div>
       <div class="console">
@@ -953,6 +1208,19 @@ def _html_page(base_path: str) -> str:
           </form>
         </div>
         <div id="consoleCard" class="hidden stack">
+          <div id="configScrim" class="config-scrim"></div>
+          <div id="settingsPanel" class="cfg-sheet" role="dialog" aria-modal="true" aria-label="Runtime configuration">
+            <div class="cfg-head">
+              <div class="cfg-title">Configuration</div>
+              <button class="cfg-close" id="configCloseBtn" type="button" aria-label="Close">&#215;</button>
+            </div>
+            <div class="cfg-body" id="configGroups"></div>
+            <div class="cfg-foot">
+              <div class="save-status" id="configStatus"></div>
+              <button class="toolbtn" id="configRefreshBtn" type="button">Reload</button>
+              <button class="sendbtn cfg-save" id="configSaveBtn" type="button" disabled>Save</button>
+            </div>
+          </div>
           <form id="commandForm" class="composer">
             <textarea id="commandInput" placeholder="Send a term-command..."></textarea>
             <button class="toolbtn hidden" id="exitPromptButton" type="button">Exit</button>
@@ -990,8 +1258,19 @@ def _html_page(base_path: str) -> str:
     const reverseToggle = document.getElementById('reverseToggle');
     const runButton = document.getElementById('runButton');
     const exitPromptButton = document.getElementById('exitPromptButton');
+    const settingsBtn = document.getElementById('settingsBtn');
+    const configScrim = document.getElementById('configScrim');
+    const settingsPanel = document.getElementById('settingsPanel');
+    const configCloseBtn = document.getElementById('configCloseBtn');
+    const configRefreshBtn = document.getElementById('configRefreshBtn');
+    const configSaveBtn = document.getElementById('configSaveBtn');
+    const configStatus = document.getElementById('configStatus');
+    const configGroups = document.getElementById('configGroups');
     let eventSource = null;
     let reconnectTimer = null;
+    let configView = null;
+    let settingsOpen = false;
+    let pendingConfigUpdates = {};
     const blankState = () => ({ authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] });
     let state = blankState();
 
@@ -1009,6 +1288,10 @@ def _html_page(base_path: str) -> str:
       state = blankState();
       logEl.innerHTML = '';
       commandInput.value = '';
+      configView = null;
+      settingsOpen = false;
+      pendingConfigUpdates = {};
+      updateDirtyUi();
       setAuthMessage(message, message ? 'error' : 'info');
       syncUi();
     }
@@ -1204,6 +1487,11 @@ def _html_page(base_path: str) -> str:
       exitPromptButton.disabled = !signedIn || !state.is_controller || !state.pending_prompt;
       exitPromptButton.classList.toggle('hidden', !state.pending_prompt);
       takeoverBtn.disabled = !signedIn;
+      settingsBtn.disabled = !signedIn;
+      settingsBtn.setAttribute('aria-expanded', String(signedIn && settingsOpen));
+      settingsPanel.classList.toggle('open', signedIn && settingsOpen);
+      configScrim.classList.toggle('open', signedIn && settingsOpen);
+      settingsPanel.setAttribute('aria-hidden', String(!signedIn || !settingsOpen));
       if (signedIn) setAuthMessage('');
       if (state.pending_prompt) {
         commandForm.classList.add('prompting');
@@ -1333,11 +1621,292 @@ def _html_page(base_path: str) -> str:
         connectEvents();
         syncUi();
         setMessage(state.is_controller ? 'Connected and in control.' : 'Connected, but another session currently owns control.');
+        if (settingsOpen || configView) { loadConfig(); }
       } catch (err) {
         resetClientState(err.message === 'Authentication required.' ? '' : err.message);
         throw err;
       }
     }
+
+    // -----------------------------------------------------------------
+    // Runtime configuration panel (SONA-38)
+    // -----------------------------------------------------------------
+
+    function setConfigStatus(text, tone='info') {
+      configStatus.textContent = text || '';
+      configStatus.classList.remove('ok');
+      configStatus.classList.remove('error');
+      if (tone === 'ok') configStatus.classList.add('ok');
+      if (tone === 'error') configStatus.classList.add('error');
+    }
+
+    function currentConfigValue(path) {
+      if (path in pendingConfigUpdates) return pendingConfigUpdates[path];
+      const value = configView && configView.values ? configView.values[path] : null;
+      return value;
+    }
+
+    function updateDirtyUi() {
+      const count = Object.keys(pendingConfigUpdates).length;
+      configSaveBtn.disabled = !count;
+      settingsBtn.textContent = count ? `Config (${count})` : 'Config';
+    }
+
+    function recordEdit(field, value) {
+      const base = configView && configView.values ? configView.values[field.path] : null;
+      const unchanged = JSON.stringify(value) === JSON.stringify(base);
+      if (unchanged) delete pendingConfigUpdates[field.path];
+      else pendingConfigUpdates[field.path] = value;
+      const count = Object.keys(pendingConfigUpdates).length;
+      updateDirtyUi();
+      setConfigStatus(count ? `${count} unsaved change${count === 1 ? '' : 's'}` : '');
+    }
+
+    async function loadConfig() {
+      try {
+        configView = await api('/api/config', { method: 'GET' });
+        pendingConfigUpdates = {};
+        updateDirtyUi();
+        renderConfig();
+        setConfigStatus('');
+      } catch (err) {
+        setConfigStatus(err.message || 'Failed to load config.', 'error');
+      }
+    }
+
+    function buildSwitch(field, checked) {
+      const switchEl = document.createElement('span');
+      switchEl.className = 'switch';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = !!checked;
+      input.setAttribute('aria-label', field.label);
+      input.addEventListener('change', () => recordEdit(field, input.checked));
+      const track = document.createElement('span');
+      track.className = 'track';
+      switchEl.appendChild(input);
+      switchEl.appendChild(track);
+      return switchEl;
+    }
+
+    function buildFieldRow(field) {
+      const row = document.createElement('div');
+      const wide = field.type === 'str' || field.type === 'list';
+      row.className = 'field-row' + (wide ? ' wide' : '');
+      const labelWrap = document.createElement('div');
+      labelWrap.className = 'label-wrap';
+      const label = document.createElement('span');
+      label.className = 'field-label';
+      label.textContent = field.label;
+      labelWrap.appendChild(label);
+      if (!field.hot_reloadable) {
+        const badge = document.createElement('span');
+        badge.className = 'badge-restart';
+        badge.textContent = 'restart';
+        badge.title = 'Takes effect after Sonata restarts.';
+        labelWrap.appendChild(badge);
+      }
+      row.appendChild(labelWrap);
+
+      const current = currentConfigValue(field.path);
+      let control;
+      if (field.type === 'bool') {
+        control = buildSwitch(field, current);
+      } else if (field.type === 'select') {
+        control = document.createElement('select');
+        control.className = 'cfg-select';
+        for (const option of field.options || []) {
+          const opt = document.createElement('option');
+          opt.value = option;
+          opt.textContent = option;
+          opt.selected = option === current;
+          control.appendChild(opt);
+        }
+        control.addEventListener('change', () => recordEdit(field, control.value));
+      } else if (field.type === 'int' || field.type === 'str') {
+        control = document.createElement('input');
+        control.className = 'cfg-input' + (field.type === 'int' ? ' num' : '');
+        control.type = 'text';
+        control.value = current == null ? '' : String(current);
+        if (field.type === 'int') control.inputMode = 'numeric';
+        control.addEventListener('input', () => recordEdit(field, control.value));
+      } else if (field.type === 'list') {
+        control = renderListEditor(field, Array.isArray(current) ? current.slice() : []);
+      }
+      if (control) row.appendChild(control);
+
+      if (field.description) {
+        const desc = document.createElement('div');
+        desc.className = 'field-desc';
+        desc.textContent = field.description;
+        row.appendChild(desc);
+      }
+      return row;
+    }
+
+    function renderListEditor(field, values) {
+      const wrap = document.createElement('div');
+      wrap.style.display = 'flex';
+      wrap.style.flexDirection = 'column';
+      wrap.style.gap = '6px';
+
+      const chips = document.createElement('div');
+      chips.className = 'chips';
+
+      const redrawChips = () => {
+        chips.innerHTML = '';
+        values.forEach((entry, index) => {
+          const chip = document.createElement('span');
+          chip.className = 'chip';
+          const text = document.createElement('span');
+          text.textContent = String(entry);
+          chip.appendChild(text);
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.textContent = '\u00d7';
+          remove.title = 'Remove';
+          remove.addEventListener('click', () => {
+            values.splice(index, 1);
+            recordEdit(field, values.slice());
+            redrawChips();
+          });
+          chip.appendChild(remove);
+          chips.appendChild(chip);
+        });
+        if (!values.length) {
+          const empty = document.createElement('span');
+          empty.className = 'field-desc';
+          empty.textContent = 'No entries.';
+          chips.appendChild(empty);
+        }
+      };
+      redrawChips();
+      wrap.appendChild(chips);
+
+      const addRow = document.createElement('div');
+      addRow.className = 'whitelist-add';
+      const input = document.createElement('input');
+      input.className = 'cfg-input';
+      input.type = 'text';
+      input.placeholder = 'Username or user ID';
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'toolbtn';
+      addBtn.textContent = 'Add';
+      const addEntry = () => {
+        const text = input.value.trim();
+        if (!text) return;
+        values.push(text);
+        recordEdit(field, values.slice());
+        input.value = '';
+        redrawChips();
+      };
+      addBtn.addEventListener('click', addEntry);
+      input.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          addEntry();
+        }
+      });
+      addRow.appendChild(input);
+      addRow.appendChild(addBtn);
+      wrap.appendChild(addRow);
+      return wrap;
+    }
+
+    function renderConfig() {
+      configGroups.innerHTML = '';
+      if (!configView || !Array.isArray(configView.fields)) return;
+      const groups = new Map();
+      for (const field of configView.fields) {
+        if (!groups.has(field.group)) groups.set(field.group, []);
+        groups.get(field.group).push(field);
+      }
+      for (const [groupName, fields] of groups) {
+        const groupEl = document.createElement('section');
+        groupEl.className = 'cfg-section';
+        const heading = document.createElement('h4');
+        heading.textContent = groupName;
+        groupEl.appendChild(heading);
+        for (const field of fields) {
+          groupEl.appendChild(buildFieldRow(field));
+        }
+        configGroups.appendChild(groupEl);
+      }
+    }
+
+    async function saveConfig() {
+      if (!configView) { setConfigStatus('Config not loaded yet.', 'error'); return; }
+      const updates = {};
+      const errors = [];
+      for (const field of configView.fields) {
+        if (!(field.path in pendingConfigUpdates)) continue;
+        let raw = pendingConfigUpdates[field.path];
+        if (field.type === 'int') {
+          const parsed = Number(raw);
+          if (raw === '' || raw == null || !Number.isInteger(parsed)) {
+            errors.push(`${field.label} must be a whole number`);
+            continue;
+          }
+          raw = parsed;
+        }
+        updates[field.path] = raw;
+      }
+      if (errors.length) { setConfigStatus(errors.join('; '), 'error'); return; }
+      if (!Object.keys(updates).length) { setConfigStatus('No changes to save.'); return; }
+      configSaveBtn.disabled = true;
+      try {
+        const result = await api('/api/config', {
+          method: 'PATCH',
+          body: JSON.stringify({ updates }),
+        });
+        pendingConfigUpdates = {};
+        if (configView) {
+          configView.values = result.values || configView.values;
+          configView.recent_mutations = result.recent_mutations || configView.recent_mutations;
+        }
+        renderConfig();
+        updateDirtyUi();
+        setConfigStatus(result.message || 'Config saved.', 'ok');
+      } catch (err) {
+        const detail = err.data && err.data.errors
+          ? Object.entries(err.data.errors).map(([path, message]) => `${path}: ${message}`).join('; ')
+          : err.message;
+        setConfigStatus(detail || 'Failed to save config.', 'error');
+      } finally {
+        updateDirtyUi();
+      }
+    }
+
+    async function openConfig() {
+      settingsOpen = true;
+      syncUi();
+      configCloseBtn.focus();
+      if (!configView) await loadConfig();
+    }
+
+    function closeConfig() {
+      settingsOpen = false;
+      syncUi();
+      settingsBtn.focus();
+    }
+
+    settingsBtn.addEventListener('click', async () => {
+      if (settingsOpen) {
+        closeConfig();
+        return;
+      }
+      await openConfig();
+    });
+
+    configCloseBtn.addEventListener('click', closeConfig);
+    configScrim.addEventListener('click', closeConfig);
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && settingsOpen) closeConfig();
+    });
+
+    configRefreshBtn.addEventListener('click', () => loadConfig());
+    configSaveBtn.addEventListener('click', () => saveConfig());
 
     loginForm.addEventListener('submit', async (event) => {
       event.preventDefault();
