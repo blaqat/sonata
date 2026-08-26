@@ -135,6 +135,45 @@ class ClassifyAIErrorTests(unittest.TestCase):
             "timeout",
         )
 
+    def test_gemini_404_model_not_found(self):
+        category, message = self.classify(
+            ValueError(
+                "404 models/definitely-not-a-real-model is not found for API "
+                "version v1beta, or is not supported for generateContent."
+            )
+        )
+        self.assertEqual(category, "not_found")
+        self.assertNotIn("definitely-not-a-real-model", message)
+
+    def test_openai_model_does_not_exist(self):
+        self.assertEqual(
+            self.classify(
+                ValueError(
+                    "The model `gpt-who-knows` does not exist or you do not have access to it."
+                )
+            )[0],
+            "not_found",
+        )
+
+    def test_anthropic_not_found_error_type(self):
+        self.assertEqual(
+            self.classify(ValueError("not_found_error: model not found"))[0], "not_found"
+        )
+
+    def test_bad_request_invalid_parameter(self):
+        self.assertEqual(
+            self.classify(
+                ValueError(
+                    "Error code: 400 - {'error': {'message': \"Invalid parameter: "
+                    "'model'\", 'type': 'invalid_request_error'}}"
+                )
+            )[0],
+            "bad_request",
+        )
+        self.assertEqual(
+            self.classify(ValueError("400 Bad Request"))[0], "bad_request"
+        )
+
     def test_unknown_errors_fall_back_to_internal(self):
         self.assertEqual(self.classify(ValueError("boom"))[0], "internal")
 

@@ -1218,6 +1218,8 @@ AI_ERROR_MESSAGES = {
     "auth": "My AI credentials were rejected — the API keys need checking.",
     "blocked": "The AI refused to answer that one (safety filter).",
     "server_error": "The AI provider is having issues right now — try again shortly.",
+    "not_found": "The AI model I'm configured to use doesn't exist — check the model name in the config panel.",
+    "bad_request": "The AI provider rejected my request as invalid — this is usually a configuration problem.",
     "internal": "Something went wrong while I was thinking about that.",
 }
 
@@ -1230,9 +1232,9 @@ def classify_ai_error(error: BaseException) -> tuple[str, str]:
     Classify an AI provider failure into ``(category, user_safe_message)``.
 
     Categories: ``rate_limit``, ``timeout``, ``auth``, ``blocked``,
-    ``server_error``, ``internal``. Detection is string based (exception
-    class name + message) so it works across every SDK (OpenAI, Anthropic,
-    Google, xAI) without importing them.
+    ``server_error``, ``not_found``, ``bad_request``, ``internal``. Detection
+    is string based (exception class name + message) so it works across every
+    SDK (OpenAI, Anthropic, Google, xAI) without importing them.
     """
     names = []
     cls = type(error)
@@ -1311,6 +1313,29 @@ def classify_ai_error(error: BaseException) -> tuple[str, str]:
         "finish_reason",
     ):
         category = "blocked"
+    elif hit(
+        "notfounderror",
+        "model_not_found",
+        "deactivated_model",
+        "no such model",
+        "does not exist",
+        "is not found",
+        "not found",
+        "is not supported",
+        "404",
+    ):
+        category = "not_found"
+    elif hit(
+        "invalidrequesterror",
+        "bad request",
+        "invalid request",
+        "invalid_request_error",
+        "invalid parameter",
+        "unsupported value",
+        "could not be parsed",
+        "malformed",
+    ):
+        category = "bad_request"
     else:
         category = "internal"
 
