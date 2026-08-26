@@ -153,6 +153,37 @@ class ConfigUpdaterTestCase(unittest.TestCase):
         update_runtime_config({"runtime.vc_speaking": False}, actor="tester")
         self.assertFalse(self.runtime.vc_speaking)
 
+    def test_update_rejects_negative_max_chats(self):
+        before = self.config_path.read_text(encoding="utf-8")
+        with self.assertRaises(ConfigUpdateError) as ctx:
+            update_runtime_config({"plugins.chat.max_chats": -1}, actor="test")
+        self.assertIn("plugins.chat.max_chats", ctx.exception.errors)
+        self.assertEqual(before, self.config_path.read_text(encoding="utf-8"))
+
+    def test_update_rolls_back_document_when_save_fails(self):
+        with mock.patch.object(
+            sonata_config, "save_config", side_effect=OSError("disk full")
+        ):
+            with self.assertRaises(OSError):
+                update_runtime_config({"plugins.chat.censor": True}, actor="test")
+        view = get_config_view()
+        self.assertFalse(view["values"]["plugins.chat.censor"])
+        # A later successful save must not resurrect the rolled-back value.
+        update_runtime_config({"runtime.vc_recording": True}, actor="test")
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved["runtime"]["vc_recording"])
+        self.assertNotIn("censor", saved["plugins"]["chat"])
+
+    def test_save_config_writes_to_explicitly_loaded_path(self):
+        other_path = pathlib.Path(self._tmp.name) / "other.config.json"
+        other_path.write_text(json.dumps({"runtime": {}}), encoding="utf-8")
+        load_config(other_path)
+        update_runtime_config({"runtime.vc_recording": True}, actor="test")
+        saved = json.loads(other_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved["runtime"]["vc_recording"])
+        original = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertFalse(original["runtime"]["vc_recording"])
+
     def test_nested_plugin_update_hot_applies_to_live_config(self):
         class FakeConfig:
             def __init__(self):

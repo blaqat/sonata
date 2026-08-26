@@ -1731,7 +1731,7 @@ def _html_page(base_path: str) -> str:
         if (field.type === 'int') control.inputMode = 'numeric';
         control.addEventListener('input', () => recordEdit(field, control.value));
       } else if (field.type === 'list') {
-        control = renderListEditor(field, Array.isArray(current) ? current.slice() : []);
+        control = renderListEditor(field, Array.isArray(current) ? current.map(String) : []);
       }
       if (control) row.appendChild(control);
 
@@ -1844,7 +1844,7 @@ def _html_page(base_path: str) -> str:
         let raw = pendingConfigUpdates[field.path];
         if (field.type === 'int') {
           const parsed = Number(raw);
-          if (raw === '' || raw == null || !Number.isInteger(parsed)) {
+          if (String(raw).trim() === '' || raw == null || !Number.isInteger(parsed)) {
             errors.push(`${field.label} must be a whole number`);
             continue;
           }
@@ -1855,12 +1855,13 @@ def _html_page(base_path: str) -> str:
       if (errors.length) { setConfigStatus(errors.join('; '), 'error'); return; }
       if (!Object.keys(updates).length) { setConfigStatus('No changes to save.'); return; }
       configSaveBtn.disabled = true;
+      const submittedPaths = new Set(Object.keys(updates));
       try {
         const result = await api('/api/config', {
           method: 'PATCH',
           body: JSON.stringify({ updates }),
         });
-        pendingConfigUpdates = {};
+        for (const path of submittedPaths) delete pendingConfigUpdates[path];
         if (configView) {
           configView.values = result.values || configView.values;
           configView.recent_mutations = result.recent_mutations || configView.recent_mutations;

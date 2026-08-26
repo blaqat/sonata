@@ -167,6 +167,8 @@ def load_config(path: Path | None = None) -> tuple[RuntimeConfig, dict[str, Any]
     global _RUNTIME_INSTANCE, _FILE_DOC
     doc = _default_document()
     cfg_path = path or config_file_path()
+    global _CONFIG_PATH
+    _CONFIG_PATH = cfg_path
     if cfg_path.is_file():
         with open(cfg_path, encoding="utf-8") as f:
             loaded = json.load(f)
@@ -366,6 +368,7 @@ EDITABLE_FIELDS: tuple[ConfigField, ...] = (
 _MUTATION_LOG: deque[dict[str, Any]] = deque(maxlen=50)
 _RUNTIME_INSTANCE: RuntimeConfig | None = None
 _FILE_DOC: dict[str, Any] | None = None
+_CONFIG_PATH: Path | None = None
 
 
 class ConfigUpdateError(ValueError):
@@ -425,7 +428,7 @@ def save_config() -> Path:
     """Atomically persist the tracked override document back to disk."""
     if _FILE_DOC is None:
         raise RuntimeError("No config document loaded; call load_config() first.")
-    cfg_path = config_file_path()
+    cfg_path = _CONFIG_PATH or config_file_path()
     tmp_path = cfg_path.with_suffix(cfg_path.suffix + ".tmp")
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(_FILE_DOC, f, indent=2, ensure_ascii=False)
@@ -468,6 +471,8 @@ def _validate_value(field_def: ConfigField, value: Any) -> tuple[bool, str, Any]
     if field_def.type == "int":
         if isinstance(value, bool) or not isinstance(value, int):
             return False, "must be an integer", value
+        if field_def.path == "plugins.chat.max_chats" and value < 0:
+            return False, "must be a non-negative integer", value
         return True, "", value
 
     if field_def.type == "str":
@@ -590,13 +595,20 @@ def update_runtime_config(updates: dict[str, Any], actor: str = "unknown") -> di
 
     applied_values: dict[str, Any] = {}
     restart_required: list[str] = []
-    for path, (field_def, value) in validated.items():
-        _doc_set(_FILE_DOC, path, value)
-        applied_values[path] = value
-        if not field_def.hot_reloadable:
-            restart_required.append(path)
+    original_doc = deepcopy(_FILE_DOC)
+    try:
+        for path, (field_def, value) in validated.items():
+            _doc_set(_FILE_DOC, path, value)
+            applied_values[path] = value
+            if not field_def.hot_reloadable:
+                restart_required.append(path)
 
-    save_config()
+        save_config()
+    except Exception:
+        # Roll back so rejected values never leak into views or a later save.
+        _FILE_DOC.clear()
+        _FILE_DOC.update(original_doc)
+        raise
 
     for path, (field_def, value) in validated.items():
         if path.startswith("runtime.ai_models."):
