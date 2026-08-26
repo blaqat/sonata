@@ -1271,6 +1271,8 @@ def _html_page(base_path: str) -> str:
     let configView = null;
     let settingsOpen = false;
     let pendingConfigUpdates = {};
+    let inFlightEditIntents = {};
+    const inFlightConfigPaths = new Set();
     const blankState = () => ({ authenticated: false, session_id: null, is_controller: false, controller_id: null, busy: false, pending_prompt: null, history: [] });
     let state = blankState();
 
@@ -1291,6 +1293,8 @@ def _html_page(base_path: str) -> str:
       configView = null;
       settingsOpen = false;
       pendingConfigUpdates = {};
+      inFlightEditIntents = {};
+      inFlightConfigPaths.clear();
       updateDirtyUi();
       setAuthMessage(message, message ? 'error' : 'info');
       syncUi();
@@ -1657,6 +1661,7 @@ def _html_page(base_path: str) -> str:
       const unchanged = JSON.stringify(value) === JSON.stringify(base);
       if (unchanged) delete pendingConfigUpdates[field.path];
       else pendingConfigUpdates[field.path] = value;
+      if (inFlightConfigPaths.has(field.path)) inFlightEditIntents[field.path] = value;
       const count = Object.keys(pendingConfigUpdates).length;
       updateDirtyUi();
       setConfigStatus(count ? `${count} unsaved change${count === 1 ? '' : 's'}` : '');
@@ -1666,6 +1671,7 @@ def _html_page(base_path: str) -> str:
       try {
         configView = await api('/api/config', { method: 'GET' });
         pendingConfigUpdates = {};
+        inFlightEditIntents = {};
         updateDirtyUi();
         renderConfig();
         setConfigStatus('');
@@ -1858,13 +1864,20 @@ def _html_page(base_path: str) -> str:
       if (!Object.keys(updates).length) { setConfigStatus('No changes to save.'); return; }
       configSaveBtn.disabled = true;
       const submittedPaths = new Set(Object.keys(updates));
+      for (const path of submittedPaths) inFlightConfigPaths.add(path);
       try {
         const result = await api('/api/config', {
           method: 'PATCH',
           body: JSON.stringify({ updates }),
         });
         for (const path of submittedPaths) {
-          if (JSON.stringify(pendingConfigUpdates[path]) === JSON.stringify(inFlightConfigUpdates[path])) delete pendingConfigUpdates[path];
+          const submitted = inFlightConfigUpdates[path];
+          if (path in pendingConfigUpdates) {
+            if (JSON.stringify(pendingConfigUpdates[path]) === JSON.stringify(submitted)) delete pendingConfigUpdates[path];
+          } else if (path in inFlightEditIntents && JSON.stringify(inFlightEditIntents[path]) !== JSON.stringify(submitted)) {
+            pendingConfigUpdates[path] = inFlightEditIntents[path];
+          }
+          delete inFlightEditIntents[path];
         }
         if (configView) {
           configView.values = result.values || configView.values;
@@ -1879,6 +1892,7 @@ def _html_page(base_path: str) -> str:
           : err.message;
         setConfigStatus(detail || 'Failed to save config.', 'error');
       } finally {
+        for (const path of submittedPaths) inFlightConfigPaths.delete(path);
         updateDirtyUi();
       }
     }
