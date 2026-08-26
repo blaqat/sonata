@@ -480,7 +480,13 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
 @MANAGER.effect("chat", "set", prepend=True)
 def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
     """Effect to censor messages before storing them in chat history"""
-    CENSOR = CONTEXT.plugin_config.get("censor", True)
+    try:
+        # Live root manager config so hot-reloaded `plugins.chat.censor` applies
+        CENSOR = AI_Manager.M.MANAGER.config.get(
+            "censor", CONTEXT.plugin_config.get("censor", True)
+        )
+    except Exception:
+        CENSOR = CONTEXT.plugin_config.get("censor", True)
     return (
         chat_id,
         message_type,
