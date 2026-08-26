@@ -799,7 +799,7 @@ async def ai_question(ctx, *message, ai, short, error_prompt=None):
             f"""
 ### <@{settings.GOD}> i messed up ({ord_fails} time) :c
 
-{user_message}""",
+[{category}] {user_message}""",
         )
     finally:
         Sonata.config.set(auto=short)
