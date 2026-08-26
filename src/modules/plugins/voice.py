@@ -59,6 +59,8 @@ VALID_VOICES = (
     "shimmer",
 )
 
+CONNECT_TIMEOUT = 15
+
 PROMPT_MANAGER.add("VoiceInstructions", VOICE_INSTRUCTIONS)
 
 
@@ -106,7 +108,7 @@ class VoiceService:
     async def _connect_to_channel(self, guild, channel):
         """Connect to a channel, recovering only a disconnected stale client."""
         try:
-            voice_client = await channel.connect()
+            voice_client = await channel.connect(timeout=CONNECT_TIMEOUT)
         except asyncio.TimeoutError:
             return None
         except discord.ClientException:
@@ -115,7 +117,7 @@ class VoiceService:
                 return None
             try:
                 await stale_client.disconnect(force=True)
-                voice_client = await channel.connect()
+                voice_client = await channel.connect(timeout=CONNECT_TIMEOUT)
             except (asyncio.TimeoutError, discord.ClientException):
                 return None
 
@@ -247,7 +249,7 @@ class VoiceService:
     async def start_recording(self, vc: discord.VoiceClient, channel: discord.TextChannel):
         try:
             print("Starting recording")
-            for _ in range(30):
+            for _ in range(10):
                 if vc.is_connected():
                     break
                 await asyncio.sleep(1)
