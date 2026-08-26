@@ -107,12 +107,17 @@ class VoiceService:
         """Connect to a channel, recovering only a disconnected stale client."""
         try:
             voice_client = await channel.connect()
+        except asyncio.TimeoutError:
+            return None
         except discord.ClientException:
             stale_client = getattr(guild, "voice_client", None)
             if stale_client is None or stale_client.is_connected():
-                raise
-            await stale_client.disconnect(force=True)
-            voice_client = await channel.connect()
+                return None
+            try:
+                await stale_client.disconnect(force=True)
+                voice_client = await channel.connect()
+            except (asyncio.TimeoutError, discord.ClientException):
+                return None
 
         self.current_vc = voice_client
         return voice_client
@@ -123,18 +128,21 @@ class VoiceService:
             return voice_client
 
         voice_state = getattr(ctx.author, "voice", None)
-        if voice_state is None:
+        if voice_state is None or getattr(voice_state, "channel", None) is None:
             await ctx.send("You are not in a voice channel.")
             return None
 
-        return await self._connect_to_channel(ctx.guild, voice_state.channel)
+        voice_client = await self._connect_to_channel(ctx.guild, voice_state.channel)
+        if voice_client is None:
+            await ctx.send("I couldn't join your voice channel.")
+        return voice_client
 
     async def say(self, vc: discord.VoiceClient, message: str, opts: dict | None = None):
         """Synthesize and play a message while the bot is in a voice channel."""
         opts = opts or {}
         try:
-            audio_bytes: bytes = (
-                openai.audio.speech.create(
+            audio_bytes: bytes = await asyncio.to_thread(
+                lambda: openai.audio.speech.create(
                     model="tts-1",
                     voice=opts.get("voice", "sage"),
                     input=message,
@@ -145,10 +153,16 @@ class VoiceService:
             cprint(f"Error on openai: {exc}", "red")
             return
 
+        if not vc.is_connected():
+            return
+
         buffer = BytesIO(audio_bytes)
 
         cprint(f"Playing audio: {message}", "green")
-        vc.play(discord.FFmpegOpusAudio(buffer, pipe=True))
+        try:
+            vc.play(discord.FFmpegOpusAudio(buffer, pipe=True))
+        except discord.ClientException:
+            return
         while vc.is_playing():
             await asyncio.sleep(1)
 
@@ -183,11 +197,13 @@ class VoiceService:
                 data.seek(0)
 
                 cprint(f"Transcribing audio from {name}...", "blue")
-                words = openai.audio.transcriptions.create(
+                transcription = await asyncio.to_thread(
+                    openai.audio.transcriptions.create,
                     file=data,
                     model="whisper-1",
                     prompt="Your name is Sonata",
-                ).text.lower()
+                )
+                words = transcription.text.lower()
 
                 channel_id = sink.vc.channel.id
                 self.manager.chat.send(channel_id, "User", name, words)
@@ -209,6 +225,9 @@ class VoiceService:
                     response = response.split("sonata", 1)[1].strip()
                 response = f"{name}: {response}"
 
+                if not self.speaking_enabled():
+                    continue
+
                 async with self.speaking_mutex:
                     await self.say(
                         sink.vc,
@@ -222,14 +241,18 @@ class VoiceService:
 
         # The recording callback can finish after its voice client disconnects.
         # Do not schedule a new loop for a client that can no longer record.
-        if sink.vc.is_connected():
+        if self.recording_enabled() and sink.vc.is_connected():
             await self.start_recording(sink.vc, channel)
 
     async def start_recording(self, vc: discord.VoiceClient, channel: discord.TextChannel):
         try:
             print("Starting recording")
-            while not vc.is_connected():
+            for _ in range(30):
+                if vc.is_connected():
+                    break
                 await asyncio.sleep(1)
+            else:
+                return
             vc.start_recording(discord.sinks.MP3Sink(), self.vc_callback, channel)
             await asyncio.sleep(8)
             print("Stopping recording")
@@ -277,7 +300,7 @@ class VoiceService:
 
         response = await asyncio.to_thread(
             self.manager.chat.request,
-            ctx.id,
+            ctx.channel.id,
             "Respond to the context based on the chat log",
             "System",
             None,
@@ -286,7 +309,11 @@ class VoiceService:
         )
 
         async with self.speaking_mutex:
-            await self.say(vc, response)
+            await self.say(
+                vc,
+                response,
+                {"voice": self.manager.config.get("vc_voice", "nova")},
+            )
 
     async def voice(self, ctx, *voice):
         """Change or display the voice used for TTS in voice channels."""
@@ -330,7 +357,7 @@ class VoiceService:
     async def join(self, ctx):
         """Join the author's voice channel."""
         voice_state = getattr(ctx.author, "voice", None)
-        if voice_state is None:
+        if voice_state is None or getattr(voice_state, "channel", None) is None:
             return await ctx.reply("You are not in a voice channel.")
 
         voice_client = self._active_voice_client(ctx.guild)
@@ -340,7 +367,9 @@ class VoiceService:
             self.current_vc = voice_client
             return
 
-        await self._connect_to_channel(ctx.guild, voice_state.channel)
+        voice_client = await self._connect_to_channel(ctx.guild, voice_state.channel)
+        if voice_client is None:
+            await ctx.send("I couldn't join your voice channel.")
 
     async def leave(self, ctx):
         """Leave the current voice channel."""

@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import pathlib
 import sys
@@ -125,6 +126,7 @@ class FakeContext:
     def __init__(self, guild, channel=None, ctx_id=1):
         self.guild = guild
         self.id = ctx_id
+        self.channel = channel
         self.author = SimpleNamespace(
             voice=None if channel is None else SimpleNamespace(channel=channel)
         )
@@ -168,8 +170,9 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_respond_runs_chat_request_off_the_event_loop(self):
         active_client = FakeVoiceClient()
-        service, manager = self.service()
-        context = FakeContext(FakeGuild(active_client), ctx_id=42)
+        service, manager = self.service(vc_voice="coral")
+        text_channel = SimpleNamespace(id=42)
+        context = FakeContext(FakeGuild(active_client), text_channel)
         service.say = mock.AsyncMock()
 
         with mock.patch.object(
@@ -186,7 +189,47 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
             AI="OpenAI",
             instructions=voice_plugin.VOICE_INSTRUCTIONS,
         )
-        service.say.assert_awaited_once_with(active_client, "hello")
+        service.say.assert_awaited_once_with(
+            active_client, "hello", {"voice": "coral"}
+        )
+
+    async def test_talk_replies_when_author_voice_state_has_no_channel(self):
+        service, _ = self.service()
+        context = FakeContext(FakeGuild())
+        context.author = SimpleNamespace(voice=SimpleNamespace(channel=None))
+
+        await service.talk(context, "hi")
+
+        self.assertEqual(context.sent, ["You are not in a voice channel."])
+
+    async def test_join_replies_when_author_voice_state_has_no_channel(self):
+        service, _ = self.service()
+        context = FakeContext(FakeGuild())
+        context.author = SimpleNamespace(voice=SimpleNamespace(channel=None))
+
+        await service.join(context)
+
+        self.assertEqual(context.replies, ["You are not in a voice channel."])
+
+    async def test_join_replies_when_connection_times_out(self):
+        target = FakeChannel(asyncio.TimeoutError())
+        service, _ = self.service()
+        context = FakeContext(FakeGuild(), target)
+
+        await service.join(context)
+
+        self.assertEqual(target.connect_calls, 1)
+        self.assertEqual(context.sent, ["I couldn't join your voice channel."])
+
+    async def test_talk_replies_when_connection_times_out(self):
+        target = FakeChannel(asyncio.TimeoutError())
+        service, _ = self.service()
+        context = FakeContext(FakeGuild(), target)
+
+        await service.talk(context, "hi")
+
+        self.assertEqual(target.connect_calls, 1)
+        self.assertEqual(context.sent, ["I couldn't join your voice channel."])
 
     async def test_talk_ignores_cached_client_from_another_guild(self):
         service, _ = self.service()
@@ -208,6 +251,7 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_voice_callback_uses_selected_voice(self):
         service, manager = self.service(vc_voice="shimmer")
+        manager.chat.request = mock.Mock(return_value="sonata hi")
         service.start_recording = mock.AsyncMock()
         service.say = mock.AsyncMock()
         member = SimpleNamespace(id=7, nick="Karma", name="Karma")
@@ -227,22 +271,159 @@ class VoicePluginTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+        async def run_off_loop(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
         with (
             mock.patch.object(voice_plugin, "openai", fake_openai),
-            mock.patch.object(
-                voice_plugin.asyncio,
-                "to_thread",
-                new=mock.AsyncMock(return_value="sonata hi"),
-            ),
+            mock.patch.object(voice_plugin.asyncio, "to_thread", new=run_off_loop),
         ):
             await service.vc_callback(sink, channel)
 
+        fake_openai.audio.transcriptions.create.assert_called_once_with(
+            file=sink.audio_data[7].file,
+            model="whisper-1",
+            prompt="Your name is Sonata",
+        )
         service.say.assert_awaited_once_with(
             voice_client,
             "Karma: hi",
             {"voice": "shimmer"},
         )
         manager.chat.send.assert_called_once_with(99, "User", "Karma", "sonata hello")
+
+    async def test_voice_callback_skips_speaking_when_speaking_disabled(self):
+        service, manager = self.service(speaking=False)
+        manager.chat.request = mock.Mock(return_value="sonata hi")
+        service.start_recording = mock.AsyncMock()
+        service.say = mock.AsyncMock()
+        member = SimpleNamespace(id=7, nick="Karma", name="Karma")
+        channel = SimpleNamespace(
+            guild=SimpleNamespace(fetch_member=mock.AsyncMock(return_value=member))
+        )
+        voice_client = FakeVoiceClient(channel=SimpleNamespace(id=99))
+        sink = SimpleNamespace(
+            vc=voice_client,
+            audio_data={7: SimpleNamespace(file=BytesIO(b"a" * 60001))},
+        )
+        fake_openai = SimpleNamespace(
+            audio=SimpleNamespace(
+                transcriptions=SimpleNamespace(
+                    create=mock.Mock(return_value=SimpleNamespace(text="sonata hello"))
+                )
+            )
+        )
+
+        async def run_off_loop(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with (
+            mock.patch.object(voice_plugin, "openai", fake_openai),
+            mock.patch.object(voice_plugin.asyncio, "to_thread", new=run_off_loop),
+        ):
+            await service.vc_callback(sink, channel)
+
+        service.say.assert_not_awaited()
+        manager.chat.send.assert_called_once_with(99, "User", "Karma", "sonata hello")
+        self.assertTrue(service.is_ready)
+
+    async def test_voice_callback_does_not_restart_when_recording_disabled(self):
+        service, _ = self.service(recording=False)
+        service.start_recording = mock.AsyncMock()
+        voice_client = FakeVoiceClient(connected=True)
+        sink = SimpleNamespace(vc=voice_client, audio_data={})
+        channel = SimpleNamespace(guild=SimpleNamespace())
+
+        await service.vc_callback(sink, channel)
+
+        service.start_recording.assert_not_awaited()
+
+    async def test_voice_callback_restarts_recording_when_enabled_and_connected(self):
+        service, _ = self.service(recording=True)
+        service.start_recording = mock.AsyncMock()
+        voice_client = FakeVoiceClient(connected=True)
+        sink = SimpleNamespace(vc=voice_client, audio_data={})
+        channel = SimpleNamespace(guild=SimpleNamespace())
+
+        await service.vc_callback(sink, channel)
+
+        service.start_recording.assert_awaited_once_with(voice_client, channel)
+
+    async def test_start_recording_gives_up_after_bounded_retries(self):
+        service, _ = self.service(recording=True)
+        voice_client = SimpleNamespace(
+            is_connected=lambda: False,
+            start_recording=mock.Mock(),
+            stop_recording=mock.Mock(),
+        )
+
+        with mock.patch.object(
+            voice_plugin.asyncio, "sleep", new=mock.AsyncMock()
+        ) as sleep_mock:
+            await service.start_recording(voice_client, SimpleNamespace())
+
+        self.assertEqual(sleep_mock.await_count, 30)
+        voice_client.start_recording.assert_not_called()
+
+    async def test_start_recording_proceeds_without_waiting_when_connected(self):
+        service, _ = self.service(recording=True)
+        voice_client = SimpleNamespace(
+            is_connected=lambda: True,
+            start_recording=mock.Mock(),
+            stop_recording=mock.Mock(),
+        )
+
+        with mock.patch.object(
+            voice_plugin.asyncio, "sleep", new=mock.AsyncMock()
+        ) as sleep_mock:
+            await service.start_recording(voice_client, SimpleNamespace())
+
+        self.assertEqual(sleep_mock.await_count, 1)  # only the post-start pause
+        voice_client.start_recording.assert_called_once()
+
+    async def test_say_returns_quietly_when_disconnected_before_playback(self):
+        service, _ = self.service()
+        voice_client = FakeVoiceClient(connected=False)
+        voice_client.play = mock.Mock()
+
+        with (
+            mock.patch.object(
+                voice_plugin.asyncio,
+                "to_thread",
+                new=mock.AsyncMock(return_value=b"audio"),
+            ),
+            mock.patch.object(
+                voice_plugin.discord,
+                "FFmpegOpusAudio",
+                new=mock.Mock(return_value=object()),
+            ),
+        ):
+            await service.say(voice_client, "hi")
+
+        voice_client.play.assert_not_called()
+
+    async def test_say_returns_quietly_when_playback_raises_client_exception(self):
+        service, _ = self.service()
+        voice_client = FakeVoiceClient(connected=True)
+        voice_client.play = mock.Mock(
+            side_effect=discord.ClientException("Already playing audio.")
+        )
+
+        with (
+            mock.patch.object(
+                voice_plugin.asyncio,
+                "to_thread",
+                new=mock.AsyncMock(return_value=b"audio"),
+            ),
+            mock.patch.object(
+                voice_plugin.discord,
+                "FFmpegOpusAudio",
+                new=mock.Mock(return_value=object()),
+            ),
+        ):
+            await service.say(voice_client, "hi")
+
+        voice_client.play.assert_called_once()
 
     async def test_voice_callback_does_not_restart_after_disconnect(self):
         service, _ = self.service()
