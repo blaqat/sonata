@@ -185,6 +185,19 @@ class ChatCensorHotReloadTests(unittest.TestCase):
 
         self.assertEqual(result[3], self.MESSAGE)
 
+    def test_provider_prompt_is_censored_when_enabled(self):
+        result = self.censor_with_live_manager(_LiveManager(censor=True))
+
+        self.assertEqual(
+            self.chat_module._censor_for_provider(self.MESSAGE),
+            result[3],
+        )
+
+    def test_provider_prompt_stays_uncensored_when_disabled(self):
+        result = self.censor_with_live_manager(_LiveManager(censor=False))
+
+        self.assertEqual(self.chat_module._censor_for_provider(self.MESSAGE), self.MESSAGE)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -80,6 +80,26 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
         "censor": True,
     },
 )
+
+
+def _censor_enabled(config=None):
+    fallback = CONTEXT.plugin_config.get("censor", True)
+    try:
+        live_config = config
+        if live_config is None:
+            manager = AI_Manager.M.MANAGER
+            live_config = manager and manager.config
+        if live_config is not None:
+            return live_config.get("censor", fallback)
+    except Exception:
+        pass
+    return fallback
+
+
+def _censor_for_provider(message, config=None):
+    return censor_message(message, BANNED_WORDS) if _censor_enabled(config) else message
+
+
 __plugin_name__ = "chat"
 __dependencies__ = ["beacon"]
 
@@ -480,18 +500,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
 @MANAGER.effect("chat", "set", prepend=True)
 def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
     """Effect to censor messages before storing them in chat history"""
-    try:
-        # Live root manager config so hot-reloaded `plugins.chat.censor` applies
-        CENSOR = AI_Manager.M.MANAGER.config.get(
-            "censor", CONTEXT.plugin_config.get("censor", True)
-        )
-    except Exception:
-        CENSOR = CONTEXT.plugin_config.get("censor", True)
     return (
         chat_id,
         message_type,
         author,
-        CENSOR and censor_message(message, BANNED_WORDS) or message,
+        _censor_for_provider(message),
         replying_to,
     )
 
@@ -688,6 +701,7 @@ def chat(sona: AI_Manager):
             # Get Images for this channel
             new_c["images"] = ((c if c else {}).get("images") or {}).get(id, None)
             new_c.update(config)
+            provider_message = _censor_for_provider(message, sona.config)
 
             def _send():
                 if "using_assistant" not in new_c and prompt_manager.exists("History"):
@@ -696,7 +710,7 @@ def chat(sona: AI_Manager):
                         "request",
                         prompt_manager.prompts["History"](chat_history)
                         + prompt_manager.prompts["Message"](
-                            user_name, message, replying_to
+                            user_name, provider_message, replying_to
                         )
                         + "\nJust state your message here: ",
                         *args,
@@ -708,7 +722,7 @@ def chat(sona: AI_Manager):
                     "request",
                     prompt_manager.prompts["MessageAssistant"],
                     user_name,
-                    message,
+                    provider_message,
                     *args,
                     AI=AI,
                     config=new_c,
