@@ -29,6 +29,7 @@ live in ``policy_namespaces.chat``.
 
 from modules.AI_manager import Context
 import copy
+import time
 
 import discord
 from discord.ext import commands
@@ -45,6 +46,8 @@ from modules.utils import (
     async_print as print,
     async_cprint as cprint,
     cstr,
+    classify_ai_error,
+    TRANSIENT_AI_ERRORS,
     get_full_name,
     setter,
     settings,
@@ -58,6 +61,13 @@ import re
 from zoneinfo import ZoneInfo
 
 EASTERN = ZoneInfo("America/New_York")
+
+# Retry once on transient AI failures (429 / timeouts / 5xx) before giving up
+AI_REQUEST_RETRIES = 1
+AI_RETRY_BACKOFF = 2  # seconds
+
+_NO_RESPONSE = object()
+
 CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
     lazy=True,
     config={
@@ -70,6 +80,26 @@ CONTEXT, MANAGER, PROMPT_MANAGER = AI_Manager.init(
         "censor": True,
     },
 )
+
+
+def _censor_enabled(config=None):
+    fallback = CONTEXT.plugin_config.get("censor", True)
+    try:
+        live_config = config
+        if live_config is None:
+            manager = AI_Manager.M.MANAGER
+            live_config = manager and manager.config
+        if live_config is not None:
+            return live_config.get("censor", fallback)
+    except Exception:
+        pass
+    return fallback
+
+
+def _censor_for_provider(message, config=None):
+    return censor_message(message, BANNED_WORDS) if _censor_enabled(config) else message
+
+
 __plugin_name__ = "chat"
 __dependencies__ = ["beacon"]
 
@@ -470,12 +500,11 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
 @MANAGER.effect("chat", "set", prepend=True)
 def censor_chat(_, chat_id, message_type, author, message, replying_to=None):
     """Effect to censor messages before storing them in chat history"""
-    CENSOR = CONTEXT.plugin_config.get("censor", True)
     return (
         chat_id,
         message_type,
         author,
-        CENSOR and censor_message(message, BANNED_WORDS) or message,
+        _censor_for_provider(message),
         replying_to,
     )
 
@@ -649,13 +678,19 @@ def chat(sona: AI_Manager):
             AI=sona.config.get("AI"),
             error_prompt=None,
             save=True,
+            raise_on_error=False,
             **config,
         ):
-            """Request a response from the AI for a given message and chat ID."""
+            """Request a response from the AI for a given message and chat ID.
+
+            Provider failures are classified, logged server-side with the full
+            traceback, retried once when transient (rate limit / timeout /
+            5xx), then returned as a user-safe message instead of raising.
+            Pass ``raise_on_error=True`` to opt back into exceptions.
+            """
             # TODO: Add way to store attachments since can send them in message now
             # They are accessed in config['images']
             # https://github.com/users/blaqat/projects/1/views/1?pane=issue&itemId=65645315
-            response = None
             chat_history = self.get_history(id)
             new_c = {}
             c = sona.get("config")
@@ -666,45 +701,60 @@ def chat(sona: AI_Manager):
             # Get Images for this channel
             new_c["images"] = ((c if c else {}).get("images") or {}).get(id, None)
             new_c.update(config)
-            try:
+            provider_message = _censor_for_provider(message, sona.config)
+
+            def _send():
                 if "using_assistant" not in new_c and prompt_manager.exists("History"):
-                    response = sona.do(
+                    return sona.do(
                         "chat",
                         "request",
                         prompt_manager.prompts["History"](chat_history)
                         + prompt_manager.prompts["Message"](
-                            user_name, message, replying_to
+                            user_name, provider_message, replying_to
                         )
                         + "\nJust state your message here: ",
                         *args,
                         AI=AI,
                         config=new_c,
                     )
-                else:
-                    response = sona.do(
-                        "chat",
-                        "request",
-                        prompt_manager.prompts["MessageAssistant"],
-                        user_name,
-                        message,
-                        *args,
-                        AI=AI,
-                        config=new_c,
-                    )
+                return sona.do(
+                    "chat",
+                    "request",
+                    prompt_manager.prompts["MessageAssistant"],
+                    user_name,
+                    provider_message,
+                    *args,
+                    AI=AI,
+                    config=new_c,
+                )
 
-                if save:
-                    self.send(id, "Bot", sona.name, response, replying_to)
-                # HACK: This is a hack to get the images from the config to clear
-                # (c.get("images") or {})[id] = None
-                # (sona.config.get().get("images") or {})[id] = None
-                # (sona.memory["config"]["value"].get("images") or {})[id] = None
-                return response
-            except Exception as e:
-                # response = f"{e}"
-                # return response
-                # self.send(id, "Bot", sona.name, response, replying_to)
-                cprint(f"Error in chat request: {get_trace()}", "red")
-                raise e
+            response = _NO_RESPONSE
+            for attempt in range(AI_REQUEST_RETRIES + 1):
+                try:
+                    response = _send()
+                    break
+                except Exception as e:
+                    category, user_message = classify_ai_error(e)
+                    cprint(f"Error in chat request ({category}): {get_trace()}", "red")
+                    if attempt < AI_REQUEST_RETRIES and category in TRANSIENT_AI_ERRORS:
+                        cprint(
+                            f"Transient AI failure ({category}), "
+                            f"retrying in {AI_RETRY_BACKOFF}s...",
+                            "yellow",
+                        )
+                        time.sleep(AI_RETRY_BACKOFF)
+                        continue
+                    if raise_on_error:
+                        raise
+                    return user_message
+
+            if save:
+                self.send(id, "Bot", sona.name, response, replying_to)
+            # HACK: This is a hack to get the images from the config to clear
+            # (c.get("images") or {})[id] = None
+            # (sona.config.get().get("images") or {})[id] = None
+            # (sona.memory["config"]["value"].get("images") or {})[id] = None
+            return response
 
         def get_history(
             self,

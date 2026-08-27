@@ -65,6 +65,8 @@ def _load_chat_module():
     utils_stub.async_print = lambda *_args, **_kwargs: None
     utils_stub.async_cprint = lambda *_args, **_kwargs: None
     utils_stub.cstr = lambda **kwargs: kwargs["str"]
+    utils_stub.classify_ai_error = lambda _error: ("internal", "something went wrong")
+    utils_stub.TRANSIENT_AI_ERRORS = {"rate_limit", "timeout", "server_error"}
     utils_stub.get_full_name = lambda message: message.author.name
     utils_stub.setter = lambda *_args, **_kwargs: None
     utils_stub.settings = types.SimpleNamespace(TENOR_G="", KLIPY="")

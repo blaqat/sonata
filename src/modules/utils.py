@@ -1212,6 +1212,136 @@ def ordinal(n: int) -> str:
     return f"{n}{'th' if 11 <= n % 100 <= 13 else {1:'st', 2:'nd', 3:'rd'}.get(n % 10, 'th')}"
 
 
+AI_ERROR_MESSAGES = {
+    "rate_limit": "I'm rate limited right now — give me a minute and ask again.",
+    "timeout": "I couldn't reach the AI provider in time — try again in a bit.",
+    "auth": "My AI credentials were rejected — the API keys need checking.",
+    "blocked": "The AI refused to answer that one (safety filter).",
+    "server_error": "The AI provider is having issues right now — try again shortly.",
+    "not_found": "The AI model I'm configured to use doesn't exist — check the model name in the config panel.",
+    "bad_request": "The AI provider rejected my request as invalid — this is usually a configuration problem.",
+    "internal": "Something went wrong while I was thinking about that.",
+}
+
+# Failures worth a single automatic retry before giving up
+TRANSIENT_AI_ERRORS = {"rate_limit", "timeout", "server_error"}
+
+
+def classify_ai_error(error: BaseException) -> tuple[str, str]:
+    """
+    Classify an AI provider failure into ``(category, user_safe_message)``.
+
+    Categories: ``rate_limit``, ``timeout``, ``auth``, ``blocked``,
+    ``server_error``, ``not_found``, ``bad_request``, ``internal``. Detection
+    is string based (exception class name + message) so it works across every
+    SDK (OpenAI, Anthropic, Google, xAI) without importing them.
+    """
+    names = []
+    cls = type(error)
+    while cls is not None:
+        names.append(cls.__name__.lower())
+        cls = cls.__base__
+    text = f"{type(error).__name__} {error}".lower()
+
+    def hit(*needles):
+        # True if any needle appears in the error message text or class names
+        # (including base classes, e.g. an SDK *TimeoutError subclass)
+        return any(needle in haystack for needle in needles for haystack in [text] + names)
+
+    if hit(
+        "ratelimiterror",
+        "429",
+        "rate limit",
+        "rate_limit",
+        "too many requests",
+        "quota",
+        "resource_exhausted",
+        "resource has been exhausted",
+    ):
+        category = "rate_limit"
+    elif hit(
+        "internalservererror",
+        "serviceunavailableerror",
+        "500",
+        "502",
+        "503",
+        "529",
+        "internal server error",
+        "service unavailable",
+        "bad gateway",
+        "overloaded",
+    ):
+        category = "server_error"
+    elif hit(
+        "timeouterror",
+        "apitimeout",
+        "connectionerror",
+        "timed out",
+        "timeout",
+        "connection error",
+        "connection reset",
+        "connection refused",
+        "max retries exceeded",
+        "unreachable",
+    ):
+        category = "timeout"
+    elif hit(
+        "authenticationerror",
+        "permissiondenied",
+        "notauthenticated",
+        "api key",
+        "api_key",
+        "invalid_api_key",
+        "authentication",
+        "unauthorized",
+        "permission denied",
+        "invalid api key",
+        "incorrect api key",
+    ):
+        category = "auth"
+    elif hit(
+        "blocked",
+        "block_reason",
+        "prompt_feedback",
+        "promptfeedback",
+        "safety",
+        "content filter",
+        "content_filter",
+        "contentfilter",
+        "content management",
+        "contentpolicy",
+        "finish_reason",
+    ):
+        category = "blocked"
+    elif hit(
+        "notfounderror",
+        "model_not_found",
+        "deactivated_model",
+        "no such model",
+        "does not exist",
+        "is not found",
+        "not found",
+        "is not supported",
+        "404",
+    ):
+        category = "not_found"
+    elif hit(
+        "invalidrequesterror",
+        "bad request",
+        "invalid request",
+        "invalid_request_error",
+        "invalid parameter",
+        "unsupported value",
+        "could not be parsed",
+        "malformed",
+    ):
+        category = "bad_request"
+    else:
+        category = "internal"
+
+    return category, AI_ERROR_MESSAGES[category]
+
+
 def rgb_to_terminal_color(r, g, b):
     return f"\033[38;2;{r};{g};{b}m"
 
