@@ -5,10 +5,14 @@ import pathlib
 import sys
 import types
 import unittest
+from io import BytesIO
 
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
+
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 
 
 def _load_chat_module():
@@ -298,16 +302,33 @@ class ChatHookRoutingTests(unittest.IsolatedAsyncioTestCase):
 
 
 def _load_ai_question():
+    from modules import image_delivery
+
     source = (SRC_ROOT / "index.py").read_text()
     tree = ast.parse(source)
-    function = next(
+    wanted = ("ai_question", "reply_with_generated_images")
+    functions = [
         node
         for node in tree.body
-        if isinstance(node, ast.AsyncFunctionDef) and node.name == "ai_question"
-    )
-    namespace = {"RESPONSE_FAILURES": {}, "MAX_FAILURES": 3}
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "src/index.py", "exec"), namespace)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name in wanted
+    ]
+    namespace = {
+        "RESPONSE_FAILURES": {},
+        "MAX_FAILURES": 3,
+        "image_delivery": image_delivery,
+        "BytesIO": BytesIO,
+        "discord": types.SimpleNamespace(File=_RecordedFile),
+    }
+    exec(compile(ast.Module(body=functions, type_ignores=[]), "src/index.py", "exec"), namespace)
     return namespace["ai_question"], namespace
+
+
+class _RecordedFile:
+    """Stand-in for discord.File that keeps the bytes it was handed."""
+
+    def __init__(self, fp, filename=None):
+        self.data = fp.read()
+        self.filename = filename
 
 
 class _Typing:
@@ -319,11 +340,13 @@ class _Typing:
 
 
 class AIQuestionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_ai_question_preserves_final_zero_and_one_and_replies(self):
+    CHANNEL_ID = 12
+
+    def _harness(self, on_request=None, on_reply=None):
+        """Build ai_question plus recorders for its requests, replies and history."""
         ai_question, namespace = _load_ai_question()
-        requests = []
-        replies = []
-        channel = types.SimpleNamespace(id=12)
+        records = {"requests": [], "replies": [], "files": [], "history": []}
+        channel = types.SimpleNamespace(id=self.CHANNEL_ID)
 
         class _RuntimeConfig:
             def set(self, **_kwargs):
@@ -334,11 +357,11 @@ class AIQuestionTests(unittest.IsolatedAsyncioTestCase):
 
         class _RuntimeChat:
             def request(self, _channel_id, message, *_args, **_kwargs):
-                requests.append(message)
-                return "answer"
+                records["requests"].append(message)
+                return on_request(message) if on_request else "answer"
 
-            def send(self, *_args):
-                pass
+            def send(self, *args):
+                records["history"].append(args[3])
 
         sonata = types.SimpleNamespace(
             config=_RuntimeConfig(),
@@ -351,8 +374,11 @@ class AIQuestionTests(unittest.IsolatedAsyncioTestCase):
         async def get_channel(_ctx):
             return channel
 
-        async def ctx_reply(*args):
-            replies.append(args)
+        async def ctx_reply(*args, **kwargs):
+            if on_reply:
+                on_reply(args, kwargs)
+            records["replies"].append(args)
+            records["files"].append(kwargs.get("files"))
 
         namespace.update(
             {
@@ -370,12 +396,79 @@ class AIQuestionTests(unittest.IsolatedAsyncioTestCase):
                 "restart": lambda: None,
             }
         )
+        self.addCleanup(namespace["image_delivery"].clear, self.CHANNEL_ID)
+        return ai_question, namespace, records, ctx
+
+    async def test_ai_question_preserves_final_zero_and_one_and_replies(self):
+        ai_question, _namespace, records, ctx = self._harness()
 
         for content in ("natural 0", "natural 1"):
             await ai_question(ctx, content, ai="Claude", short="c")
 
-        self.assertEqual(requests, ["natural 0", "natural 1"])
-        self.assertEqual(replies, [(ctx, "answer"), (ctx, "answer")])
+        self.assertEqual(records["requests"], ["natural 0", "natural 1"])
+        self.assertEqual(records["replies"], [(ctx, "answer"), (ctx, "answer")])
+        self.assertEqual(records["files"], [None, None])
+
+    async def test_generated_image_is_attached_and_its_link_dropped(self):
+        url = "https://files.catbox.moe/a.png"
+        delivery = None
+
+        def on_request(_message):
+            delivery.stash(b"raw-bytes", "generated.png", url=url)
+            return f"here it is [a cat]({url})"
+
+        ai_question, namespace, records, ctx = self._harness(on_request=on_request)
+        delivery = namespace["image_delivery"]
+
+        with delivery.current_channel(self.CHANNEL_ID):
+            await ai_question(ctx, "draw a cat", ai="Claude", short="c")
+
+        self.assertEqual(records["replies"], [(ctx, "here it is a cat")])
+        [files] = records["files"]
+        self.assertEqual([f.data for f in files], [b"raw-bytes"])
+        self.assertEqual([f.filename for f in files], ["generated.png"])
+        self.assertEqual(records["history"], ["here it is a cat"])
+
+    async def test_failed_attachment_falls_back_to_the_hosted_link(self):
+        url = "https://files.catbox.moe/a.png"
+        delivery = None
+
+        def on_request(_message):
+            delivery.stash(b"raw-bytes", "generated.png", url=url)
+            return f"here it is {url}"
+
+        def on_reply(_args, kwargs):
+            if kwargs.get("files"):
+                raise RuntimeError("payload too large")
+
+        ai_question, namespace, records, ctx = self._harness(
+            on_request=on_request, on_reply=on_reply
+        )
+        delivery = namespace["image_delivery"]
+
+        with delivery.current_channel(self.CHANNEL_ID):
+            await ai_question(ctx, "draw a cat", ai="Claude", short="c")
+
+        self.assertEqual(records["replies"], [(ctx, f"here it is {url}")])
+        self.assertEqual(records["files"], [None])
+        self.assertEqual(records["history"], [f"here it is {url}"])
+
+    async def test_images_left_by_another_channel_are_not_attached(self):
+        delivery = None
+
+        def on_request(_message):
+            delivery.stash(b"raw-bytes", "generated.png")
+            return "answer"
+
+        ai_question, namespace, records, ctx = self._harness(on_request=on_request)
+        delivery = namespace["image_delivery"]
+        self.addCleanup(delivery.clear, 999)
+
+        with delivery.current_channel(999):
+            await ai_question(ctx, "hello", ai="Claude", short="c")
+
+        self.assertEqual(records["replies"], [(ctx, "answer")])
+        self.assertEqual(records["files"], [None])
 
 
 if __name__ == "__main__":

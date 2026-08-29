@@ -7,6 +7,9 @@ import unittest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 
 def _load_utils():
     """Extract the AI error classifier from ``utils.py`` without its imports."""
@@ -54,8 +57,12 @@ def _load_chat_class():
         if isinstance(node, ast.ClassDef) and node.name == "Chat"
     )
 
+    from modules import image_delivery
+
     utils = _load_utils()
     namespace = {
+        "image_delivery": image_delivery,
+        "_censor_for_provider": lambda message, _config=None: message,
         "sona": types.SimpleNamespace(
             config=types.SimpleNamespace(get=lambda *_args, **_kwargs: "Claude"),
             name="Sonata",

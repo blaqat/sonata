@@ -34,6 +34,7 @@ import time
 import discord
 from discord.ext import commands
 
+from modules import image_delivery
 from modules.AI_manager import AI_Manager
 from modules.channel_policies import (
     LEGACY_CHANNEL_BLACKLIST,
@@ -729,24 +730,32 @@ def chat(sona: AI_Manager):
                 )
 
             response = _NO_RESPONSE
-            for attempt in range(AI_REQUEST_RETRIES + 1):
-                try:
-                    response = _send()
-                    break
-                except Exception as e:
-                    category, user_message = classify_ai_error(e)
-                    cprint(f"Error in chat request ({category}): {get_trace()}", "red")
-                    if attempt < AI_REQUEST_RETRIES and category in TRANSIENT_AI_ERRORS:
+            # Image generators run deep inside _send(); binding the channel here
+            # lets them queue their bytes for the reply path to attach.
+            with image_delivery.current_channel(id):
+                for attempt in range(AI_REQUEST_RETRIES + 1):
+                    try:
+                        response = _send()
+                        break
+                    except Exception as e:
+                        category, user_message = classify_ai_error(e)
                         cprint(
-                            f"Transient AI failure ({category}), "
-                            f"retrying in {AI_RETRY_BACKOFF}s...",
-                            "yellow",
+                            f"Error in chat request ({category}): {get_trace()}", "red"
                         )
-                        time.sleep(AI_RETRY_BACKOFF)
-                        continue
-                    if raise_on_error:
-                        raise
-                    return user_message
+                        if (
+                            attempt < AI_REQUEST_RETRIES
+                            and category in TRANSIENT_AI_ERRORS
+                        ):
+                            cprint(
+                                f"Transient AI failure ({category}), "
+                                f"retrying in {AI_RETRY_BACKOFF}s...",
+                                "yellow",
+                            )
+                            time.sleep(AI_RETRY_BACKOFF)
+                            continue
+                        if raise_on_error:
+                            raise
+                        return user_message
 
             if save:
                 self.send(id, "Bot", sona.name, response, replying_to)
