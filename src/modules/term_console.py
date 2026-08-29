@@ -1064,6 +1064,30 @@ def _html_page(base_path: str) -> str:
       text-transform: uppercase;
       white-space: nowrap;
     }
+    .field-reset {
+      flex: none;
+      appearance: none;
+      border: 2px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--text);
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      box-shadow: 2px 2px 0 var(--line);
+    }
+    .field-reset:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 var(--line); }
+    .field-reset:disabled {
+      opacity: 0.3;
+      cursor: default;
+      box-shadow: none;
+      transform: none;
+    }
+    .field-reset svg { width: 12px; height: 12px; display: block; }
     .field-desc {
       grid-column: 1 / -1;
       color: var(--muted);
@@ -1650,6 +1674,19 @@ def _html_page(base_path: str) -> str:
       return value;
     }
 
+    function configDefault(path) {
+      return configView && configView.defaults && path in configView.defaults
+        ? configView.defaults[path]
+        : undefined;
+    }
+
+    function configEquals(a, b) {
+      if (Array.isArray(a) || Array.isArray(b)) {
+        return JSON.stringify(Array.isArray(a) ? a : []) === JSON.stringify(Array.isArray(b) ? b : []);
+      }
+      return (a == null ? '' : String(a)) === (b == null ? '' : String(b));
+    }
+
     function updateDirtyUi() {
       const count = Object.keys(pendingConfigUpdates).length;
       configSaveBtn.disabled = !count;
@@ -1705,6 +1742,24 @@ def _html_page(base_path: str) -> str:
       label.className = 'field-label';
       label.textContent = field.label;
       labelWrap.appendChild(label);
+      const defaultVal = configDefault(field.path);
+      if (defaultVal !== undefined) {
+        const reset = document.createElement('button');
+        reset.type = 'button';
+        reset.className = 'field-reset';
+        const showDefault = ['str', 'select', 'int'].includes(field.type) && defaultVal !== '' && defaultVal != null;
+        reset.title = showDefault ? `Revert to default (${String(defaultVal)})` : 'Revert to default';
+        reset.setAttribute('aria-label', `Revert ${field.label} to default`);
+        reset.innerHTML =
+          '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"/><path d="M20 20v-7a4 4 0 0 0-4-4H4"/></svg>';
+        reset.disabled = configEquals(currentConfigValue(field.path), defaultVal);
+        reset.addEventListener('click', () => {
+          if (reset.disabled) return;
+          recordEdit(field, Array.isArray(defaultVal) ? defaultVal.slice() : defaultVal);
+          renderConfig();
+        });
+        labelWrap.appendChild(reset);
+      }
       if (!field.hot_reloadable) {
         const badge = document.createElement('span');
         badge.className = 'badge-restart';

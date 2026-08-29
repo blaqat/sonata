@@ -79,6 +79,42 @@ class ConfigUpdaterTestCase(unittest.TestCase):
         for hidden in ("tier1_user_ids", "tier2_user_ids", "default_repository_url"):
             self.assertNotIn(hidden, blob)
 
+    def test_get_config_view_includes_defaults_for_editable_fields(self):
+        view = get_runtime_config()
+        expected_paths = {f.path for f in EDITABLE_FIELDS}
+        self.assertEqual(set(view["defaults"]), expected_paths)
+        self.assertIs(view["defaults"]["runtime.vc_recording"], False)
+        self.assertEqual(
+            view["defaults"]["runtime.ai_models.claude"],
+            sonata_config._DEFAULT_AI_MODELS["claude"],
+        )
+        self.assertEqual(
+            view["defaults"]["plugins.chat.bot_whitelist"],
+            ["BluBot", 1311742291521835048, 746799398994051162, 1527366826793894109],
+        )
+
+    def test_revert_patch_restores_default_values(self):
+        update_runtime_config(
+            {"runtime.vc_speaking": False, "plugins.chat.max_chats": 5},
+            actor="tester",
+        )
+        defaults = get_runtime_config()["defaults"]
+        update_runtime_config(
+            {
+                "runtime.vc_speaking": defaults["runtime.vc_speaking"],
+                "plugins.chat.max_chats": defaults["plugins.chat.max_chats"],
+            },
+            actor="tester",
+        )
+        values = get_runtime_config()["values"]
+        self.assertEqual(values["runtime.vc_speaking"], defaults["runtime.vc_speaking"])
+        self.assertEqual(
+            values["plugins.chat.max_chats"], defaults["plugins.chat.max_chats"]
+        )
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved["runtime"]["vc_speaking"])
+        self.assertEqual(saved["plugins"]["chat"]["max_chats"], 30)
+
     def test_update_rejects_unknown_keys_without_writing(self):
         before = self.config_path.read_text(encoding="utf-8")
         with self.assertRaises(ConfigUpdateError) as ctx:

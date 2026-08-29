@@ -448,21 +448,34 @@ def save_config() -> Path:
     return cfg_path
 
 
+def _normalized_view_value(field_def: ConfigField, value: Any) -> Any:
+    if value is not None:
+        return value
+    return "" if field_def.type == "str" else [] if field_def.type == "list" else None
+
+
 def get_runtime_config() -> dict[str, Any]:
     """Return the safe, editable config view for the web terminal.
 
     Only allowlisted fields are returned -- never raw secrets or env-backed keys.
+    `defaults` mirrors `values` with each field's effective default so the UI
+    can offer per-field revert (SONA-162).
     """
     effective = _effective_doc()
+    default_doc = _default_document()
     values: dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
     for field_def in EDITABLE_FIELDS:
-        value = _doc_get(effective, field_def.path)
-        values[field_def.path] = value if value is not None else (
-            "" if field_def.type == "str" else [] if field_def.type == "list" else None
+        values[field_def.path] = _normalized_view_value(
+            field_def, _doc_get(effective, field_def.path)
+        )
+        defaults[field_def.path] = _normalized_view_value(
+            field_def, _doc_get(default_doc, field_def.path)
         )
     return {
         "fields": [asdict(field_def) for field_def in EDITABLE_FIELDS],
         "values": values,
+        "defaults": defaults,
         "recent_mutations": list(_MUTATION_LOG),
     }
 
