@@ -1115,7 +1115,7 @@ async def ai():
         "Enter AI name: ",
         exit_if=lambda x: (
             x
-            not in ("OpenAI", "Claude", "Mistral", "Assistant", "Gemini", "Perplexity")
+            not in ("OpenAI", "Claude", "Mistral", "Gemini", "Perplexity")
         ),
         exit_msg="Invalid AI",
     )
