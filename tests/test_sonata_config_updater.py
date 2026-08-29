@@ -51,6 +51,17 @@ class ConfigUpdaterTestCase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def test_assistant_ai_is_removed_from_editable_config(self):
+        from modules.plugins import PLUGINS_DICT
+
+        self.assertNotIn("openai_assistant", PLUGINS_DICT)
+        self.assertNotIn("assistant", sonata_config._DEFAULT_AI_MODELS)
+        self.assertNotIn("assistant", sonata_config._AI_MODEL_TO_TYPE)
+        self.assertNotIn("runtime.ai_models.assistant", {f.path for f in EDITABLE_FIELDS})
+        auto = next(f for f in EDITABLE_FIELDS if f.path == "plugins.chat.auto")
+        self.assertNotIn("a", auto.options)
+        self.assertEqual(auto.options, ("g", "o", "c", "m", "x"))
+
     def test_get_config_view_returns_only_allowlisted_fields(self):
         view = get_config_view()
         expected_paths = {f.path for f in EDITABLE_FIELDS}

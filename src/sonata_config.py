@@ -21,7 +21,6 @@ from modules.plugins import PLUGINS_DICT
 
 _DEFAULT_AI_MODELS: dict[str, str] = {
     "dall_e": "gpt-image-2",
-    "assistant": "gpt-4o",
     "grok": "grok-4.6",
     "openai": "gpt-5.6-terra",
     "claude": "claude-sonnet-4-6",
@@ -57,7 +56,6 @@ class AIModels:
     """Per-provider model id overrides. Empty or missing uses the built-in default for that AI."""
 
     dall_e: str | None = None
-    assistant: str | None = None
     grok: str | None = None
     openai: str | None = None
     claude: str | None = None
@@ -195,7 +193,7 @@ def load_config(path: Path | None = None) -> tuple[RuntimeConfig, dict[str, Any]
 
 def rand_runtime(runtime: RuntimeConfig, plugins: dict[str, Any]) -> None:
     """Randomize the same runtime and plugin toggles as the former `rand_config()`."""
-    models = ["g", "o", "c", "a", "m", "x"]
+    models = ["g", "o", "c", "m", "x"]
     gif_searches = ["klipy", "giphy", "google", "random", "tenor"]
 
     runtime.prompt_reset = bool(randint(0, 1))
@@ -234,7 +232,6 @@ AI_MODEL_FIELDS = tuple(_DEFAULT_AI_MODELS.keys())
 # changes can be swapped into live AI requests without a restart.
 _AI_MODEL_TO_TYPE = {
     "dall_e": "DallE",
-    "assistant": "Assistant",
     "grok": "Grok",
     "openai": "OpenAI",
     "claude": "Claude",
@@ -293,7 +290,7 @@ EDITABLE_FIELDS: tuple[ConfigField, ...] = (
         "select",
         "Chat",
         True,
-        options=("g", "o", "c", "a", "m", "x"),
+        options=("g", "o", "c", "m", "x"),
         description="Default AI shortcut used for chat replies.",
     ),
     ConfigField(

@@ -4,7 +4,7 @@ A versatile AI-powered Discord bot created by @blaqat, designed for natural lang
 
 ## Features
 
-- **Multi-Model AI Integration**: Supports multiple AI models including OpenAI, Claude, Gemini, Mistral, and OpenAI Assistants API.
+- **Multi-Model AI Integration**: Supports multiple AI models including OpenAI, Claude, Gemini, Mistral, and Grok.
 - **Voice Chat**: Join voice channels, speak text-to-speech, and record audio.
 - **Natural Language Commands**: Interact with the bot using conversational language.
 - **Plugin System**: Extensible with plugins for chat handling, self-commands, terminal commands, and more.
@@ -41,7 +41,7 @@ Sonata responds to natural language messages and supports various commands prefi
 - `$c` - Switch to Claude
 - `$g` - Switch to Gemini
 - `$m` - Switch to Mistral
-- `$a` - Switch to OpenAI Assistants API
+- `$x` - Switch to Grok
 
 ### Voice Commands
 - `$join` - Join the voice channel you're in

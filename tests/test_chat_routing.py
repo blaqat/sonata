@@ -343,6 +343,33 @@ class ChatHookRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(processed, [])
 
 
+def _ai_command_names():
+    source = (SRC_ROOT / "index.py").read_text()
+    tree = ast.parse(source)
+    names = []
+    for node in tree.body:
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        for deco in node.decorator_list:
+            if not isinstance(deco, ast.Call):
+                continue
+            func = deco.func
+            if not (isinstance(func, ast.Attribute) and func.attr == "command"):
+                continue
+            for keyword in deco.keywords:
+                if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+                    names.append(keyword.value.value)
+    return names
+
+
+class DeadAssistantCommandTests(unittest.TestCase):
+    def test_dollar_a_command_is_removed_and_other_ai_shortcuts_remain(self):
+        names = _ai_command_names()
+        self.assertNotIn("a", names)
+        for short in ("g", "o", "c", "x"):
+            self.assertIn(short, names)
+
+
 def _load_ai_question():
     source = (SRC_ROOT / "index.py").read_text()
     tree = ast.parse(source)

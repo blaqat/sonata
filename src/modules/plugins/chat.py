@@ -703,7 +703,7 @@ def chat(sona: AI_Manager):
             provider_message = _censor_for_provider(message, sona.config)
 
             def _send():
-                if "using_assistant" not in new_c and prompt_manager.exists("History"):
+                if prompt_manager.exists("History"):
                     return sona.do(
                         "chat",
                         "request",
