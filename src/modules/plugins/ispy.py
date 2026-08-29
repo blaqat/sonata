@@ -78,8 +78,11 @@ def ispy_init(context: Context):
             return (chat_id, message_type, author, message, replying_to)
 
         # Process images in batches of 4 to reduce hallucination risk
+        from sonata_config import configured_ai_model
+
         descriptions = []
         batch_size = 4
+        gemini_model = configured_ai_model("gemini")
         for i in range(0, len(new_images), batch_size):
             batch = new_images[i : i + batch_size]
             try:
@@ -88,7 +91,7 @@ def ispy_init(context: Context):
                     "describe_images",
                     config={"images": batch, "instructions": ""},
                     AI="Gemini",
-                    model="gemini-2.5-flash",
+                    model=gemini_model,
                 )
                 descriptions.append(result)
             except Exception as e:

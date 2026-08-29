@@ -713,6 +713,8 @@ async def _generate_session_title(prompt: str) -> str:
     fallback = _title_from_prompt(prompt)
 
     def _call() -> str:
+        from sonata_config import configured_ai_model
+
         raw = PROMPT_MANAGER.send(
             (
                 "Return ONLY a short Discord thread title for this coding agent task. "
@@ -720,7 +722,7 @@ async def _generate_session_title(prompt: str) -> str:
                 f"Task:\n{(prompt or '')[:500]}"
             ),
             AI="Gemini",
-            model="gemini-2.5-flash",
+            model=configured_ai_model("gemini"),
         )
         return str(raw or "")
 
