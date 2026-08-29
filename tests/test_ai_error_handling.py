@@ -57,11 +57,8 @@ def _load_chat_class():
         if isinstance(node, ast.ClassDef) and node.name == "Chat"
     )
 
-    from modules import image_delivery
-
     utils = _load_utils()
     namespace = {
-        "image_delivery": image_delivery,
         "_censor_for_provider": lambda message, _config=None: message,
         "sona": types.SimpleNamespace(
             config=types.SimpleNamespace(get=lambda *_args, **_kwargs: "Claude"),
@@ -253,6 +250,8 @@ class ChatRequestErrorHandlingTests(unittest.TestCase):
 
 class AIQuestionConciseErrorTests(unittest.IsolatedAsyncioTestCase):
     def _load_ai_question(self):
+        from modules import image_delivery
+
         source = (SRC_ROOT / "index.py").read_text()
         tree = ast.parse(source)
         function = next(
@@ -260,7 +259,11 @@ class AIQuestionConciseErrorTests(unittest.IsolatedAsyncioTestCase):
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "ai_question"
         )
-        namespace = {"RESPONSE_FAILURES": {}, "MAX_FAILURES": 3}
+        namespace = {
+            "RESPONSE_FAILURES": {},
+            "MAX_FAILURES": 3,
+            "image_delivery": image_delivery,
+        }
         exec(
             compile(ast.Module(body=[function], type_ignores=[]), "src/index.py", "exec"),
             namespace,
