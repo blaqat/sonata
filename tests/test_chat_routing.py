@@ -11,6 +11,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 
+def _load_bot_whitelist():
+    module_path = SRC_ROOT / "modules" / "bot_whitelist.py"
+    spec = importlib.util.spec_from_file_location("modules.bot_whitelist", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_chat_module():
     module_path = SRC_ROOT / "modules" / "plugins" / "chat.py"
     spec = importlib.util.spec_from_file_location("chat_plugin_test", module_path)
@@ -87,6 +95,7 @@ def _load_chat_module():
     stubs = {
         "modules.AI_manager": ai_manager_stub,
         "modules.channel_policies": channel_policies_stub,
+        "modules.bot_whitelist": _load_bot_whitelist(),
         "modules.utils": utils_stub,
         "discord": discord_stub,
         "discord.ext": discord_ext_stub,
@@ -295,6 +304,43 @@ class ChatHookRoutingTests(unittest.IsolatedAsyncioTestCase):
         await self.chat_module.chat_hook(sonata, bot, message)
         self.assertEqual(bot.processed, [])
         self.assertEqual(mirrored, [])
+
+    async def _run_bot_whitelist_hook(self, *, whitelist, **author_overrides):
+        sonata, bot, message = await self._run_hook("$help")
+        bot.processed.clear()
+        message.author.bot = True
+        message.author.name = "blubot_user"
+        message.author.display_name = "BluBot"
+        message.author.id = 1311742291521835048
+        for key, value in author_overrides.items():
+            setattr(message.author, key, value)
+        sonata.config.values["bot_whitelist"] = whitelist
+        await self.chat_module.chat_hook(sonata, bot, message)
+        return bot.processed
+
+    async def test_whitelist_id_match_processes_command(self):
+        processed = await self._run_bot_whitelist_hook(
+            whitelist=[1311742291521835048],
+            name="other",
+            display_name="Other",
+        )
+        self.assertEqual(processed[0][0], "$help")
+
+    async def test_whitelist_username_match_processes_command(self):
+        processed = await self._run_bot_whitelist_hook(
+            whitelist=["blubotuser"],
+            name="BluBotUser",
+            display_name="Nickname",
+        )
+        self.assertEqual(processed[0][0], "$help")
+
+    async def test_whitelist_display_name_match_processes_command(self):
+        processed = await self._run_bot_whitelist_hook(whitelist=["BluBot"])
+        self.assertEqual(processed[0][0], "$help")
+
+    async def test_whitelist_non_match_is_ignored(self):
+        processed = await self._run_bot_whitelist_hook(whitelist=["NotBlu", 1])
+        self.assertEqual(processed, [])
 
 
 def _load_ai_question():

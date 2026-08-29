@@ -10,6 +10,14 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
 
+def _load_bot_whitelist():
+    module_path = SRC_ROOT / "modules" / "bot_whitelist.py"
+    spec = importlib.util.spec_from_file_location("modules.bot_whitelist", module_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_chat_module():
     module_path = SRC_ROOT / "modules" / "plugins" / "chat.py"
     spec = importlib.util.spec_from_file_location("chat_censor_test", module_path)
@@ -82,6 +90,7 @@ def _load_chat_module():
     stubs = {
         "modules.AI_manager": ai_manager_stub,
         "modules.channel_policies": channel_policies_stub,
+        "modules.bot_whitelist": _load_bot_whitelist(),
         "modules.utils": utils_stub,
         "discord": discord_stub,
         "discord.ext": discord_ext_stub,
