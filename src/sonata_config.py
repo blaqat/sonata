@@ -85,6 +85,20 @@ def resolve_ai_model(runtime: RuntimeConfig, key: str, builtin_default: str) -> 
     return builtin_default
 
 
+def configured_ai_model(key: str, runtime: RuntimeConfig | None = None) -> str:
+    """Resolve a provider model id from live runtime config, else the built-in default.
+
+    Same source as Gemini/OpenAI registration in ``index.py``: the loaded
+    ``RuntimeConfig.ai_models`` value, falling back to ``_DEFAULT_AI_MODELS``.
+    Uses the hot-reloaded ``_RUNTIME_INSTANCE`` when no runtime is passed.
+    """
+    builtin = _DEFAULT_AI_MODELS[key]
+    source = runtime if runtime is not None else _RUNTIME_INSTANCE
+    if source is None:
+        return builtin
+    return resolve_ai_model(source, key, builtin)
+
+
 def _ai_models_from_merged_runtime(data: dict[str, Any]) -> AIModels:
     merged = {**_DEFAULT_AI_MODELS, **(data.get("ai_models") or {})}
     kwargs = {f.name: merged.get(f.name) for f in fields(AIModels)}

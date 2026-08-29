@@ -12,13 +12,16 @@ if str(repo_root / "src") not in sys.path:
 import sonata_config
 from modules.AI_manager import AI_Manager
 from sonata_config import (
+    AIModels,
     EDITABLE_FIELDS,
     ConfigUpdateError,
     RuntimeConfig,
+    configured_ai_model,
     get_config_view,
     get_runtime_config,
     load_config,
     update_runtime_config,
+    _DEFAULT_AI_MODELS,
 )
 
 
@@ -201,6 +204,25 @@ class ConfigUpdaterTestCase(unittest.TestCase):
                 "plugins.self_commands.search.num_results", 7
             )
         self.assertEqual(manager.config.values["search"]["num_results"], 7)
+
+    def test_configured_ai_model_uses_runtime_override(self):
+        runtime = RuntimeConfig(ai_models=AIModels(gemini="custom-flash"))
+        self.assertEqual(configured_ai_model("gemini", runtime), "custom-flash")
+
+    def test_configured_ai_model_falls_back_to_builtin_default(self):
+        runtime = RuntimeConfig()
+        self.assertEqual(
+            configured_ai_model("gemini", runtime),
+            _DEFAULT_AI_MODELS["gemini"],
+        )
+        self.assertEqual(_DEFAULT_AI_MODELS["gemini"], "gemini-3.6-flash")
+
+    def test_configured_ai_model_reads_live_runtime_instance(self):
+        self.assertEqual(configured_ai_model("gemini"), self.runtime.ai_models.gemini)
+        update_runtime_config(
+            {"runtime.ai_models.gemini": "gemini-hot"}, actor="tester"
+        )
+        self.assertEqual(configured_ai_model("gemini"), "gemini-hot")
 
 
 if __name__ == "__main__":
