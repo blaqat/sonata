@@ -7,6 +7,9 @@ import unittest
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = REPO_ROOT / "src"
 
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
 
 def _load_utils():
     """Extract the AI error classifier from ``utils.py`` without its imports."""
@@ -56,6 +59,7 @@ def _load_chat_class():
 
     utils = _load_utils()
     namespace = {
+        "_censor_for_provider": lambda message, _config=None: message,
         "sona": types.SimpleNamespace(
             config=types.SimpleNamespace(get=lambda *_args, **_kwargs: "Claude"),
             name="Sonata",
@@ -246,6 +250,8 @@ class ChatRequestErrorHandlingTests(unittest.TestCase):
 
 class AIQuestionConciseErrorTests(unittest.IsolatedAsyncioTestCase):
     def _load_ai_question(self):
+        from modules import image_delivery
+
         source = (SRC_ROOT / "index.py").read_text()
         tree = ast.parse(source)
         function = next(
@@ -253,7 +259,11 @@ class AIQuestionConciseErrorTests(unittest.IsolatedAsyncioTestCase):
             for node in tree.body
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "ai_question"
         )
-        namespace = {"RESPONSE_FAILURES": {}, "MAX_FAILURES": 3}
+        namespace = {
+            "RESPONSE_FAILURES": {},
+            "MAX_FAILURES": 3,
+            "image_delivery": image_delivery,
+        }
         exec(
             compile(ast.Module(body=[function], type_ignores=[]), "src/index.py", "exec"),
             namespace,
