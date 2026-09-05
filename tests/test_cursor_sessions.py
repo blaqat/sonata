@@ -11,6 +11,7 @@ from cursor_cloud.models import AgentSession, IdleChoice, RunStatus, ScopeKey, u
 from cursor_cloud.session_store import (
     MemorySessionStore,
     is_meaningful_stream_event,
+    resolve_model_pref,
     run_is_busy,
     session_is_idle,
 )
@@ -56,6 +57,31 @@ class TestSessions(unittest.IsolatedAsyncioTestCase):
         await self.store.upsert(active)
         again = await self.store.get_active(self.scope)
         self.assertEqual(again.preferred_model, "composer-2")
+
+    async def test_resolve_model_pref_inherits_parent_channel(self):
+        parent = ScopeKey("g", "parent", "u1")
+        thread = ScopeKey("g", "thread123", "u1")
+        await self.store.set_model_pref(parent, "grok-4.6")
+        pref = await resolve_model_pref(
+            self.store,
+            thread,
+            parent_channel_id="parent",
+            default_model="grok-4.5",
+        )
+        self.assertEqual(pref, "grok-4.6")
+
+    async def test_resolve_model_pref_prefers_thread_scope(self):
+        parent = ScopeKey("g", "parent", "u1")
+        thread = ScopeKey("g", "thread123", "u1")
+        await self.store.set_model_pref(parent, "grok-4.6")
+        await self.store.set_model_pref(thread, "composer-2.5")
+        pref = await resolve_model_pref(
+            self.store,
+            thread,
+            parent_channel_id="parent",
+            default_model="grok-4.5",
+        )
+        self.assertEqual(pref, "composer-2.5")
 
     async def test_beacon_roundtrip_export_import(self):
         await self.store.upsert(
