@@ -47,7 +47,7 @@ from cursor_cloud.models import (
     utcnow,
 )
 from cursor_cloud.run_tracker import RunTracker
-from cursor_cloud.session_store import run_is_busy, session_is_idle
+from cursor_cloud.session_store import resolve_model_pref, run_is_busy, session_is_idle
 from cursor_cloud.status_renderer import initial_queued_message, redact_untrusted
 from cursor_cloud.thread_session import (
     owner_reply_to_human,
@@ -1363,7 +1363,12 @@ async def prepare(
 
     # Idle/model decisions MUST run before refreshing meaningful activity.
     active = await sessions.get_active(scope)
-    preferred = await sessions.get_model_pref(scope) or cfg.default_model or None
+    preferred = await resolve_model_pref(
+        sessions,
+        scope,
+        default_model=cfg.default_model,
+        parent_channel_id=parent_channel_id,
+    )
 
     want_new = bool(force_new)
     if thread_bound or (active is not None and active.thread_bound):
