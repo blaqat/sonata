@@ -40,8 +40,30 @@ won't auto-link.
 Do **not** use **Parent** for Test Requests (Parent is `limit: 1` and is for
 Dev Plans). Do **not** create a Dev Plan child.
 
-Pass `template_id` on create. Template apply is async — do **not** send
-`content` in the same create. Fetch the page, then fill the existing blocks.
+## Applying the template
+
+**Fetch the template page before writing anything.** It gets edited over time,
+so this skill deliberately does not hard-code its layout — the template is the
+source of truth for headings, section names, and callout shape.
+
+1. Fetch the `template_id` above and read its body.
+2. Create the TR page passing `template_id`. Template apply is async, so do
+   **not** send `content` in the same create.
+3. Re-fetch the new page. If the template body materialised, fill the existing
+   blocks in place.
+4. If it is still blank after a retry, mirror the structure from step 1 by hand
+   with `replace_content`, then set what the template would have supplied:
+   `Type`, `Assign`, `Priority`, and the page icon.
+
+Setting the icon has two traps. Pass the `icon` field a **string** — a nested
+`{type, icon:{name, color}}` object is rejected. A coloured native icon needs
+the full SVG URL, so the TR's yellow script is
+`https://www.notion.so/icons/script_yellow.svg`; the bare `icons/script_yellow`
+form is only for an uncoloured icon and mangles to `/icons/script_yellow`.
+`update_properties` also rejects an icon-only call, so send `"properties": {}`
+alongside it. Verify with a fetch: the page tag should read
+`icon="icons/script_yellow"` with no leading slash. Full rules live in the
+`notion-page-icons` skill.
 
 ---
 
@@ -51,129 +73,57 @@ Scenarios are **strict step-by-step scripts** a QA tester follows to verify
 behavior. Optimize for **testing usability**: easy to read, easy to copy
 commands, easy to check off steps, easy to compare expected vs actual.
 
-### Page Structure
+**Follow the template's structure exactly** — its heading levels, section
+names, and callout shape. The rules below govern the *content* placed inside
+that structure, never the layout. Where this skill and the template disagree
+on structure, the template wins.
 
-```
-## Environment Setup
-- Setup requirement 1 (config files, env vars, preconditions)
-- Setup requirement 2
-
-## Test Script
----
-<callout>
-  #NN - Scenario 1: Short Description
-  ...
-</callout>
-
-<callout>
-  #NN - Scenario 2: Short Description
-  ...
-</callout>
-```
-
-**Environment Setup** comes BEFORE the Test Script. Put all preconditions,
-config file checks, required state, or one-time setup here — not inside
-individual scenarios.
-
-### Scenario Callout Structure
-
-Each scenario is a yellow callout (`icon="/icons/script_yellow.svg"`):
-
-```
-<callout icon="/icons/script_yellow.svg">
-#### #NN - Scenario X: Short Description
-
-#### Steps
-- [ ] Step description (what the tester does)
-
-\`\`\`
-exact command or input to copy-paste
-\`\`\`
-
-- [ ] Next step description
-
-\`\`\`
-next command
-\`\`\`
-
-#### Expected
-- One expected outcome per bullet
-- Another expected outcome
-- Keep bullets atomic — don't combine multiple checks
-
-#### Result
-- (Filled out by tester) {color="blue"}
-</callout>
-```
+Read the template's placeholder text as instructions. It shows one example
+scenario indicating heading levels, where code blocks belong, and whether
+expected results are plain bullets or tickable checkboxes.
 
 ### Scenario Rules
 
 1. **One testable flow per scenario** — not one scenario per ticket. A ticket
-   may need multiple scenarios (e.g. Scenario 1: happy path, Scenario 2: error
-   case). Or one scenario may cover multiple tickets if they share a flow.
+   may need several scenarios (happy path, then error case), and one scenario
+   may cover several tickets if they share a flow.
 
-2. **Title format**: `#NN - Scenario X: Description` where `NN` is the SONA
-   ticket number the scenario relates to (e.g. `#37 - Scenario 1:`).
+2. **Setup lives in the template's setup section, not inside scenarios.** All
+   preconditions, config values, and required state go there so the tester
+   does them once.
 
-3. **Steps are checkboxes + code blocks**:
-   - Checkbox with a description of what to do
-   - Immediately followed by a **code block** with the exact command/input
-   - Tester copies from the code block, checks the box when done
-   - No code block needed if the step is purely observational
+3. **Pair each step checkbox with a code block**: a checkbox saying what the
+   tester does, immediately followed by the exact command or input to
+   copy-paste. Purely observational steps need no code block.
 
-4. **Expected has multiple bullets** — one assertion per bullet:
-   - Bad: `- Command completes without errors and returns a URL`
-   - Good:
-     - `- Command completes without errors`
-     - `- Returns a URL`
+4. **One assertion per expected item** — keep them atomic.
+   - Bad: `Command completes without errors and returns a URL`
+   - Good: `Command completes without errors`, then `Returns a URL`
 
-5. **Result stays blue placeholder** — tester fills this in.
+5. **Leave the result placeholder untouched** for the tester, in whatever form
+   the template uses.
 
-### Example: Good Scenario
+6. **Preserve ticket traceability on multi-ticket TRs.** If the template's
+   scenario title does not already carry the ticket number, prefix it
+   (`#148 - …`) so QA can map a failure back to a ticket. A single-ticket TR
+   is already unambiguous from its name, so plain numbering is fine.
 
-```
-<callout icon="/icons/script_yellow.svg">
-#### #37 - Scenario 2: Image Generation Self Command Posts Image
+7. **Only script what a tester can actually do.** Failure modes that need
+   induced network or API errors belong in unit tests; say so rather than
+   writing a scenario nobody can run.
 
-#### Steps
-- [ ] Run `$imagine` with a simple prompt and wait for the returned image link
-
-\`\`\`
-Sonata, generate an image of a cow jumping over a milk shaped moon
-\`\`\`
-
-#### Expected
-- `$imagine` generates an image via `gpt-image-2`
-- Returns an uploaded image URL
-- The image is posted in the chat
-
-#### Result
-- (Filled out by tester) {color="blue"}
-</callout>
-```
-
-### Example: Bad Scenario (don't do this)
+### Example: content that fails these rules
 
 ```
-<callout>
-#### Scenario 1: AI commands use current default models (SONA-37)
-
-#### Steps
-- [ ] Run each registered AI command path (g, o, c, x, a) once and note any
-      model-not-found errors
-- [ ] Check sonata.config.json overrides against _DEFAULT_AI_MODELS in
-      src/sonata_config.py (expect gpt-image-2, grok-4.6, gpt-5.6-terra,
-      gemini-3.6-flash, gemini-3.1-flash-image)
-- [ ] Run $imagine with a simple prompt and wait for the returned image link
-
-#### Expected
-- Every AI command path completes without model-not-found errors; $imagine
-  generates an image via gpt-image-2 and returns an uploaded image URL
-</callout>
+- [ ] Run each AI command path (g, o, c, x) once, note any model-not-found
+      errors, then check config overrides in src/sonata_config.py
 ```
 
-Problems: no code blocks, steps are too vague, expected combines multiple
-assertions, ticket ID is at the end instead of as `#NN -` prefix.
+Expected: `Every AI path completes without errors; $imagine returns a URL`
+
+The step bundles several actions, gives nothing to copy-paste, and the expected
+line packs multiple assertions into one, so a tester cannot report which part
+failed.
 
 ---
 
@@ -227,8 +177,8 @@ Test Request through Planning / In progress / In Review.
 2. List open feature PRs as `SONA-{n} {Title}` (skip drafts, skip `TR:` PRs)
 3. User confirms which PRs to include
 4. Check for an in-flight TR → combine or wait (see above)
-5. Create the ticket from the Test Request template; fill scenarios per the
-   rules above; set **Testing** / **Tested By**
+5. Fetch the Test Request template, create the ticket from it, and fill the
+   scenarios into its structure; set **Testing** / **Tested By**
 6. If not waiting: squash-merge the selected PRs into `testing`, open or
    update the `TR:` PR, **manually link the PR** via the PR relation, move
    the TR → `Ready`

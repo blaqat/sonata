@@ -672,7 +672,8 @@ def get_weather(*city):
     "imagine",
     "$imagine <prompt>",
     "Generate 2 images based on a prompt.",
-    "Make sure to post the link. Also make sure to post the entire link.",
+    "The image is attached to your reply automatically, so just describe it. "
+    "If the output has a link, include it whole; never invent one.",
 )
 def imagine(*prompt):
     prompt = " ".join(prompt)
