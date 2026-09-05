@@ -284,6 +284,36 @@ class MemorySessionStore:
         }
 
 
+async def resolve_model_pref(
+    sessions: SessionStore,
+    scope: ScopeKey,
+    *,
+    default_model: str = "",
+    parent_channel_id: str | None = None,
+) -> str | None:
+    """Resolve preferred model for a run scope.
+
+    Thread-bound sessions are keyed to the thread channel, but ``/cursor model``
+    stores preferences on the parent channel. Inherit from the parent when the
+    thread scope has no local preference.
+    """
+    pref = await sessions.get_model_pref(scope)
+    if pref:
+        return pref
+    parent_id = str(parent_channel_id or "").strip()
+    if parent_id and parent_id != scope.channel_id:
+        parent_scope = ScopeKey(
+            guild_id=scope.guild_id,
+            channel_id=parent_id,
+            user_id=scope.user_id,
+        )
+        pref = await sessions.get_model_pref(parent_scope)
+        if pref:
+            return pref
+    default = str(default_model or "").strip()
+    return default or None
+
+
 def session_is_idle(
     session: AgentSession,
     *,
