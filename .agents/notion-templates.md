@@ -39,6 +39,9 @@ ticket creation.
    - `parent`: `{ "data_source_id": "fe024354-9f63-83db-87dc-07f92799408c" }`
    - Per page: set `template_id` to the ID for the ticket **Type**
    - Set `properties` (`Name`, `Type`, `Status`, `Points`, `Milestones`, `Parent`, …)
+   - Create implementation tickets with a plain **Name**. After Notion
+     assigns `ID`, rename to `SONA-{n}: {title}` so search works. Do
+     **not** do this for Test Requests or Dev Plans.
    - Template application can be async; the page may look blank briefly
 
 3. **Fill body content** — fetch the page, then `notion-update-page` with
@@ -67,6 +70,7 @@ ticket creation.
 }
 ```
 
-Then create the Dev Plan child with `template_id`:
-`65724354-9f63-8382-8898-810fd27b31e7`, `Type: "Plan"`, and `Parent` set to the
-parent ticket URL.
+Then fetch the page, read `userDefined:ID`, and update **Name** to
+`SONA-{n}: Add widget caching`. Then create the Dev Plan child with
+`template_id`: `65724354-9f63-8382-8898-810fd27b31e7`, `Type: "Plan"`,
+and `Parent` set to the parent ticket URL.

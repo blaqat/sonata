@@ -25,7 +25,7 @@ a populated **Testing** relation.
 | **Template** | Test Request (required — do not create a blank Task) |
 | **template_id** | `3c424354-9f63-8060-aaca-c259a8d45cff` |
 | **Type** | `Task` (template default — do not invent `Type=Test Request`) |
-| **Name** | `TR: SONA-{n}, SONA-{n}` (feature IDs, not the TR ticket's own ID) |
+| **Name** | `TR: SONA-{n}, SONA-{n}` (feature IDs, not the TR ticket's own ID). Do **not** prefix with the TR's own `SONA-{n}:` — that rename is only for implementation tickets. |
 
 Relations (duals — set one side, the other updates):
 

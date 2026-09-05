@@ -8,6 +8,9 @@ description: Audit all New tickets for completeness.
    **Testing** is set). Do not add a Dev Plan or move them to `Planning`.
 
 3. For each other ticket, check for:
+   - **Name** is `{ID}: {title}` (rename after reading `userDefined:ID`
+     if missing; never prefix Test Requests)
+
    - Acceptance criteria
 
    - Points (estimation)

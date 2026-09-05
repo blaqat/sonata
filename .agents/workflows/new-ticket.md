@@ -21,12 +21,19 @@ description: Create a new ticket from scratch.
    use the `test-request` skill instead (Type stays `Task`; Name is
    `TR: SONA-{n}, …`).
 
-3. Fill **Description** and **Acceptance Criteria** (re-fetch if template
+   Create with a plain **Name** (no ID prefix). Notion assigns `ID` after
+   create.
+
+3. Fetch the page, read `userDefined:ID`, and rename **Name** to
+   `SONA-{n}: {original title}` so Notion search can find it. Skip this
+   for Test Requests.
+
+4. Fill **Description** and **Acceptance Criteria** (re-fetch if template
    sections aren't there yet)
 
-4. Create a child Dev Plan with `template_id`
+5. Create a child Dev Plan with `template_id`
    `65724354-9f63-8382-8898-810fd27b31e7`; fill **Goal**, **Plan**, **Validation**
 
-5. Set parent → `Planning`, Dev Plan → `Ready`
+6. Set parent → `Planning`, Dev Plan → `Ready`
 
-6. Output the Notion ticket link, `SONA-{n}` ID, and summary
+7. Output the Notion ticket link, `SONA-{n}` ID, and summary

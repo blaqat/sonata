@@ -19,11 +19,17 @@ Ticket IDs are auto-incremented as **`SONA-{n}`** (Notion `ID` property). Always
 reference tickets by that ID (e.g. `SONA-12`). Legacy Linear IDs may appear in
 page comments for history only — do not create new Linear issues.
 
+Notion search cannot find the `ID` property, so implementation ticket
+**Name** must be `{ID}: {title}` (e.g. `SONA-12: Add widget caching`).
+Set this **after create** once Notion assigns the ID. Do **not** prefix
+Test Request names (they stay `TR: SONA-{n}, …`) or Dev Plan names
+(`Dev Plan`).
+
 ### Key properties
 
 | Property | Use |
 |---|---|
-| **Name** | Title |
+| **Name** | Title — after create, `{ID}: {title}` (not TRs or Dev Plans) |
 | **Type** | `Story` / `Bug` / `Spike` / `Task` / `Plan` |
 | **Status** | `New` / `Planning` / `Ready` / `In progress` / `In Review` / `Done` / `Cancelled` |
 | **Points** | Fibonacci estimate |
@@ -94,10 +100,12 @@ When noticing potential improvements, bugs, or missing functionality during impl
 1. Create a new page in **SONA Tickets** using the matching **page template**
    (see table above). **Never** use the Test Request template here — only if
    the user confirms they want one, via `test-request`.
-   - **Name**: clear, concise summary
+   - **Name**: clear, concise summary (plain title at create)
    - **Type**: `Story` / `Bug` / `Spike` / `Task` as appropriate
    - **Points**: story point estimate
    - **Milestones** / **Priority** / **Board** when known
+   - After create: fetch `userDefined:ID` and rename **Name** to
+     `SONA-{n}: {title}` (skip Test Requests)
    - Fill **Description** and **Acceptance Criteria** in the template body
 2. Create a child **Dev Plan** using the Dev Plan template (`Type=Plan`,
    **Parent** = new ticket) and fill **Goal**, **Plan**, **Validation**.
@@ -122,6 +130,7 @@ When asked to scan tickets:
 2. **Skip Test Request tickets** (Name starts with `TR:` and/or
    **Testing** is set). Do not add a Dev Plan or move them to `Planning`.
 3. For each other ticket, ensure it has:
+   - **Name** prefixed with its ID: `SONA-{n}: {title}`
    - Acceptance criteria (in body)
    - **Points**
    - **Type** (and **Milestones** when clear)

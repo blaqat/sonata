@@ -15,8 +15,9 @@ Never create a Test Request unless the user confirms they want one.
 3. Create a SONA ticket from the **Test Request** template
    (`3c424354-9f63-8060-aaca-c259a8d45cff`) — required, same template
    list as Bug / Feature / Task / Dev Plan / Spike. Type stays `Task`.
-   Name: `TR: SONA-{n}, SONA-{n}`. Do not send `content` with
-   `template_id` — fill the scenario callouts after template applies.
+   Name: `TR: SONA-{n}, SONA-{n}`. Do not prefix with the TR's own
+   `SONA-{n}:`. Do not send `content` with `template_id` — fill the
+   scenario callouts after template applies.
 
 4. Set **Testing** on the TR → selected tickets; **Tested By** on each
    ticket → the TR. No Dev Plan. No Parent.

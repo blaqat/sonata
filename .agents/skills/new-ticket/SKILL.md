@@ -25,15 +25,22 @@ description: Create a new ticket from scratch. Use this when you identify a bug,
    they want one. If they do, stop and use the `test-request` skill instead
    (Type stays `Task`; ticket Name is `TR: SONA-{n}, …`).
 
-   - `properties`: Name, Type, Status (`New`), Points, Milestones (when clear)
+   - `properties`: Name (plain title, no ID prefix — Notion assigns `ID`
+     after create), Type, Status (`New`), Points, Milestones (when clear)
 
-3. Fill **Description** and **Acceptance Criteria** (fetch the page first; re-fetch
+3. Fetch the new page, read `userDefined:ID` (`SONA-{n}`), and
+   `notion-update-page` → `update_properties` →
+   `Name` = `SONA-{n}: {original title}`. Notion search cannot find the
+   ID property, so the prefix must be in the title. Do **not** do this
+   for Test Requests (Name stays `TR: SONA-{n}, …`).
+
+4. Fill **Description** and **Acceptance Criteria** (fetch the page first; re-fetch
    if template sections aren't there yet)
 
-4. Create a child Dev Plan with `template_id`
+5. Create a child Dev Plan with `template_id`
    `65724354-9f63-8382-8898-810fd27b31e7` (`Type=Plan`, **Parent** = new ticket);
    fill **Goal**, **Plan**, **Validation**
 
-5. Set parent → `Planning`, Dev Plan → `Ready`
+6. Set parent → `Planning`, Dev Plan → `Ready`
 
-6. Output the Notion ticket link, `SONA-{n}` ID, and summary
+7. Output the Notion ticket link, `SONA-{n}` ID, and summary

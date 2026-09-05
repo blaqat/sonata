@@ -10,6 +10,8 @@ description: Improve an existing ticket's quality. Use this to enhance acceptanc
 1. Fetch the specified Notion ticket
 
 2. Review and enhance:
+   - **Name** is `{ID}: {title}` (add the prefix if missing; skip TRs)
+
    - Acceptance criteria (make more specific/testable)
 
    - Points (validate or adjust)

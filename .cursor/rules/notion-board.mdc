@@ -25,6 +25,8 @@ Tracking lives in **Notion**, not Linear. Full workflow: `AGENTS.md` and
 
 - Details: `.agents/notion-templates.md`
 - IDs: `SONA-{n}` (Notion auto-increment `ID`)
+- After create, set ticket **Name** to `SONA-{n}: {title}` so Notion
+  search works. Skip Test Requests (`TR: …`) and Dev Plans.
 - Statuses: `New` → `Planning` → `Ready` → `In progress` → `In Review` → `Done`
 - Dev Plans: child pages with `Type=Plan` + `Parent` relation
 - Feature PRs target **`testing`** (squash-merge as `SONA-{n}: Title` + bullets). `master` only via a `TR:` PR after QA.

@@ -12,6 +12,9 @@ description: Audit all New tickets for completeness. Use this to ensure backlog 
    `Planning`, and do not create a Test Request.
 
 3. For each other ticket, check for:
+   - **Name** is `{ID}: {title}` (e.g. `SONA-12: Add widget caching`).
+     If missing, fetch `userDefined:ID` and rename. Do not prefix TRs.
+
    - Acceptance criteria
 
    - Points (estimation)
