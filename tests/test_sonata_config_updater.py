@@ -12,13 +12,16 @@ if str(repo_root / "src") not in sys.path:
 import sonata_config
 from modules.AI_manager import AI_Manager
 from sonata_config import (
+    AIModels,
     EDITABLE_FIELDS,
     ConfigUpdateError,
     RuntimeConfig,
+    configured_ai_model,
     get_config_view,
     get_runtime_config,
     load_config,
     update_runtime_config,
+    _DEFAULT_AI_MODELS,
 )
 
 
@@ -51,6 +54,17 @@ class ConfigUpdaterTestCase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
+    def test_assistant_ai_is_removed_from_editable_config(self):
+        from modules.plugins import PLUGINS_DICT
+
+        self.assertNotIn("openai_assistant", PLUGINS_DICT)
+        self.assertNotIn("assistant", sonata_config._DEFAULT_AI_MODELS)
+        self.assertNotIn("assistant", sonata_config._AI_MODEL_TO_TYPE)
+        self.assertNotIn("runtime.ai_models.assistant", {f.path for f in EDITABLE_FIELDS})
+        auto = next(f for f in EDITABLE_FIELDS if f.path == "plugins.chat.auto")
+        self.assertNotIn("a", auto.options)
+        self.assertEqual(auto.options, ("g", "o", "c", "m", "x"))
+
     def test_get_config_view_returns_only_allowlisted_fields(self):
         view = get_config_view()
         expected_paths = {f.path for f in EDITABLE_FIELDS}
@@ -64,6 +78,42 @@ class ConfigUpdaterTestCase(unittest.TestCase):
         blob = json.dumps(get_config_view())
         for hidden in ("tier1_user_ids", "tier2_user_ids", "default_repository_url"):
             self.assertNotIn(hidden, blob)
+
+    def test_get_config_view_includes_defaults_for_editable_fields(self):
+        view = get_runtime_config()
+        expected_paths = {f.path for f in EDITABLE_FIELDS}
+        self.assertEqual(set(view["defaults"]), expected_paths)
+        self.assertIs(view["defaults"]["runtime.vc_recording"], False)
+        self.assertEqual(
+            view["defaults"]["runtime.ai_models.claude"],
+            sonata_config._DEFAULT_AI_MODELS["claude"],
+        )
+        self.assertEqual(
+            view["defaults"]["plugins.chat.bot_whitelist"],
+            ["BluBot", 1311742291521835048, 746799398994051162, 1527366826793894109],
+        )
+
+    def test_revert_patch_restores_default_values(self):
+        update_runtime_config(
+            {"runtime.vc_speaking": False, "plugins.chat.max_chats": 5},
+            actor="tester",
+        )
+        defaults = get_runtime_config()["defaults"]
+        update_runtime_config(
+            {
+                "runtime.vc_speaking": defaults["runtime.vc_speaking"],
+                "plugins.chat.max_chats": defaults["plugins.chat.max_chats"],
+            },
+            actor="tester",
+        )
+        values = get_runtime_config()["values"]
+        self.assertEqual(values["runtime.vc_speaking"], defaults["runtime.vc_speaking"])
+        self.assertEqual(
+            values["plugins.chat.max_chats"], defaults["plugins.chat.max_chats"]
+        )
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertTrue(saved["runtime"]["vc_speaking"])
+        self.assertEqual(saved["plugins"]["chat"]["max_chats"], 30)
 
     def test_update_rejects_unknown_keys_without_writing(self):
         before = self.config_path.read_text(encoding="utf-8")
@@ -201,6 +251,25 @@ class ConfigUpdaterTestCase(unittest.TestCase):
                 "plugins.self_commands.search.num_results", 7
             )
         self.assertEqual(manager.config.values["search"]["num_results"], 7)
+
+    def test_configured_ai_model_uses_runtime_override(self):
+        runtime = RuntimeConfig(ai_models=AIModels(gemini="custom-flash"))
+        self.assertEqual(configured_ai_model("gemini", runtime), "custom-flash")
+
+    def test_configured_ai_model_falls_back_to_builtin_default(self):
+        runtime = RuntimeConfig()
+        self.assertEqual(
+            configured_ai_model("gemini", runtime),
+            _DEFAULT_AI_MODELS["gemini"],
+        )
+        self.assertEqual(_DEFAULT_AI_MODELS["gemini"], "gemini-3.6-flash")
+
+    def test_configured_ai_model_reads_live_runtime_instance(self):
+        self.assertEqual(configured_ai_model("gemini"), self.runtime.ai_models.gemini)
+        update_runtime_config(
+            {"runtime.ai_models.gemini": "gemini-hot"}, actor="tester"
+        )
+        self.assertEqual(configured_ai_model("gemini"), "gemini-hot")
 
 
 if __name__ == "__main__":

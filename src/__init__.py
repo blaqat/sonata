@@ -3,6 +3,7 @@ from typing import Optional, Union
 import discord.ext.commands.bot
 from discord.message import Message
 
+from modules.bot_whitelist import author_in_whitelist
 from modules.utils import Colors
 from modules.utils import async_cprint as cprint
 
@@ -19,11 +20,7 @@ async def process_commands(
     Otherwise, it will process the commands as normal
     """
     if message.author.bot and (
-        not bot_whitelist
-        or (
-            message.author.name not in bot_whitelist
-            and message.author.id not in bot_whitelist
-        )
+        not bot_whitelist or not author_in_whitelist(message.author, bot_whitelist)
     ):
         return
 

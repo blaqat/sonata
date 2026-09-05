@@ -41,6 +41,7 @@ from modules.channel_policies import (
     get_channel_policy,
     get_command_name,
 )
+from modules.bot_whitelist import author_in_whitelist
 from modules.utils import (
     censor_message,
     async_print as print,
@@ -257,10 +258,8 @@ async def chat_hook(Sonata, self: commands.Bot, message: discord.Message) -> Non
     USE_REPLY_REF = Sonata.config.get("view_replies")
     IGNORE_LIST = Sonata.config.get("ignore", [])
     BOT_WHITELIST = Sonata.config.get("bot_whitelist", [])
-    VALID_USER = (
-        message.author.bot
-        and (message.author.name in BOT_WHITELIST or message.author.id in BOT_WHITELIST)
-        or not message.author.bot
+    VALID_USER = not message.author.bot or author_in_whitelist(
+        message.author, BOT_WHITELIST
     )
     IS_SONATA = message.author.bot and message.author.name == "sonata"
     is_self = getattr(self, "user", None) is not None and message.author.id == self.user.id
@@ -704,7 +703,7 @@ def chat(sona: AI_Manager):
             provider_message = _censor_for_provider(message, sona.config)
 
             def _send():
-                if "using_assistant" not in new_c and prompt_manager.exists("History"):
+                if prompt_manager.exists("History"):
                     return sona.do(
                         "chat",
                         "request",

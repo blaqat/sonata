@@ -165,7 +165,7 @@ def extend(Sonata: AI_Manager):
     # Add funny responses with a small chance of being triggered
     Sonata.extend(
         sonata,
-        PLUGINS(openai_assistant=False),
+        PLUGINS(),
         **_PLUGIN_EXTEND,
     )
 
@@ -193,39 +193,6 @@ def DallE(client, prompt, model, config):
     )
     image_bytes = base64.b64decode(result.data[0].b64_json)
     return upload_to_catbox(image_bytes)
-
-
-@MANAGER.register_ai(
-    client=openai,
-    default=False,
-    key=settings.OPEN_AI,
-    setup=lambda _, k: True,
-    model=_ai_model("assistant", "gpt-4o"),
-)
-def Assistant(client, prompt, model, config):
-    content = [{"type": "text", "text": prompt}]
-    i = _normalize_image_inputs(config)
-    if i:
-        if model != "gpt-4o":
-            model = "gpt-4-vision-preview"
-        i = [{"type": "image_url", "image_url": {"url": u}} for u in i if u is not True]
-        content.extend(i)
-        # config["images"] = None
-        config["images"].append(True)
-
-    A = Sonata.chat_assistant
-    messages = A.send_request(config["channel_id"], "user", content).data
-
-    reply = ""
-    # append all messages until role is user
-    for message in messages:
-        if message.role == "user":
-            break
-        content = message.content
-        for c in content:
-            reply += "\n" + c.text.value if c.type == "text" else f":{c.source.url}:"
-
-    return reply
 
 
 @MANAGER.register_ai(
@@ -847,11 +814,6 @@ async def grok_ai_question(ctx, *message):
             "ExplainBlockReasoning", r, name
         ),
     )
-
-
-@sonata.command(name="a", description="Ask a question using OpenAI Assistant.")
-async def open_ai_assistant_question(ctx, *message):
-    await ai_question(ctx, *message, ai="Assistant", short="a")
 
 
 @sonata.command(name="restart", description="Restart the bot.")

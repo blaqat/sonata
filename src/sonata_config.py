@@ -21,7 +21,6 @@ from modules.plugins import PLUGINS_DICT
 
 _DEFAULT_AI_MODELS: dict[str, str] = {
     "dall_e": "gpt-image-2",
-    "assistant": "gpt-4o",
     "grok": "grok-4.6",
     "openai": "gpt-5.6-terra",
     "claude": "claude-sonnet-4-6",
@@ -57,7 +56,6 @@ class AIModels:
     """Per-provider model id overrides. Empty or missing uses the built-in default for that AI."""
 
     dall_e: str | None = None
-    assistant: str | None = None
     grok: str | None = None
     openai: str | None = None
     claude: str | None = None
@@ -83,6 +81,20 @@ def resolve_ai_model(runtime: RuntimeConfig, key: str, builtin_default: str) -> 
     if isinstance(raw, str) and raw.strip():
         return raw.strip()
     return builtin_default
+
+
+def configured_ai_model(key: str, runtime: RuntimeConfig | None = None) -> str:
+    """Resolve a provider model id from live runtime config, else the built-in default.
+
+    Same source as Gemini/OpenAI registration in ``index.py``: the loaded
+    ``RuntimeConfig.ai_models`` value, falling back to ``_DEFAULT_AI_MODELS``.
+    Uses the hot-reloaded ``_RUNTIME_INSTANCE`` when no runtime is passed.
+    """
+    builtin = _DEFAULT_AI_MODELS[key]
+    source = runtime if runtime is not None else _RUNTIME_INSTANCE
+    if source is None:
+        return builtin
+    return resolve_ai_model(source, key, builtin)
 
 
 def _ai_models_from_merged_runtime(data: dict[str, Any]) -> AIModels:
@@ -195,7 +207,7 @@ def load_config(path: Path | None = None) -> tuple[RuntimeConfig, dict[str, Any]
 
 def rand_runtime(runtime: RuntimeConfig, plugins: dict[str, Any]) -> None:
     """Randomize the same runtime and plugin toggles as the former `rand_config()`."""
-    models = ["g", "o", "c", "a", "m", "x"]
+    models = ["g", "o", "c", "m", "x"]
     gif_searches = ["klipy", "giphy", "google", "random", "tenor"]
 
     runtime.prompt_reset = bool(randint(0, 1))
@@ -234,7 +246,6 @@ AI_MODEL_FIELDS = tuple(_DEFAULT_AI_MODELS.keys())
 # changes can be swapped into live AI requests without a restart.
 _AI_MODEL_TO_TYPE = {
     "dall_e": "DallE",
-    "assistant": "Assistant",
     "grok": "Grok",
     "openai": "OpenAI",
     "claude": "Claude",
@@ -293,7 +304,7 @@ EDITABLE_FIELDS: tuple[ConfigField, ...] = (
         "select",
         "Chat",
         True,
-        options=("g", "o", "c", "a", "m", "x"),
+        options=("g", "o", "c", "m", "x"),
         description="Default AI shortcut used for chat replies.",
     ),
     ConfigField(
@@ -437,21 +448,34 @@ def save_config() -> Path:
     return cfg_path
 
 
+def _normalized_view_value(field_def: ConfigField, value: Any) -> Any:
+    if value is not None:
+        return value
+    return "" if field_def.type == "str" else [] if field_def.type == "list" else None
+
+
 def get_runtime_config() -> dict[str, Any]:
     """Return the safe, editable config view for the web terminal.
 
     Only allowlisted fields are returned -- never raw secrets or env-backed keys.
+    `defaults` mirrors `values` with each field's effective default so the UI
+    can offer per-field revert (SONA-162).
     """
     effective = _effective_doc()
+    default_doc = _default_document()
     values: dict[str, Any] = {}
+    defaults: dict[str, Any] = {}
     for field_def in EDITABLE_FIELDS:
-        value = _doc_get(effective, field_def.path)
-        values[field_def.path] = value if value is not None else (
-            "" if field_def.type == "str" else [] if field_def.type == "list" else None
+        values[field_def.path] = _normalized_view_value(
+            field_def, _doc_get(effective, field_def.path)
+        )
+        defaults[field_def.path] = _normalized_view_value(
+            field_def, _doc_get(default_doc, field_def.path)
         )
     return {
         "fields": [asdict(field_def) for field_def in EDITABLE_FIELDS],
         "values": values,
+        "defaults": defaults,
         "recent_mutations": list(_MUTATION_LOG),
     }
 

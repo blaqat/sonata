@@ -81,7 +81,7 @@ class ConfigRouteTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def test_config_patch_rejects_invalid_updates(self):
         error = ConfigUpdateError(
-            {"plugins.chat.auto": "must be one of: g, o, c, a, m, x"}
+            {"plugins.chat.auto": "must be one of: g, o, c, m, x"}
         )
         with mock.patch(
             "sonata_config.update_runtime_config", side_effect=error
