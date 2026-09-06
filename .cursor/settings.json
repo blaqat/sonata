@@ -2,6 +2,9 @@
   "plugins": {
     "linear": {
       "enabled": false
+    },
+    "notion-workspace": {
+      "enabled": true
     }
   }
 }
