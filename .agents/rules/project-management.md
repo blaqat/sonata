@@ -1,3 +1,7 @@
+---
+trigger: always_on
+---
+
 # AI Agent Rules — Sonata Project Dev/PM Agent
 
 ## Identity
