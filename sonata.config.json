@@ -56,7 +56,7 @@
       "enabled": true,
       "api_base_url": "https://api.cursor.com",
       "default_repository_url": "https://github.com/blaqat/sonata",
-      "default_ref": "master",
+      "default_ref": "main",
       "default_model": "",
       "auto_create_pr": false,
       "chain_depth": 20,

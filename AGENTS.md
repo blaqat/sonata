@@ -165,7 +165,7 @@ When asked to scan tickets:
 
 ### Pull Requests
 
-The PR target for feature work is **`testing`**, not `master`. `testing` is
+The PR target for feature work is **`testing`**, not `main`. `testing` is
 the QA integration branch so multiple features can be tested together.
 
 When implementation is complete:
@@ -186,7 +186,7 @@ SONA-{n}: {Title}
 - relevant change
 ```
 
-Do not merge feature PRs to `master`. `master` only receives work through a
+Do not merge feature PRs to `main`. `main` only receives work through a
 Test Request PR (`TR: SONA-{n}, …`) after QA. See the `test-request` skill.
 
 ### Test Requests
@@ -213,5 +213,5 @@ Never create one unless the user confirms.
 Test Request:
 [New]  -> (wait for previous TR, or not yet queued)
 [Ready] -> (testing has the merges, ticket filled, TR PR open — QA)
-[Done]  -> (QA finished / TR PR merged to master; queue next New TR)
+[Done]  -> (QA finished / TR PR merged to main; queue next New TR)
 ```

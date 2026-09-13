@@ -29,6 +29,6 @@ Tracking lives in **Notion**, not Linear. Full workflow: `AGENTS.md` and
   search works. Skip Test Requests (`TR: …`) and Dev Plans.
 - Statuses: `New` → `Planning` → `Ready` → `In progress` → `In Review` → `Done`
 - Dev Plans: child pages with `Type=Plan` + `Parent` relation
-- Feature PRs target **`testing`** (squash-merge as `SONA-{n}: Title` + bullets). `master` only via a `TR:` PR after QA.
+- Feature PRs target **`testing`** (squash-merge as `SONA-{n}: Title` + bullets). `main` only via a `TR:` PR after QA.
 - Test Request template: only if the user confirms. Use the `test-request` skill.
 - Use Notion MCP for create/query/update; do not create Linear issues

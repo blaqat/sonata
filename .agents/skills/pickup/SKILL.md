@@ -18,5 +18,5 @@ description: Grab the next available ticket to implement. This triggers the proc
 
 6. Output the ticket summary, acceptance criteria, and Dev Plan for reference
 
-PRs for this work target **`testing`**, not `master`. Squash-merge into
+PRs for this work target **`testing`**, not `main`. Squash-merge into
 `testing` as `SONA-{n}: Title` plus bullets of the relevant changes.

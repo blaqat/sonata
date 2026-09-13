@@ -33,7 +33,7 @@ Never create a Test Request unless the user confirms they want one.
 6. **Wait:** Status stays `New`. Stop.
 
    **Combine / no in-flight:** squash-merge selected PRs into `testing`
-   (`SONA-{n}: Title` + bullets). Open or update `testing` → `master` PR
+   (`SONA-{n}: Title` + bullets). Open or update `testing` → `main` PR
    titled `TR: SONA-{n}, SONA-{n}` with a task list of TR ticket links.
    **Manually link the PR** via the PR relation. Status → `Ready`.
 
@@ -43,5 +43,5 @@ Never create a Test Request unless the user confirms they want one.
    outside the ACs. Follow-up **Bug** only if it does not undermine the ACs,
    is a crash, or is a large fix. Details: `test-request` skill.
 
-8. When a TR closes: mark `Done`, fast-forward `testing` to `master`,
+8. When a TR closes: mark `Done`, fast-forward `testing` to `main`,
    then queue the next `New` Test Request (ask if there are several).

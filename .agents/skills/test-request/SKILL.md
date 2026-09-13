@@ -129,7 +129,7 @@ failed.
 
 ## Git
 
-- Feature PRs target **`testing`**, not `master`
+- Feature PRs target **`testing`**, not `main`
 - Squash-merge each selected feature PR into `testing` with:
 
 ```
@@ -139,7 +139,7 @@ SONA-{n}: {Title}
 - relevant change
 ```
 
-- Then open (or update) a PR **`testing` → `master`**:
+- Then open (or update) a PR **`testing` → `main`**:
   - Title: `TR: SONA-{n}, SONA-{n}` (same feature IDs)
   - Description: a task list of Test Request ticket links only, e.g.
 
@@ -166,7 +166,7 @@ If one exists, **stop and ask** the user: **combine** with the current TR, or
 |---|---|
 | Ticket created but previous TR is still in-flight and user chose wait | `New` |
 | Branches squash-merged into `testing`, ticket filled, TR PR open (or combined onto the existing PR) | `Ready` |
-| QA finished / TR PR merged to `master` | `Done` |
+| QA finished / TR PR merged to `main` | `Done` |
 
 `Ready` here means ready for QA, not ready for implementation. Do not move a
 Test Request through Planning / In progress / In Review.
@@ -225,10 +225,10 @@ If the split is unclear, say so and ask. Do not default to creating tickets.
 ## Completion (when a TR is done)
 
 When the user says a TR is complete **and** comments are reviewed (or its
-`TR:` PR is merged to `master`):
+`TR:` PR is merged to `main`):
 
 1. Mark that Test Request `Done`
-2. Fast-forward `testing` to `master` so the next queue starts clean
+2. Fast-forward `testing` to `main` so the next queue starts clean
 3. Find other Test Request tickets still `New`
 4. If **one**: queue it (squash-merge its PRs, open `TR:` PR, → `Ready`)
 5. If **several**: list them as `SONA-{n} {Name}` and ask which to queue next
