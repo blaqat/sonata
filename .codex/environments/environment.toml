@@ -3,9 +3,9 @@ version = 1
 name = "Sonata"
 
 [setup]
-script = "uv sync"
+script = "mise install && mise run setup"
 
 [[actions]]
 name = "start"
 icon = "tool"
-command = "uv python src/index.py"
+command = "mise run start"

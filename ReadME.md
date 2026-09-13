@@ -13,6 +13,8 @@ A versatile AI-powered Discord bot created by @blaqat, designed for natural lang
 
 ## Installation
 
+Requires [mise](https://mise.jdx.dev/) (Python 3.14 and uv).
+
 1. Clone the repository:
 
     ```bash
@@ -20,18 +22,19 @@ A versatile AI-powered Discord bot created by @blaqat, designed for natural lang
     cd sonata
     ```
 
-2. Install dependencies:
+2. Install tools and dependencies:
 
     ```bash
-    pip install -r requirements.txt
+    mise install && mise run setup
     ```
 
 3. Set up environment variables:
-   Create a `.env` file with your API keys
+   Create a `.env` file with your API keys (see `.env.template`)
 
 4. Run the bot:
+
     ```bash
-    python src/index.py
+    mise run start
     ```
 
 ## Usage

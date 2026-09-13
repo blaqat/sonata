@@ -1,0 +1,24 @@
+[tools]
+python = "3.14"
+uv = "latest"
+
+[settings]
+python.uv_venv_auto = "source"
+
+[tasks.setup]
+description = "Install Python dependencies"
+alias = "i"
+run = "uv sync"
+
+[tasks.start]
+description = "Run Sonata"
+alias = "s"
+run = "uv run python src/index.py"
+
+[tasks.check]
+description = "Verify the project installs"
+run = "uv sync && uv run python -c \"import sys; print(sys.version)\""
+
+[tasks.lint]
+description = "Lint with ruff"
+run = "uv run ruff check ."
