@@ -42,7 +42,7 @@ Test Request names (they stay `TR: SONA-{n}, …`) or Dev Plan names
 | **Status**                   | `New` / `Planning` / `Ready` / `In progress` / `In Review` / `Done` / `Cancelled`                     |
 | **Points**                   | Fibonacci estimate                                                                                    |
 | **Priority**                 | `1` Low … `4` Urgent (leave empty if unset)                                                           |
-| **Milestone**                | Single-select delivery track (see below). Leave empty if none                                         |
+| **Epic**                | Single-select delivery track (see below). Leave empty if none                                         |
 | **Area**                     | Multi-select work grouping (see below)                                                                |
 | **Parent** / **Children**    | Nest Dev Plans under the parent ticket                                                                |
 | **Blocked By** / **Related** | Dependencies and links                                                                                |

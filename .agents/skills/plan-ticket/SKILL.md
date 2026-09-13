@@ -5,6 +5,8 @@ description: Generate or fill out a Dev Plan for a specific ticket. Use this whe
 
 # Instructions
 
+Make sure to reference `.agents/skills/
+
 /plan [SONA-{n}]
 
 1. Fetch the specified Notion ticket
