@@ -1,8 +1,8 @@
 {
-  "mcpServers": {
-    "notion": {
-      "transport": "http",
-      "url": "https://mcp.notion.com/mcp"
-    }
-  }
+	"mcpServers": {
+		"notion": {
+			"command": "npx",
+			"args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
+		}
+	}
 }

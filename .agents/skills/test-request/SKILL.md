@@ -1,10 +1,10 @@
 ---
 name: test-request
 description: >-
-  Create a Notion Test Request for selected open PRs, merge those branches
-  into testing, and open or update the TR PR for QA. Use when the user asks
-  for a test request, QA request, /test-request, or to queue the next Test
-  Request after one is completed.
+    Create a Notion Test Request for selected open PRs, merge those branches
+    into testing, and open or update the TR PR for QA. Use when the user asks
+    for a test request, QA request, /test-request, or to queue the next Test
+    Request after one is completed.
 ---
 
 # Test Request
@@ -20,12 +20,12 @@ a populated **Testing** relation.
 
 ## Notion
 
-| | |
-|---|---|
-| **Template** | Test Request (required — do not create a blank Task) |
-| **template_id** | `3c424354-9f63-8060-aaca-c259a8d45cff` |
-| **Type** | `Task` (template default — do not invent `Type=Test Request`) |
-| **Name** | `TR: SONA-{n}, SONA-{n}` (feature IDs, not the TR ticket's own ID). Do **not** prefix with the TR's own `SONA-{n}:` — that rename is only for implementation tickets. |
+|                 |                                                                                                                                                                       |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Template**    | Test Request (required — do not create a blank Task)                                                                                                                  |
+| **template_id** | `3c424354-9f63-8060-aaca-c259a8d45cff`                                                                                                                                |
+| **Type**        | `Task` (template default — do not invent `Type=Test Request`)                                                                                                         |
+| **Name**        | `TR: SONA-{n}, SONA-{n}` (feature IDs, not the TR ticket's own ID). Do **not** prefix with the TR's own `SONA-{n}:` — that rename is only for implementation tickets. |
 
 Relations (duals — set one side, the other updates):
 
@@ -74,7 +74,7 @@ behavior. Optimize for **testing usability**: easy to read, easy to copy
 commands, easy to check off steps, easy to compare expected vs actual.
 
 **Follow the template's structure exactly** — its heading levels, section
-names, and callout shape. The rules below govern the *content* placed inside
+names, and callout shape. The rules below govern the _content_ placed inside
 that structure, never the layout. Where this skill and the template disagree
 on structure, the template wins.
 
@@ -97,8 +97,8 @@ expected results are plain bullets or tickable checkboxes.
    copy-paste. Purely observational steps need no code block.
 
 4. **One assertion per expected item** — keep them atomic.
-   - Bad: `Command completes without errors and returns a URL`
-   - Good: `Command completes without errors`, then `Returns a URL`
+    - Bad: `Command completes without errors and returns a URL`
+    - Good: `Command completes without errors`, then `Returns a URL`
 
 5. **Leave the result placeholder untouched** for the tester, in whatever form
    the template uses.
@@ -140,8 +140,8 @@ SONA-{n}: {Title}
 ```
 
 - Then open (or update) a PR **`testing` → `main`**:
-  - Title: `TR: SONA-{n}, SONA-{n}` (same feature IDs)
-  - Description: a task list of Test Request ticket links only, e.g.
+    - Title: `TR: SONA-{n}, SONA-{n}` (same feature IDs)
+    - Description: a task list of Test Request ticket links only, e.g.
 
 ```
 - [ ] https://app.notion.com/p/…
@@ -155,18 +155,18 @@ All Test Requests QA on `testing`. An **in-flight** TR is one that is not
 If one exists, **stop and ask** the user: **combine** with the current TR, or
 **wait**.
 
-| Choice | What to do |
-|---|---|
+| Choice      | What to do                                                                                                                                                                                                                                                            |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **Combine** | Create/fill the new TR ticket. Squash-merge the newly selected PRs into `testing`. Point **both** TR tickets at the **same** PR (`PR` relation). Update that PR title to include every feature `SONA-{n}` and add the new TR link to the task list. New TR → `Ready`. |
-| **Wait** | Create/fill the new TR ticket and set **Testing** / **Tested By**. Status stays **`New`**. Do not merge branches. Do not open a second TR PR. |
+| **Wait**    | Create/fill the new TR ticket and set **Testing** / **Tested By**. Status stays **`New`**. Do not merge branches. Do not open a second TR PR.                                                                                                                         |
 
 ## Status
 
-| When | Status |
-|---|---|
-| Ticket created but previous TR is still in-flight and user chose wait | `New` |
+| When                                                                                                | Status  |
+| --------------------------------------------------------------------------------------------------- | ------- |
+| Ticket created but previous TR is still in-flight and user chose wait                               | `New`   |
 | Branches squash-merged into `testing`, ticket filled, TR PR open (or combined onto the existing PR) | `Ready` |
-| QA finished / TR PR merged to `main` | `Done` |
+| QA finished / TR PR merged to `main`                                                                | `Done`  |
 
 `Ready` here means ready for QA, not ready for implementation. Do not move a
 Test Request through Planning / In progress / In Review.

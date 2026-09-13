@@ -1,16 +1,16 @@
 {
-  "exclude": [ ".venv" ],
-  "venvPath": ".",
-  "venv": ".venv",
+	"exclude": [".venv"],
+	"venvPath": ".",
+	"venv": ".venv",
 
-  "reportMissingImports": true,
+	"reportMissingImports": true,
 
-  "executionEnvironments": [
-    {
-      "root": "."
-    }
-  ],
+	"executionEnvironments": [
+		{
+			"root": ".",
+		},
+	],
 
-  "typeCheckingMode": "off",
-  "pythonVersion": "3.12"
+	"typeCheckingMode": "off",
+	"pythonVersion": "3.12",
 }

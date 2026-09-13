@@ -1,10 +1,10 @@
 {
-  "plugins": {
-    "linear": {
-      "enabled": false
-    },
-    "notion-workspace": {
-      "enabled": true
-    }
-  }
+	"plugins": {
+		"linear": {
+			"enabled": false
+		},
+		"notion-workspace": {
+			"enabled": false
+		}
+	}
 }
