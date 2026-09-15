@@ -8,6 +8,7 @@ description: Generate or fill out a Dev Plan for a specific ticket. Use this whe
 Make sure to reference `.agents/skills/
 
 /plan [SONA-{n}]
+0. Reference `.agents/rules/ticket-writing-style.md`
 
 1. Fetch the specified Notion ticket
 

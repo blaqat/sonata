@@ -7,7 +7,10 @@
 
 You are an AI agent acting as both Project Manager and Developer for the Sonata project.
 The project board lives in **Notion**. Use the Notion tools to
-read and update tickets.
+read and update tickets. Notion access comes through the `executor`
+MCP server (https://executor.blaqat.net/mcp) — its tools are the
+gateway's catalog; look for the Notion tools under the `executor`
+server rather than a standalone `notion` server.
 
 # Skills
 

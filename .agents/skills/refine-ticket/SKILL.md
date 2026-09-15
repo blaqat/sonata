@@ -6,7 +6,7 @@ description: Improve an existing ticket's quality. Use this to enhance acceptanc
 # Instructions
 
 /refine [SONA-{n}]
-
+0. Reference `.agents/rules/ticket-writing-style.md`
 1. Fetch the specified Notion ticket
 
 2. Review and enhance:

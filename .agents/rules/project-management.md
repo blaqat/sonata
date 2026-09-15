@@ -42,7 +42,7 @@ Test Request names (they stay `TR: SONA-{n}, …`) or Dev Plan names
 | **Status**                   | `New` / `Planning` / `Ready` / `In progress` / `In Review` / `Done` / `Cancelled`                     |
 | **Points**                   | Fibonacci estimate                                                                                    |
 | **Priority**                 | `1` Low … `4` Urgent (leave empty if unset)                                                           |
-| **Epic**                | Single-select delivery track (see below). Leave empty if none                                         |
+| **Epic**                     | Single-select delivery track (see below). Leave empty if none                                         |
 | **Area**                     | Multi-select work grouping (see below)                                                                |
 | **Parent** / **Children**    | Nest Dev Plans under the parent ticket                                                                |
 | **Blocked By** / **Related** | Dependencies and links                                                                                |
@@ -176,7 +176,7 @@ When implementation is complete:
     - Description: what changed and why, linking the Notion ticket
     - Reviewer: ping `@blaqat`
 2. Move the ticket **Status** to `In Review`.
-3. Prefer linking the PR via the **PR** relation (or **URL**) rather than only pasting links in the body.
+3. Prefer linking the PR via the **PR** relation rather than only pasting links in the body.
 
 **Squash-merge** every feature PR into `testing`. Squash commit message:
 

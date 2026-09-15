@@ -1,8 +1,12 @@
 {
-	"mcpServers": {
-		"notion": {
-			"command": "npx",
-			"args": ["-y", "mcp-remote", "https://mcp.notion.com/mcp"]
-		}
-	}
+  "mcpServers": {
+    "executor": {
+      "type": "http",
+      "url": "https://executor.blaqat.net/mcp"
+    },
+    "notion": {
+      "type": "http",
+      "url": "https://executor.blaqat.net/mcp"
+    }
+  }
 }
